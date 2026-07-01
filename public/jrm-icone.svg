@@ -1,7 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="100%" height="100%" fill="#ffffff00"/>
-  <g transform="translate(20,120)">
-    <text x="0" y="120" font-family="Arial, Helvetica, sans-serif" font-size="160" font-weight="700" fill="#d92121">JRM</text>
-    <text x="0" y="210" font-family="Arial, Helvetica, sans-serif" font-size="36" fill="#000">TRANSPORTES</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="JRM">
+  <defs>
+    <filter id="ds" x="-50%" y="-50%" width="200%" height="200%">
+      <feOffset result="offOut" in="SourceAlpha" dx="0" dy="2" />
+      <feGaussianBlur result="blurOut" in="offOut" stdDeviation="3" />
+      <feColorMatrix result="matrixOut" in="blurOut" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.25 0"/>
+      <feBlend in="SourceGraphic" in2="matrixOut" mode="normal" />
+    </filter>
+  </defs>
+  <rect width="100%" height="100%" rx="48" fill="#0b0b14" />
+  <g transform="translate(0,0)" filter="url(#ds)">
+    <rect x="56" y="56" width="400" height="400" rx="40" fill="#ffffff" />
+    <text x="256" y="240" font-family="Inter, Arial, Helvetica, sans-serif" font-size="140" font-weight="800" fill="#d92121" text-anchor="middle" alignment-baseline="central">JRM</text>
+    <text x="256" y="320" font-family="Inter, Arial, Helvetica, sans-serif" font-size="28" font-weight="700" fill="#111" text-anchor="middle">TRANSPORTES</text>
   </g>
 </svg>
