@@ -35,7 +35,8 @@ import {
   limparCache,
 } from "@/lib/contaazul.functions";
 import { useQueryClient } from "@tanstack/react-query";
-import logo from "@/assets/logo.png";
+// using public SVG logo
+const logo = "/jrm-icone.svg";
 import logoBradesco from "@/assets/bradesco.png";
 import logoItau from "@/assets/itau.png";
 import logoSicoob from "@/assets/sicoob.png";
@@ -233,9 +234,9 @@ function Dashboard() {
         }`}
       >
         <div className="flex items-center gap-3 mb-8">
-          <div className="relative">
+            <div className="relative">
             <div className="absolute inset-0 rounded-xl bg-gradient-to-br from-brand to-brand-2 blur-md opacity-60" />
-            <img src={logo} alt="JRM" className="relative h-10 w-10 rounded-xl" />
+            <img src="/jrm-icone.svg" alt="JRM" className="relative h-10 w-10 rounded-xl" />
           </div>
           <div>
             <div className="font-display font-bold text-lg leading-none">JRM</div>
