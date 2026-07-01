@@ -50,7 +50,7 @@ export const Route = createFileRoute("/")({
       { property: "og:description", content: "Dashboard de fluxo de caixa multi-empresa integrado à Conta Azul." },
       { property: "og:type", content: "website" },
     ],
-    links: [{ rel: "icon", type: "image/png", href: logo }],
+    links: [{ rel: "icon", href: "/favicon.ico" }],
   }),
   component: Dashboard,
 });
