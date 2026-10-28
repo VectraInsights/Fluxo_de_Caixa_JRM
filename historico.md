@@ -29,7 +29,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 1. O usuario seleciona uma empresa (ou "Todas as Empresas") e um intervalo de datas.
 2. A funcao server `getDashboard` e chamada.
 3. Para cada empresa, o sistema:
-   - Obtem o token valido via `obterToken()` (tenta renovacao silenciosa com `refresh_token` se expirou).
+   - Obtem o token valido via `obterToken()`.
    - Busca saldos bancarios (`buscarSaldos`).
    - Busca contas a receber e contas a pagar via API Conta Azul (`buscarV2`).
 4. Os valores sao somados por dia e exibidos nos cards (Entradas Previstas, Saidas Previstas) e no grafico de Projecao Diaria.
@@ -46,42 +46,47 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `ff37c8e` | **Versao funcional atual** — fix: remove filtro BANCOS_PERMITIDOS do backend para LGP Transportes receber todos os bancos da API | 28/10/2026 |
+| `8ec7d90` | feat: LGP Transportes mostra todos os bancos da API para diagnostico | 28/10/2026 |
+| `8a45410` | feat: LGP Transportes mostra apenas ITAU, SICOOB 3049, BRADESCO e SICOOB 3109 | 28/10/2026 |
+| `ee1001c` | feat: bancos especificos por empresa — LGP Transportes mostra apenas Bradesco e Sicoob 3109 | 28/10/2026 |
+| `344db44` | feat: adiciona aliases BRADESCO S.A e SICOOB para LGP Transportes | 28/10/2026 |
+| `29edb6d` | feat: LGP Transportes mostra todos os bancos da API (sem filtro restritivo) | 28/10/2026 |
 | `b58ab10` | **Versao funcional original** — perf: deduplica requisicoes concorrentes, paraleliza busca por empresa e mantem dados anteriores durante recarga | Antes de 28/10/2026 |
 | `193c74e` | feat: define Hoje como intervalo padrao de pesquisa ao abrir o sistema | Anterior |
 | `d2d8ddb` | feat: header simplificado com status de sincronizacao ao lado do Recarregar | Anterior |
-| `6dc6409` | Force push do `b58ab10` (revertido apos alteracoes que quebraram o sistema) | 28/10/2026 |
 
 ---
 
 ## 4. Commit de Reversão Padrao
 
-### Commit recomendado para revert​​ao: `b58ab10`
+### Commit recomendado para revert​​ao: `ff37c8e`
 
-**Mensagem:** `perf: deduplica requisicoes concorrentes a API, paraleliza busca por empresa e mantem dados anteriores durante recarga`
+**Mensagem:** `fix: remove filtro BANCOS_PERMITIDOS do backend para LGP Transportes receber todos os bancos da API`
 
-**Motivo:** Este e o ultimo commit conhecido como totalmente funcional antes de alteracoes que quebraram a soma de valores nos cards KPI e o fluxo de sincronizacao.
+**Motivo:** Este e o ultimo commit conhecido como totalmente funcional. Todas as alteracoes feitas apos este commit (tentativas de corrigir renovacao de token, paginacao, filtros por empresa) quebraram o funcionamento do dashboard.
 
 **Como reverter para este estado:**
 
 ```bash
 # No repositorio local
-git reset --hard b58ab10
+git reset --hard ff37c8e
 git push origin main --force
 ```
 
 Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 
+**IMPORTANTE:** Nao faca mais alteracoes no codigo sem testar primeiro em ambiente local. O commit `ff37c8e` e o estado de referencia funcional.
+
 ---
 
 ## 5. Estrutura de Arquivos Relevantes
 
-- `src/lib/contaazul.functions.ts` — `getDashboard`, `listarEmpresas`, `finalizarAutorizacao`, `inspecionarRecebimentos`
+- `src/lib/contaazul.functions.ts` — `getDashboard`, `listarEmpresas`, `inspecionarRecebimentos`
 - `src/lib/contaazul.server.ts` — `obterToken`, `renovarToken`, `buscarSaldos`, `buscarV2`, `basicAuth`, `getSupabase`
 - `src/routes/index.tsx` — Dashboard frontend, indicador de sync, KPI cards, projeto diaria
 - `src/routes/api/callback.ts` — Troca do `code` OAuth por `access_token`/`refresh_token`
 - `src/routes/api/autorizar.ts` — Redirecionamento para login da Conta Azul
-- `src/routes/api/callback.ts` — Endpoint de callback OAuth
-- `src/routes/api/renovar-todos.ts` — Renovacao em lote de tokens
 
 ---
 
@@ -110,14 +115,15 @@ Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 | Bolinha verde com token expirado | Frontend nao detectava status ERRO | Corrigido: bolinha fica vermelha quando empresa esta com `status = ERRO` |
 | Erro 400 no callback | `redirect_uri` nao confere com o cadastrado na Conta Azul | Usar exatamente `https://jrm-dashboard.vercel.app/` |
 | Token nao salva no Supabase | Credenciais `CONTA_AZUL_CLIENT_ID`/`SECRET` nao configuradas na Vercel | Adicionar as env vars e fazer Redeploy |
+| Banco nao aparece na lista | Filtro `BANCOS_PERMITIDOS` no backend | Removido no commit `ff37c8e` — backend agora envia todos os bancos da API |
 
 ---
 
-## 8. Como Reverter para `b58ab10` em Caso de Problema
+## 8. Como Reverter para `ff37c8e` em Caso de Problema
 
 ```bash
 # 1. Baixe o commit funcional
-git reset --hard b58ab10
+git reset --hard ff37c8e
 
 # 2. Envie para o GitHub (force push)
 git push origin main --force
@@ -125,4 +131,4 @@ git push origin main --force
 # 3. Faça Redeploy na Vercel
 ```
 
-O commit `b58ab10` e considerado o **estado de referencia funcional** para o dashboard. Qualquer alteracao futura que quebrar a exibicao de valores ou o fluxo OAuth deve ser revertida para este ponto.
+O commit `ff37c8e` e considerado o **estado de referencia funcional** para o dashboard. Qualquer alteracao futura que quebrar a exibicao de valores ou o fluxo OAuth deve ser revertida para este ponto.
