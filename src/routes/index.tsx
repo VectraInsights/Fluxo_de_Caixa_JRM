@@ -22,20 +22,17 @@ import {
   Wallet,
   TrendingUp,
   TrendingDown,
-  Sparkles,
   RefreshCw,
   AlertTriangle,
   ArrowUpRight,
   ArrowDownRight,
   Barcode,
-  ChevronDown,
 } from "lucide-react";
 import {
   listarEmpresas,
   getDashboard,
   limparCache,
   getEmpresaBreakdown,
-  type EmpresaBreakdown,
   type TituloDetalhe,
 } from "@/lib/contaazul.functions";
 import { useQueryClient } from "@tanstack/react-query";
@@ -73,6 +70,14 @@ function todayLocalISO(offsetDays = 0) {
   return new Date(d.getTime() - tz * 60000).toISOString().slice(0, 10);
 }
 
+// Soma/subtrai dias de uma data no formato YYYY-MM-DD (preserva o fuso local)
+function shiftDays(iso: string, dias: number): string {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + dias);
+  const tz = d.getTimezoneOffset();
+  return new Date(d.getTime() - tz * 60000).toISOString().slice(0, 10);
+}
+
 
 function Dashboard() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -87,10 +92,6 @@ function Dashboard() {
   // Estados "pendentes" — vinculados aos inputs de data no modo personalizado
   const [pendingInicio, setPendingInicio] = useState(todayLocalISO(0));
   const [pendingFim, setPendingFim] = useState(todayLocalISO(7));
-
-  // Estado de expansão dos cards por empresa + modo de visualização do detalhamento
-  const [empresaAberta, setEmpresaAberta] = useState<string | null>(null);
-  const [modoBreakdown, setModoBreakdown] = useState<"empresas" | "consolidado">("empresas");
 
     useEffect(() => {
     const saved = localStorage.getItem("theme");
@@ -184,6 +185,17 @@ function Dashboard() {
     
     // 4. Refresca a lista de empresas
     refetchEmpresas();
+  }
+
+  // Setas de navegação quando o filtro está em um único dia (ex.: "Hoje")
+  const diaUnico = dataInicio === dataFim;
+
+  function navegarDia(delta: number) {
+    const novo = shiftDays(dataInicio, delta);
+    setDataInicio(novo);
+    setDataFim(novo);
+    setPendingInicio(novo);
+    setPendingFim(novo);
   }
 
 
@@ -372,21 +384,56 @@ function Dashboard() {
       >
         <div className="mx-auto max-w-[1400px] p-6 lg:p-10">
           {/* Header */}
-          <div className="flex items-start justify-between mb-8 gap-4 flex-wrap">
+          <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
             <div className="pl-12 lg:pl-0">
-              <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-muted-foreground mb-2">
-                <Sparkles className="h-3 w-3 text-brand" />
-                Visão Geral
-              </div>
               <h1 className="font-display text-3xl lg:text-4xl font-bold tracking-tight">
                 Fluxo de Caixa
               </h1>
-              <p className="text-sm text-muted-foreground mt-1">
-                Projeção de {dataInicio.split("-").reverse().join("/")} até{" "}
-                {dataFim.split("-").reverse().join("/")}
+              <p className="text-sm text-muted-foreground mt-1 flex items-center gap-2">
+                {diaUnico && (
+                  <button
+                    onClick={() => navegarDia(-1)}
+                    className="rounded-full border border-border bg-card/60 backdrop-blur p-1.5 text-foreground/70 hover:text-foreground hover:border-brand/40 transition-all"
+                    title="Dia anterior"
+                    aria-label="Dia anterior"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+                )}
+                <span className="tabular-nums">
+                  Projeção de {dataInicio.split("-").reverse().join("/")} até{" "}
+                  {dataFim.split("-").reverse().join("/")}
+                </span>
+                {diaUnico && (
+                  <button
+                    onClick={() => navegarDia(1)}
+                    className="rounded-full border border-border bg-card/60 backdrop-blur p-1.5 text-foreground/70 hover:text-foreground hover:border-brand/40 transition-all"
+                    title="Próximo dia"
+                    aria-label="Próximo dia"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3 flex-wrap justify-end pl-12 lg:pl-0">
+              {/* Estado do sync ao lado do botão Recarregar */}
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span
+                  className={`inline-flex h-2 w-2 rounded-full shrink-0 ${
+                    isError ? "bg-destructive" : isFetching ? "bg-brand animate-pulse" : "bg-success"
+                  }`}
+                />
+                <span className="tabular-nums">
+                  {isError
+                    ? `Erro: ${String((error as any)?.message || error).slice(0, 120)}`
+                    : isFetching
+                    ? "Sincronizando com a Conta Azul..."
+                    : `Última sincronização: ${
+                        dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString("pt-BR") : "—"
+                      }`}
+                </span>
+              </div>
               <button
                 onClick={recarregarTudo}
                 disabled={isFetching}
@@ -404,18 +451,6 @@ function Dashboard() {
                 {theme === "light" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               </button>
             </div>
-          </div>
-
-          {/* Estado do sync (banner) */}
-          <div className="mb-6 flex items-center gap-3 text-xs text-muted-foreground">
-            <span className={`inline-flex h-2 w-2 rounded-full ${isError ? "bg-destructive" : isFetching ? "bg-brand animate-pulse" : "bg-success"}`} />
-            <span>
-              {isError
-                ? `Erro: ${String((error as any)?.message || error).slice(0, 120)}`
-                : isFetching
-                ? "Sincronizando com a Conta Azul..."
-                : `Última sincronização: ${dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString("pt-BR") : "—"}`}
-            </span>
           </div>
 
           {/* KPI cards */}
@@ -577,39 +612,15 @@ function Dashboard() {
             </div>
           </div>
 
-          {/* Detalhamento: a receber / a pagar por empresa ou consolidado */}
+          {/* Detalhamento consolidado: a receber / a pagar de todas as empresas */}
           <div className="mt-6 rounded-2xl border border-border bg-card/60 backdrop-blur-xl p-6 shadow-xl">
-            <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
-              <div>
-                <h2 className="font-display text-lg font-semibold">A Receber e A Pagar</h2>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {empresa === "todas"
-                    ? "Todas as empresas do período selecionado"
-                    : `Empresa selecionada: ${empresa}`}
-                </p>
-              </div>
-              <div className="flex items-center gap-1 rounded-full border border-border bg-background/50 p-1">
-                <button
-                  onClick={() => setModoBreakdown("empresas")}
-                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
-                    modoBreakdown === "empresas"
-                      ? "bg-brand text-background"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  Por empresa
-                </button>
-                <button
-                  onClick={() => setModoBreakdown("consolidado")}
-                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
-                    modoBreakdown === "consolidado"
-                      ? "bg-brand text-background"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  Todas juntas
-                </button>
-              </div>
+            <div className="mb-5">
+              <h2 className="font-display text-lg font-semibold">A Receber e A Pagar</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {empresa === "todas"
+                  ? "Todas as empresas consolidadas no período selecionado"
+                  : `Empresa selecionada: ${empresa}`}
+              </p>
             </div>
 
             {!breakdown ? (
@@ -617,49 +628,35 @@ function Dashboard() {
                 <SkeletonCard />
                 <SkeletonCard />
               </div>
-            ) : modoBreakdown === "empresas" ? (
-              <div className="space-y-3">
-                {(breakdown || []).map((eb) => (
-                  <EmpresaDetalheCard
-                    key={eb.empresa}
-                    eb={eb}
-                    open={empresaAberta === eb.empresa}
-                    onToggle={() => setEmpresaAberta((p) => (p === eb.empresa ? null : eb.empresa))}
-                  />
-                ))}
-                {(breakdown || []).length === 0 && (
-                  <div className="text-xs text-muted-foreground text-center py-6">
-                    Nenhuma empresa encontrada no Supabase.
+            ) : consolidado ? (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-success">
+                      A Receber — Consolidado
+                    </span>
+                    <span className="text-sm font-bold tabular-nums text-success">
+                      {fmt(consolidado.receber.total)}
+                    </span>
                   </div>
-                )}
+                  <TitulosLista itens={consolidado.receber.titulos} accent="text-success" />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-destructive">
+                      A Pagar — Consolidado
+                    </span>
+                    <span className="text-sm font-bold tabular-nums text-destructive">
+                      {fmt(consolidado.pagar.total)}
+                    </span>
+                  </div>
+                  <TitulosLista itens={consolidado.pagar.titulos} accent="text-destructive" />
+                </div>
               </div>
             ) : (
-              consolidado && (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-success">
-                        A Receber — Consolidado
-                      </span>
-                      <span className="text-sm font-bold tabular-nums text-success">
-                        {fmt(consolidado.receber.total)}
-                      </span>
-                    </div>
-                    <TitulosLista itens={consolidado.receber.titulos} accent="text-success" />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-destructive">
-                        A Pagar — Consolidado
-                      </span>
-                      <span className="text-sm font-bold tabular-nums text-destructive">
-                        {fmt(consolidado.pagar.total)}
-                      </span>
-                    </div>
-                    <TitulosLista itens={consolidado.pagar.titulos} accent="text-destructive" />
-                  </div>
-                </div>
-              )
+              <div className="text-xs text-muted-foreground text-center py-6">
+                Nenhum título no período selecionado.
+              </div>
             )}
           </div>
 
@@ -846,66 +843,6 @@ function SkeletonCard() {
       </div>
       <div className="h-2.5 w-20 rounded-full bg-muted/60 animate-pulse mb-2" />
       <div className="h-7 w-32 rounded-full bg-muted/60 animate-pulse" />
-    </div>
-  );
-}
-
-function EmpresaDetalheCard({
-  eb,
-  open,
-  onToggle,
-}: {
-  eb: EmpresaBreakdown;
-  open: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <div className="rounded-xl border border-border/50 bg-card/50 overflow-hidden transition-colors hover:border-brand/30">
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center gap-3 p-4 text-left"
-        aria-expanded={open}
-      >
-        <div className="h-9 w-9 rounded-lg bg-background/60 border border-border flex items-center justify-center text-[11px] font-bold text-brand shrink-0">
-          {(eb.empresa || "?").slice(0, 2)}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold truncate">{eb.empresa}</div>
-          <div className="text-[11px] text-muted-foreground">
-            {eb.receber.titulos.length} título(s) a receber · {eb.pagar.titulos.length} a pagar
-          </div>
-        </div>
-        <div className="text-right shrink-0 mr-2 space-y-0.5">
-          <div className="text-xs font-semibold tabular-nums text-success">+ {fmt(eb.receber.total)}</div>
-          <div className="text-xs font-semibold tabular-nums text-destructive">− {fmt(eb.pagar.total)}</div>
-        </div>
-        <ChevronDown
-          className={`h-4 w-4 text-muted-foreground transition-transform shrink-0 ${open ? "rotate-180" : ""}`}
-        />
-      </button>
-
-      {open && (
-        <div className="border-t border-border/50 p-4 grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-success">
-                A Receber
-              </span>
-              <span className="text-xs font-bold tabular-nums text-success">{fmt(eb.receber.total)}</span>
-            </div>
-            <TitulosLista itens={eb.receber.titulos} accent="text-success" />
-          </div>
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-destructive">
-                A Pagar
-              </span>
-              <span className="text-xs font-bold tabular-nums text-destructive">{fmt(eb.pagar.total)}</span>
-            </div>
-            <TitulosLista itens={eb.pagar.titulos} accent="text-destructive" />
-          </div>
-        </div>
-      )}
     </div>
   );
 }
