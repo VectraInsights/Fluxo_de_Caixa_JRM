@@ -279,10 +279,6 @@ async function buscarSaldosInterna(
   const contas: any[] = Array.isArray(j) ? j : j.itens || [];
 
   const tarefas = contas
-    .filter((c) => {
-      const n = removerAcentos(c.nome || "").toUpperCase();
-      return BANCOS_PERMITIDOS.some((b) => n.includes(b));
-    })
     .map(async (c) => {
       const r = await fetchComRetry(
         `https://api-v2.contaazul.com/v1/conta-financeira/${c.id}/saldo-atual`,
