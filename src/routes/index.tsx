@@ -201,7 +201,10 @@ function Dashboard() {
   }
 
 
-  const bancosPermitidos = ["ITAU", "SICOOB", "SICOOB 3109", "BRADESCO"];
+  const bancosPorEmpresa: Record<string, string[]> = {
+    "LGP Transportes": ["BRADESCO", "SICOOB 3109"],
+  };
+  const bancosPermitidos = bancosPorEmpresa[empresa] || ["ITAU", "SICOOB", "SICOOB 3109", "BRADESCO"];
   const bancosFiltrados = useMemo(() => {
     const bancos = data?.saldos_por_banco || [];
     const vistos = new Set<string>();
