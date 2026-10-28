@@ -83,15 +83,15 @@ function Dashboard() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [empresa, setEmpresa] = useState("todas");
-  const [intervalo, setIntervalo] = useState("7");
+  const [intervalo, setIntervalo] = useState("0"); // padrão: Hoje
 
   // Estados "ativos" — usados na query (só mudam ao clicar Recarregar ou trocar intervalo predefinido)
   const [dataInicio, setDataInicio] = useState(todayLocalISO(0));
-  const [dataFim, setDataFim] = useState(todayLocalISO(7));
+  const [dataFim, setDataFim] = useState(todayLocalISO(0));
 
   // Estados "pendentes" — vinculados aos inputs de data no modo personalizado
   const [pendingInicio, setPendingInicio] = useState(todayLocalISO(0));
-  const [pendingFim, setPendingFim] = useState(todayLocalISO(7));
+  const [pendingFim, setPendingFim] = useState(todayLocalISO(0));
 
     useEffect(() => {
     const saved = localStorage.getItem("theme");
