@@ -201,7 +201,7 @@ function Dashboard() {
   }
 
 
-  const bancosPermitidos = ["ITAU", "SICOOB", "BRADESCO"];
+  const bancosPermitidos = ["ITAU", "SICOOB", "SICOOB 3109", "BRADESCO"];
   const bancosFiltrados = useMemo(() => {
     const bancos = data?.saldos_por_banco || [];
     const vistos = new Set<string>();
