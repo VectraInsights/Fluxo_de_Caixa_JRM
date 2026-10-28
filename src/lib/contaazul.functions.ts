@@ -82,6 +82,15 @@ function dateRange(inicio: string, fim: string): string[] {
   return out;
 }
 
+async function resolverEmpresas(empresa: string): Promise<string[]> {
+  const sb = getSupabase();
+  if (empresa.toLowerCase() === "todas") {
+    const { data: rows } = await sb.from("tokens").select("empresa");
+    return (rows || []).map((r: any) => r.empresa as string);
+  }
+  return [empresa.trim()];
+}
+
 export const getDashboard = createServerFn({ method: "GET" })
   .validator((d) =>
     z
@@ -93,14 +102,7 @@ export const getDashboard = createServerFn({ method: "GET" })
       .parse(d),
   )
   .handler(async ({ data }): Promise<DashboardData> => {
-    const sb = getSupabase();
-    let empresas: string[];
-    if (data.empresa.toLowerCase() === "todas") {
-      const { data: rows } = await sb.from("tokens").select("empresa");
-      empresas = (rows || []).map((r: any) => r.empresa as string);
-    } else {
-      empresas = [data.empresa.trim()];
-    }
+    const empresas = await resolverEmpresas(data.empresa);
 
     const resultados = [];
     for (const emp of empresas) {
@@ -206,4 +208,63 @@ export const getDashboard = createServerFn({ method: "GET" })
         saldo_final: saldo.length ? saldo[saldo.length - 1] : Math.round(totalBanco * 100) / 100,
       },
     };
+  });
+
+// ------------------- Breakdown por empresa (a receber / a pagar) -------------------
+
+export type TituloDetalhe = {
+  data: string; // YYYY-MM-DD
+  valor: number;
+  metodo: string | null;
+  descricao: string | null;
+  terceiro: string | null; // cliente (receber) ou fornecedor (pagar)
+};
+
+export type EmpresaBreakdown = {
+  empresa: string;
+  receber: { total: number; titulos: TituloDetalhe[] };
+  pagar: { total: number; titulos: TituloDetalhe[] };
+};
+
+export const getEmpresaBreakdown = createServerFn({ method: "GET" })
+  .validator((d) =>
+    z
+      .object({
+        empresa: z.string(),
+        data_inicio: z.string(),
+        data_fim: z.string(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }): Promise<EmpresaBreakdown[]> => {
+    const empresas = await resolverEmpresas(data.empresa);
+
+    const montar = (itens: any[]): { total: number; titulos: TituloDetalhe[] } => {
+      const titulos: TituloDetalhe[] = itens
+        .map((i) => ({
+          data: i.data,
+          valor: i.valor,
+          metodo: i.metodo ?? null,
+          descricao: i.descricao ?? null,
+          terceiro: i.terceiro ?? null,
+        }))
+        .sort((a, b) => a.data.localeCompare(b.data));
+      const total = titulos.reduce((a, b) => a + b.valor, 0);
+      return { total: Math.round(total * 100) / 100, titulos };
+    };
+
+    const saida: EmpresaBreakdown[] = [];
+    for (const emp of empresas) {
+      const token = await obterToken(emp);
+      if (!token) {
+        saida.push({ empresa: emp, receber: { total: 0, titulos: [] }, pagar: { total: 0, titulos: [] } });
+        continue;
+      }
+      const [rec, desp] = await Promise.all([
+        buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar", data.data_inicio, data.data_fim),
+        buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar", data.data_inicio, data.data_fim),
+      ]);
+      saida.push({ empresa: emp, receber: montar(rec), pagar: montar(desp) });
+    }
+    return saida;
   });

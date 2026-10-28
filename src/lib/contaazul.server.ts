@@ -376,6 +376,48 @@ function extrairMetodo(j: any): string | null {
   return null;
 }
 
+// Extrai nome de cliente/fornecedor (varias estruturas possíveis da API)
+function extrairTerceiro(j: any): string | null {
+  if (!j) return null;
+  const candidatos = [
+    j.cliente,
+    j.cliente_nome,
+    j.nome_cliente,
+    j.fornecedor,
+    j.fornecedor_nome,
+    j.nome_fornecedor,
+    j.terceiro,
+    j.pessoa,
+    j.nome_pessoa,
+    j.contato,
+  ];
+  for (const c of candidatos) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+    if (c && typeof c === "object") {
+      const nome = c.nome || c.nome_razao || c.razao_social || c.name;
+      if (typeof nome === "string" && nome.trim()) return nome.trim();
+    }
+  }
+  return null;
+}
+
+// Extrai descrição/histórico do título
+function extrairDescricao(j: any): string | null {
+  if (!j) return null;
+  const campos = [
+    j.descricao,
+    j.descricao_titulo,
+    j.historico,
+    j.historico_movimentacao,
+    j.nome,
+    j.titulo,
+  ];
+  for (const c of campos) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+  }
+  return null;
+}
+
 async function buscarDetalheFormaPagamento(
   empresa: string,
   endpoint: string,
@@ -587,12 +629,27 @@ export async function buscarV2(
   const tokenInicial = await obterToken(empresa);
   if (!tokenInicial) {
     log("warn", `buscarV2 sem token: ${empresa}`);
-    return [] as { data: string; valor: number; metodo: string | null; conta_id?: string }[];
+    return [] as {
+      data: string;
+      valor: number;
+      metodo: string | null;
+      conta_id?: string;
+      descricao?: string | null;
+      terceiro?: string | null;
+    }[];
   }
   const tokenRef = { token: tokenInicial };
 
   let teveErroGeral = false;
-  const brutos: { id: string; data: string; valor: number; metodo: string | null; conta_id?: string }[] = [];
+  const brutos: {
+    id: string;
+    data: string;
+    valor: number;
+    metodo: string | null;
+    conta_id?: string;
+    descricao?: string | null;
+    terceiro?: string | null;
+  }[] = [];
   let pagina = 1;
   let tentativasReauth = 0;
   const ehReceber = endpoint.includes("contas-a-receber");
@@ -638,7 +695,9 @@ export async function buscarV2(
           data: dv, 
           valor: aberto,
           metodo: metodoInicial,
-          conta_id: i.conta_financeira_id || i.conta_id || undefined
+          conta_id: i.conta_financeira_id || i.conta_id || undefined,
+          descricao: extrairDescricao(i),
+          terceiro: extrairTerceiro(i),
         });
       }
     }
@@ -648,7 +707,14 @@ export async function buscarV2(
   }
 
   if (!ehReceber) {
-    const resultado = brutos.map((b) => ({ data: b.data, valor: b.valor, metodo: null, conta_id: b.conta_id }));
+    const resultado = brutos.map((b) => ({
+      data: b.data,
+      valor: b.valor,
+      metodo: null,
+      conta_id: b.conta_id,
+      descricao: b.descricao ?? null,
+      terceiro: b.terceiro ?? null,
+    }));
     if (!teveErroGeral) {
       listCache.set(cacheKey, { data: resultado, exp: Date.now() + LIST_TTL_MS });
     } else {
@@ -666,7 +732,14 @@ export async function buscarV2(
 
   // Depois, para items sem método, tenta buscar detalhes individuais
   const CONCORRENCIA = 4;
-  const resultado: { data: string; valor: number; metodo: string | null; conta_id?: string }[] = new Array(brutos.length);
+  const resultado: {
+    data: string;
+    valor: number;
+    metodo: string | null;
+    conta_id?: string;
+    descricao?: string | null;
+    terceiro?: string | null;
+  }[] = new Array(brutos.length);
   let idx = 0;
   let boletos = 0;
   let comMetodo = 0;
@@ -700,7 +773,14 @@ export async function buscarV2(
       } else if (!metodo) {
         log("warn", `${empresa} SEM MÉTODO: item ${String(b.id).slice(0, 8)} data=${b.data} valor=${b.valor}`);
       }
-      resultado[meu] = { data: b.data, valor: b.valor, metodo, conta_id: b.conta_id };
+      resultado[meu] = {
+        data: b.data,
+        valor: b.valor,
+        metodo,
+        conta_id: b.conta_id,
+        descricao: b.descricao ?? null,
+        terceiro: b.terceiro ?? null,
+      };
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCORRENCIA, brutos.length) }, worker));

@@ -28,11 +28,15 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Barcode,
+  ChevronDown,
 } from "lucide-react";
 import {
   listarEmpresas,
   getDashboard,
   limparCache,
+  getEmpresaBreakdown,
+  type EmpresaBreakdown,
+  type TituloDetalhe,
 } from "@/lib/contaazul.functions";
 import { useQueryClient } from "@tanstack/react-query";
 // using public SVG logo
@@ -84,6 +88,10 @@ function Dashboard() {
   const [pendingInicio, setPendingInicio] = useState(todayLocalISO(0));
   const [pendingFim, setPendingFim] = useState(todayLocalISO(7));
 
+  // Estado de expansão dos cards por empresa + modo de visualização do detalhamento
+  const [empresaAberta, setEmpresaAberta] = useState<string | null>(null);
+  const [modoBreakdown, setModoBreakdown] = useState<"empresas" | "consolidado">("empresas");
+
     useEffect(() => {
     const saved = localStorage.getItem("theme");
     if (saved === "light") setTheme("light");
@@ -117,6 +125,7 @@ function Dashboard() {
   const listarEmpresasFn = useServerFn(listarEmpresas);
   const getDashboardFn = useServerFn(getDashboard);
   const limparCacheFn = useServerFn(limparCache);
+  const getEmpresaBreakdownFn = useServerFn(getEmpresaBreakdown);
   const queryClient = useQueryClient();
 
   const { data: empresas = [], refetch: refetchEmpresas } = useQuery({
@@ -139,6 +148,18 @@ function Dashboard() {
   } = useQuery({
     queryKey: ["dashboard", empresa, dataInicio, dataFim],
     queryFn: () => getDashboardFn({ data: { empresa, data_inicio: dataInicio, data_fim: dataFim } }),
+    enabled: !!dataInicio && !!dataFim,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+
+  const { data: breakdown } = useQuery({
+    queryKey: ["breakdown", empresa, dataInicio, dataFim],
+    queryFn: () =>
+      getEmpresaBreakdownFn({ data: { empresa, data_inicio: dataInicio, data_fim: dataFim } }),
     enabled: !!dataInicio && !!dataFim,
     staleTime: Infinity,
     gcTime: Infinity,
@@ -199,6 +220,24 @@ function Dashboard() {
       saldo: data.saldo[i],
     }));
   }, [data]);
+
+  // Todos os títulos de todas as empresas do filtro atual, consolidados numa lista só
+  const consolidado = useMemo(() => {
+    if (!breakdown?.length) return null;
+    const round = (n: number) => Math.round(n * 100) / 100;
+    const receber: (TituloDetalhe & { empresa: string })[] = [];
+    const pagar: (TituloDetalhe & { empresa: string })[] = [];
+    for (const eb of breakdown) {
+      for (const t of eb.receber.titulos) receber.push({ ...t, empresa: eb.empresa });
+      for (const t of eb.pagar.titulos) pagar.push({ ...t, empresa: eb.empresa });
+    }
+    receber.sort((a, b) => a.data.localeCompare(b.data));
+    pagar.sort((a, b) => a.data.localeCompare(b.data));
+    return {
+      receber: { total: round(receber.reduce((a, b) => a + b.valor, 0)), titulos: receber },
+      pagar: { total: round(pagar.reduce((a, b) => a + b.valor, 0)), titulos: pagar },
+    };
+  }, [breakdown]);
 
 
 
@@ -538,6 +577,92 @@ function Dashboard() {
             </div>
           </div>
 
+          {/* Detalhamento: a receber / a pagar por empresa ou consolidado */}
+          <div className="mt-6 rounded-2xl border border-border bg-card/60 backdrop-blur-xl p-6 shadow-xl">
+            <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
+              <div>
+                <h2 className="font-display text-lg font-semibold">A Receber e A Pagar</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {empresa === "todas"
+                    ? "Todas as empresas do período selecionado"
+                    : `Empresa selecionada: ${empresa}`}
+                </p>
+              </div>
+              <div className="flex items-center gap-1 rounded-full border border-border bg-background/50 p-1">
+                <button
+                  onClick={() => setModoBreakdown("empresas")}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    modoBreakdown === "empresas"
+                      ? "bg-brand text-background"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Por empresa
+                </button>
+                <button
+                  onClick={() => setModoBreakdown("consolidado")}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    modoBreakdown === "consolidado"
+                      ? "bg-brand text-background"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Todas juntas
+                </button>
+              </div>
+            </div>
+
+            {!breakdown ? (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <SkeletonCard />
+                <SkeletonCard />
+              </div>
+            ) : modoBreakdown === "empresas" ? (
+              <div className="space-y-3">
+                {(breakdown || []).map((eb) => (
+                  <EmpresaDetalheCard
+                    key={eb.empresa}
+                    eb={eb}
+                    open={empresaAberta === eb.empresa}
+                    onToggle={() => setEmpresaAberta((p) => (p === eb.empresa ? null : eb.empresa))}
+                  />
+                ))}
+                {(breakdown || []).length === 0 && (
+                  <div className="text-xs text-muted-foreground text-center py-6">
+                    Nenhuma empresa encontrada no Supabase.
+                  </div>
+                )}
+              </div>
+            ) : (
+              consolidado && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-success">
+                        A Receber — Consolidado
+                      </span>
+                      <span className="text-sm font-bold tabular-nums text-success">
+                        {fmt(consolidado.receber.total)}
+                      </span>
+                    </div>
+                    <TitulosLista itens={consolidado.receber.titulos} accent="text-success" />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-destructive">
+                        A Pagar — Consolidado
+                      </span>
+                      <span className="text-sm font-bold tabular-nums text-destructive">
+                        {fmt(consolidado.pagar.total)}
+                      </span>
+                    </div>
+                    <TitulosLista itens={consolidado.pagar.titulos} accent="text-destructive" />
+                  </div>
+                </div>
+              )
+            )}
+          </div>
+
           {/* Alerta de empresas com erro */}
           {empresas.some((e) => e.status === "ERRO") && (
             <div className="mt-6 flex items-start gap-3 rounded-xl border border-warning/30 bg-warning/10 p-4">
@@ -721,6 +846,122 @@ function SkeletonCard() {
       </div>
       <div className="h-2.5 w-20 rounded-full bg-muted/60 animate-pulse mb-2" />
       <div className="h-7 w-32 rounded-full bg-muted/60 animate-pulse" />
+    </div>
+  );
+}
+
+function EmpresaDetalheCard({
+  eb,
+  open,
+  onToggle,
+}: {
+  eb: EmpresaBreakdown;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="rounded-xl border border-border/50 bg-card/50 overflow-hidden transition-colors hover:border-brand/30">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-3 p-4 text-left"
+        aria-expanded={open}
+      >
+        <div className="h-9 w-9 rounded-lg bg-background/60 border border-border flex items-center justify-center text-[11px] font-bold text-brand shrink-0">
+          {(eb.empresa || "?").slice(0, 2)}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold truncate">{eb.empresa}</div>
+          <div className="text-[11px] text-muted-foreground">
+            {eb.receber.titulos.length} título(s) a receber · {eb.pagar.titulos.length} a pagar
+          </div>
+        </div>
+        <div className="text-right shrink-0 mr-2 space-y-0.5">
+          <div className="text-xs font-semibold tabular-nums text-success">+ {fmt(eb.receber.total)}</div>
+          <div className="text-xs font-semibold tabular-nums text-destructive">− {fmt(eb.pagar.total)}</div>
+        </div>
+        <ChevronDown
+          className={`h-4 w-4 text-muted-foreground transition-transform shrink-0 ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+
+      {open && (
+        <div className="border-t border-border/50 p-4 grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-success">
+                A Receber
+              </span>
+              <span className="text-xs font-bold tabular-nums text-success">{fmt(eb.receber.total)}</span>
+            </div>
+            <TitulosLista itens={eb.receber.titulos} accent="text-success" />
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-destructive">
+                A Pagar
+              </span>
+              <span className="text-xs font-bold tabular-nums text-destructive">{fmt(eb.pagar.total)}</span>
+            </div>
+            <TitulosLista itens={eb.pagar.titulos} accent="text-destructive" />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TitulosLista({
+  itens,
+  accent,
+}: {
+  itens: (TituloDetalhe & { empresa?: string })[];
+  accent: string;
+}) {
+  if (!itens.length) {
+    return <div className="text-xs text-muted-foreground py-2">Sem títulos no período</div>;
+  }
+  return (
+    <div className="max-h-[280px] overflow-y-auto space-y-1 pr-1">
+      {itens.map((t, idx) => {
+        const boleto = (t.metodo || "").toUpperCase().includes("BOLETO");
+        const [, mes, dia] = t.data.split("-");
+        const principal = t.descricao || t.terceiro;
+        const secundario = t.descricao && t.terceiro ? t.terceiro : null;
+        return (
+          <div
+            key={`${t.empresa ?? ""}-${t.data}-${idx}`}
+            className="flex items-center gap-2 rounded-lg border border-border/40 bg-background/40 px-3 py-2"
+          >
+            <span className="text-[11px] text-muted-foreground tabular-nums shrink-0 w-10">
+              {dia}/{mes}
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs truncate" title={principal || undefined}>
+                {principal || "—"}
+              </div>
+              {secundario && (
+                <div className="text-[10px] text-muted-foreground truncate">{secundario}</div>
+              )}
+            </div>
+            {t.empresa && (
+              <span
+                className="rounded-full border border-border/60 bg-background/60 px-1.5 py-0.5 text-[9px] font-semibold text-muted-foreground shrink-0 max-w-[110px] truncate"
+                title={t.empresa}
+              >
+                {t.empresa}
+              </span>
+            )}
+            {boleto && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-brand-2/30 bg-brand-2/10 px-1.5 py-0.5 text-[9px] font-semibold text-brand-2 shrink-0">
+                <Barcode className="h-2.5 w-2.5" /> Boleto
+              </span>
+            )}
+            <span className={`text-xs font-semibold tabular-nums shrink-0 ${accent}`}>
+              {fmt(t.valor)}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
