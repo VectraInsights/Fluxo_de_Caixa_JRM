@@ -104,30 +104,29 @@ export const getDashboard = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<DashboardData> => {
     const empresas = await resolverEmpresas(data.empresa);
 
-    const resultados = [];
-    for (const emp of empresas) {
-      const token = await obterToken(emp);
-      if (!token) {
-        resultados.push({ bancos: [], rec: [], desp: [] });
-        continue;
-      }
-      const [bancos, rec, desp] = await Promise.all([
-        buscarSaldos(emp, token),
-        buscarV2(
-          emp,
-          "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar",
-          data.data_inicio,
-          data.data_fim,
-        ),
-        buscarV2(
-          emp,
-          "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar",
-          data.data_inicio,
-          data.data_fim,
-        ),
-      ]);
-      resultados.push({ bancos, rec, desp });
-    }
+    // Empresas em paralelo (tokens e chamadas à API são independentes)
+    const resultados = await Promise.all(
+      empresas.map(async (emp) => {
+        const token = await obterToken(emp);
+        if (!token) return { bancos: [], rec: [], desp: [] };
+        const [bancos, rec, desp] = await Promise.all([
+          buscarSaldos(emp, token),
+          buscarV2(
+            emp,
+            "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar",
+            data.data_inicio,
+            data.data_fim,
+          ),
+          buscarV2(
+            emp,
+            "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar",
+            data.data_inicio,
+            data.data_fim,
+          ),
+        ]);
+        return { bancos, rec, desp };
+      }),
+    );
 
     const mapaBancos = new Map<string, { nome: string; saldo: number }>();
     const mapaContaBanco = new Map<string, string>(); // conta_id -> banco_nome
@@ -253,18 +252,18 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
       return { total: Math.round(total * 100) / 100, titulos };
     };
 
-    const saida: EmpresaBreakdown[] = [];
-    for (const emp of empresas) {
-      const token = await obterToken(emp);
-      if (!token) {
-        saida.push({ empresa: emp, receber: { total: 0, titulos: [] }, pagar: { total: 0, titulos: [] } });
-        continue;
-      }
-      const [rec, desp] = await Promise.all([
-        buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar", data.data_inicio, data.data_fim),
-        buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar", data.data_inicio, data.data_fim),
-      ]);
-      saida.push({ empresa: emp, receber: montar(rec), pagar: montar(desp) });
-    }
-    return saida;
+    // Empresas em paralelo — compartilha as mesmas requisições com o getDashboard
+    return await Promise.all(
+      empresas.map(async (emp): Promise<EmpresaBreakdown> => {
+        const token = await obterToken(emp);
+        if (!token) {
+          return { empresa: emp, receber: { total: 0, titulos: [] }, pagar: { total: 0, titulos: [] } };
+        }
+        const [rec, desp] = await Promise.all([
+          buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar", data.data_inicio, data.data_fim),
+          buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar", data.data_inicio, data.data_fim),
+        ]);
+        return { empresa: emp, receber: montar(rec), pagar: montar(desp) };
+      }),
+    );
   });

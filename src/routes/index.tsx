@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import {
   ComposedChart,
   Bar,
@@ -152,6 +152,7 @@ function Dashboard() {
     enabled: !!dataInicio && !!dataFim,
     staleTime: Infinity,
     gcTime: Infinity,
+    placeholderData: keepPreviousData,
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -164,6 +165,7 @@ function Dashboard() {
     enabled: !!dataInicio && !!dataFim,
     staleTime: Infinity,
     gcTime: Infinity,
+    placeholderData: keepPreviousData,
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -261,7 +263,8 @@ function Dashboard() {
         <div className="absolute top-1/2 -left-40 h-[400px] w-[400px] rounded-full bg-brand-2/15 blur-[120px]" />
       </div>
 
-      {isFetching && (
+      {/* Overlay de carregamento apenas na primeira busca (sem dados ainda) */}
+      {isFetching && !data && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-background/60 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-3">
             <Loader2 className="h-10 w-10 animate-spin text-brand" />

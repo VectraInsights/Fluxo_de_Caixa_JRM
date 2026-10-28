@@ -47,14 +47,50 @@ export function limparLogs() {
 }
 
 // ------------------- Caches do Dashboard --------------------
-const detalheCache = new Map<string, { metodo: string | null; exp: number }>();
+// O cache guarda a PROMESSA em andamento (não só o resultado): chamadas
+// concorrentes (ex.: getDashboard + getEmpresaBreakdown) compartilham a
+// MESMA requisição à API da Conta Azul em vez de duplicar as chamadas.
+type ItemLancamento = {
+  data: string;
+  valor: number;
+  metodo: string | null;
+  conta_id?: string;
+  descricao?: string | null;
+  terceiro?: string | null;
+};
+
+type EntradaCache<T> = { promessa: Promise<T>; exp: number };
+
+const detalheCache = new Map<string, EntradaCache<{ metodo: string | null; erro: boolean }>>();
 const DETALHE_TTL_MS = 5 * 60 * 1000;
 
-const listCache = new Map<string, { data: any; exp: number }>();
+const listCache = new Map<string, EntradaCache<{ dados: ItemLancamento[]; ok: boolean }>>();
 const LIST_TTL_MS = 2 * 60 * 1000; // 2 minutos de cache para listas
 
-const saldoCache = new Map<string, { data: any; exp: number }>();
+const saldoCache = new Map<string, EntradaCache<{ lista: { nome: string; saldo: number }[]; ok: boolean }>>();
 const SALDO_TTL_MS = 2 * 60 * 1000; // 2 minutos de cache para saldos
+
+// Lê o cache ou dispara a criação; chamadas concorrentes recebem a MESMA promise.
+// Resultados marcados como não utilizáveis (ok=false / erro=true) são removidos.
+function lerOuCriar<T>(
+  cache: Map<string, EntradaCache<T>>,
+  key: string,
+  ttlMs: number,
+  criar: () => Promise<T>,
+  manter: (r: T) => boolean,
+): Promise<T> {
+  const agora = Date.now();
+  const atual = cache.get(key);
+  if (atual && atual.exp > agora) return atual.promessa;
+  const promessa = criar();
+  cache.set(key, { promessa, exp: agora + ttlMs });
+  promessa
+    .then((r) => {
+      if (!manter(r)) cache.delete(key);
+    })
+    .catch(() => cache.delete(key));
+  return promessa;
+}
 
 export function limparCacheDetalhes() {
   detalheCache.clear();
@@ -207,13 +243,20 @@ const BANCOS_PERMITIDOS = [
 ];
 
 export async function buscarSaldos(empresa: string, tokenInicial: string) {
-  const cacheKey = empresa;
-  const cached = saldoCache.get(cacheKey);
-  if (cached && cached.exp > Date.now()) {
-    log("info", `buscarSaldos cache HIT: ${cacheKey}`);
-    return cached.data;
-  }
+  const r = await lerOuCriar(
+    saldoCache,
+    empresa,
+    SALDO_TTL_MS,
+    () => buscarSaldosInterna(empresa, tokenInicial),
+    (x) => x.ok,
+  );
+  return r.lista;
+}
 
+async function buscarSaldosInterna(
+  empresa: string,
+  tokenInicial: string,
+): Promise<{ lista: { nome: string; saldo: number }[]; ok: boolean }> {
   let token = tokenInicial;
   const lista: { nome: string; saldo: number }[] = [];
   let res = await fetchComRetry("https://api-v2.contaazul.com/v1/conta-financeira", {
@@ -221,7 +264,7 @@ export async function buscarSaldos(empresa: string, tokenInicial: string) {
   });
   if (res.status === 401) {
     const novo = await renovarToken(empresa);
-    if (!novo) return lista;
+    if (!novo) return { lista, ok: false };
     token = novo;
     res = await fetchComRetry("https://api-v2.contaazul.com/v1/conta-financeira", {
       headers: { Authorization: `Bearer ${token}` },
@@ -229,7 +272,7 @@ export async function buscarSaldos(empresa: string, tokenInicial: string) {
   }
   if (!res.ok) {
     log("warn", `buscarSaldos ${empresa} status=${res.status}`);
-    return lista;
+    return { lista, ok: false };
   }
   const j: any = await res.json();
   const contas: any[] = Array.isArray(j) ? j : j.itens || [];
@@ -254,8 +297,7 @@ export async function buscarSaldos(empresa: string, tokenInicial: string) {
   const resps = await Promise.all(tarefas);
   for (const r of resps) if (r) lista.push(r);
 
-  saldoCache.set(cacheKey, { data: lista, exp: Date.now() + SALDO_TTL_MS });
-  return lista;
+  return { lista, ok: true };
 }
 
 function extrairMetodo(j: any): string | null {
@@ -425,9 +467,23 @@ async function buscarDetalheFormaPagamento(
   tokenRef: { token: string },
 ): Promise<{ metodo: string | null; erro: boolean }> {
   const cacheKey = `${empresa}:${id}`;
-  const cached = detalheCache.get(cacheKey);
-  if (cached && cached.exp > Date.now()) return { metodo: cached.metodo, erro: false };
+  // Compartilha requisições concorrentes pelo mesmo título e só mantém no
+  // cache quando não houve erro de requisição (evita cacheiar null permanentemente)
+  return lerOuCriar(
+    detalheCache,
+    cacheKey,
+    DETALHE_TTL_MS,
+    () => buscarDetalheInterna(empresa, endpoint, id, tokenRef),
+    (r) => !r.erro,
+  );
+}
 
+async function buscarDetalheInterna(
+  empresa: string,
+  endpoint: string,
+  id: string,
+  tokenRef: { token: string },
+): Promise<{ metodo: string | null; erro: boolean }> {
   let metodo: string | null = null;
   let teveErro = false;
 
@@ -452,11 +508,6 @@ async function buscarDetalheFormaPagamento(
     log("warn", `detalhe ${empresa} id=${id} - erro na requisição, NÃO CACHEAR`);
   } else {
     log("warn", `detalhe ${empresa} id=${id} - metodo NOT FOUND`);
-  }
-  
-  // Só põe no cache se NÃO deu erro de requisição (evita salvar null permanente para falhas transitórias/429)
-  if (!teveErro) {
-    detalheCache.set(cacheKey, { metodo, exp: Date.now() + DETALHE_TTL_MS });
   }
 
   return { metodo, erro: teveErro };
@@ -618,25 +669,28 @@ export async function buscarV2(
   endpoint: string,
   dataInicio: string,
   dataFim: string,
-) {
+): Promise<ItemLancamento[]> {
   const cacheKey = `${empresa}:${endpoint}:${dataInicio}:${dataFim}`;
-  const cached = listCache.get(cacheKey);
-  if (cached && cached.exp > Date.now()) {
-    log("info", `buscarV2 cache HIT: ${cacheKey}`);
-    return cached.data;
-  }
+  const r = await lerOuCriar(
+    listCache,
+    cacheKey,
+    LIST_TTL_MS,
+    () => buscarV2Interna(empresa, endpoint, dataInicio, dataFim),
+    (x) => x.ok,
+  );
+  return r.dados;
+}
 
+async function buscarV2Interna(
+  empresa: string,
+  endpoint: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
   const tokenInicial = await obterToken(empresa);
   if (!tokenInicial) {
     log("warn", `buscarV2 sem token: ${empresa}`);
-    return [] as {
-      data: string;
-      valor: number;
-      metodo: string | null;
-      conta_id?: string;
-      descricao?: string | null;
-      terceiro?: string | null;
-    }[];
+    return { dados: [], ok: false };
   }
   const tokenRef = { token: tokenInicial };
 
@@ -707,7 +761,7 @@ export async function buscarV2(
   }
 
   if (!ehReceber) {
-    const resultado = brutos.map((b) => ({
+    const resultado: ItemLancamento[] = brutos.map((b) => ({
       data: b.data,
       valor: b.valor,
       metodo: null,
@@ -715,12 +769,10 @@ export async function buscarV2(
       descricao: b.descricao ?? null,
       terceiro: b.terceiro ?? null,
     }));
-    if (!teveErroGeral) {
-      listCache.set(cacheKey, { data: resultado, exp: Date.now() + LIST_TTL_MS });
-    } else {
-      log("warn", `buscarV2 finalizou com erros para ${empresa} (pagar). Dados retornados sem cache.`);
+    if (teveErroGeral) {
+      log("warn", `buscarV2 finalizou com erros para ${empresa} (pagar). Dados não cacheados.`);
     }
-    return resultado;
+    return { dados: resultado, ok: !teveErroGeral };
   }
 
   // Para contas a receber, primeiro tenta buscar métodos via lista de contas-a-receber
@@ -790,11 +842,9 @@ export async function buscarV2(
   );
 
   if (teveErroGeral) {
-    log("warn", `buscarV2 finalizou com erros para ${empresa} (receber). Dados retornados sem cache.`);
-  } else {
-    listCache.set(cacheKey, { data: resultado, exp: Date.now() + LIST_TTL_MS });
+    log("warn", `buscarV2 finalizou com erros para ${empresa} (receber). Dados não cacheados.`);
   }
-  return resultado;
+  return { dados: resultado, ok: !teveErroGeral };
 }
 
 // Inspeciona o detalhe de N itens — usado pelo painel de debug pra ver o JSON cru.
