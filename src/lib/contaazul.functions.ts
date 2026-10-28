@@ -42,7 +42,7 @@ export const limparCache = createServerFn({ method: "POST" }).handler(async () =
 });
 
 export const inspecionarRecebimentos = createServerFn({ method: "GET" })
-  .inputValidator((d) =>
+  .validator((d) =>
     z
       .object({
         empresa: z.string(),
@@ -83,7 +83,7 @@ function dateRange(inicio: string, fim: string): string[] {
 }
 
 export const getDashboard = createServerFn({ method: "GET" })
-  .inputValidator((d) =>
+  .validator((d) =>
     z
       .object({
         empresa: z.string(),
