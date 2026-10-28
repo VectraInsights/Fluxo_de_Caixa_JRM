@@ -202,19 +202,23 @@ function Dashboard() {
 
 
   const bancosPorEmpresa: Record<string, string[]> = {
-    // LGP Transportes: apenas esses 4 bancos, nenhum outro
-    "LGP Transportes": ["ITAU", "SICOOB 3049", "BRADESCO", "SICOOB 3109"],
+    // LGP Transportes: array vazio = mostra TODOS os bancos que a API retornar
+    "LGP Transportes": [],
   };
   const bancosPermitidos = bancosPorEmpresa[empresa] || ["ITAU", "SICOOB", "SICOOB 3109", "BRADESCO"];
-  const mostrarTodos = false;
+  const mostrarTodos = bancosPorEmpresa.hasOwnProperty(empresa) && bancosPermitidos.length === 0;
   const bancosFiltrados = useMemo(() => {
     const bancos = data?.saldos_por_banco || [];
     const vistos = new Set<string>();
     return bancos
       .filter((b) => {
         const nu = (b.nome || "").toUpperCase();
-        const ok = bancosPermitidos.some((p) => nu.includes(p));
-        if (!ok || vistos.has(nu) || Math.abs(b.saldo) < 0.01) return false;
+        if (!mostrarTodos) {
+          const ok = bancosPermitidos.some((p) => nu.includes(p));
+          if (!ok || vistos.has(nu) || Math.abs(b.saldo) < 0.01) return false;
+        } else if (vistos.has(nu) || Math.abs(b.saldo) < 0.01) {
+          return false;
+        }
         vistos.add(nu);
         return true;
       })
