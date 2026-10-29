@@ -264,6 +264,9 @@ function Dashboard() {
 
 
 
+  const temProblema =
+    (data?.avisos?.length ?? 0) > 0 || empresas.some((e) => e.status === "ERRO");
+
   return (
     <div className="min-h-screen w-full bg-background text-foreground font-sans relative overflow-hidden">
       {/* Background ambient glow */}
@@ -433,7 +436,11 @@ function Dashboard() {
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span
                   className={`inline-flex h-2 w-2 rounded-full shrink-0 ${
-                    isError ? "bg-destructive" : isFetching ? "bg-brand animate-pulse" : "bg-success"
+                    isError || temProblema
+                      ? "bg-destructive"
+                      : isFetching
+                      ? "bg-brand animate-pulse"
+                      : "bg-success"
                   }`}
                 />
                 <span className="tabular-nums">
@@ -441,6 +448,8 @@ function Dashboard() {
                     ? `Erro: ${String((error as any)?.message || error).slice(0, 120)}`
                     : isFetching
                     ? "Sincronizando com a Conta Azul..."
+                    : temProblema
+                    ? "⚠ Falha na sincronização"
                     : `Última sincronização: ${
                         dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString("pt-BR") : "—"
                       }`}
@@ -464,6 +473,37 @@ function Dashboard() {
               </button>
             </div>
           </div>
+
+          {/* Alerta de problemas de sincronização */}
+          {temProblema && !isFetching && (
+            <div className="mb-5 rounded-xl border border-destructive/30 bg-destructive/10 p-4">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+                <div className="text-sm">
+                  <div className="font-semibold mb-1">Falha na sincronização com a Conta Azul</div>
+                  <div className="text-muted-foreground">
+                    Os valores abaixo podem estar zerados ou incompletos porque não foi possível
+                    obter os dados dessas empresas:
+                  </div>
+                  {(data?.avisos?.length ?? 0) > 0 && (
+                    <ul className="mt-2 space-y-1 text-muted-foreground">
+                      {data!.avisos.map((a, i) => (
+                        <li key={i} className="flex items-start gap-2">
+                          <span className="text-destructive shrink-0">•</span>
+                          <span>{a}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <div className="mt-2 text-muted-foreground">
+                    <span className="font-medium">Como resolver:</span> se a mensagem indicar token
+                    inválido ou expirado, será necessário reconectar a empresa na Conta Azul (o
+                    fluxo de reconexão ainda não está disponível na interface).
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* KPI cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-5">

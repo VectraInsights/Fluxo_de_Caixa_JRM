@@ -50,7 +50,7 @@ export function limparLogs() {
 // O cache guarda a PROMESSA em andamento (não só o resultado): chamadas
 // concorrentes (ex.: getDashboard + getEmpresaBreakdown) compartilham a
 // MESMA requisição à API da Conta Azul em vez de duplicar as chamadas.
-type ItemLancamento = {
+export type ItemLancamento = {
   data: string;
   valor: number;
   metodo: string | null;
@@ -243,7 +243,10 @@ const BANCOS_PERMITIDOS = [
   "INTER",
 ];
 
-export async function buscarSaldos(empresa: string, tokenInicial: string) {
+export async function buscarSaldos(
+  empresa: string,
+  tokenInicial: string,
+): Promise<{ lista: { nome: string; saldo: number }[]; ok: boolean }> {
   const r = await lerOuCriar(
     saldoCache,
     empresa,
@@ -251,7 +254,7 @@ export async function buscarSaldos(empresa: string, tokenInicial: string) {
     () => buscarSaldosInterna(empresa, tokenInicial),
     (x) => x.ok,
   );
-  return r.lista;
+  return { lista: r.lista, ok: r.ok };
 }
 
 async function buscarSaldosInterna(
@@ -666,7 +669,7 @@ export async function buscarV2(
   endpoint: string,
   dataInicio: string,
   dataFim: string,
-): Promise<ItemLancamento[]> {
+): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
   const cacheKey = `${empresa}:${endpoint}:${dataInicio}:${dataFim}`;
   const r = await lerOuCriar(
     listCache,
@@ -675,7 +678,7 @@ export async function buscarV2(
     () => buscarV2Interna(empresa, endpoint, dataInicio, dataFim),
     (x) => x.ok,
   );
-  return r.dados;
+  return { dados: r.dados, ok: r.ok };
 }
 
 async function buscarV2Interna(

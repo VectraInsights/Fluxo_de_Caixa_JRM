@@ -69,6 +69,7 @@ export type DashboardData = {
     total_rec_boleto: number;
     saldo_final: number;
   };
+  avisos: string[];
 };
 
 function dateRange(inicio: string, fim: string): string[] {
@@ -103,13 +104,19 @@ export const getDashboard = createServerFn({ method: "GET" })
   )
   .handler(async ({ data }): Promise<DashboardData> => {
     const empresas = await resolverEmpresas(data.empresa);
+    const avisos: string[] = [];
 
     // Empresas em paralelo (tokens e chamadas à API são independentes)
     const resultados = await Promise.all(
       empresas.map(async (emp) => {
         const token = await obterToken(emp);
-        if (!token) return { bancos: [], rec: [], desp: [] };
-        const [bancos, rec, desp] = await Promise.all([
+        if (!token) {
+          avisos.push(
+            `${emp}: sem token válido — reconecte a empresa na Conta Azul.`,
+          );
+          return { empresa: emp, bancos: [], rec: [], desp: [] };
+        }
+        const [sal, rec, desp] = await Promise.all([
           buscarSaldos(emp, token),
           buscarV2(
             emp,
@@ -124,7 +131,16 @@ export const getDashboard = createServerFn({ method: "GET" })
             data.data_fim,
           ),
         ]);
-        return { bancos, rec, desp };
+        if (!sal.ok) {
+          avisos.push(`${emp}: falha ao buscar saldos bancários.`);
+        }
+        if (!rec.ok) {
+          avisos.push(`${emp}: falha ao buscar contas a receber.`);
+        }
+        if (!desp.ok) {
+          avisos.push(`${emp}: falha ao buscar contas a pagar.`);
+        }
+        return { empresa: emp, bancos: sal.lista, rec: rec.dados, desp: desp.dados };
       }),
     );
 
@@ -206,6 +222,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         total_rec_boleto: Math.round(total_rec_boleto * 100) / 100,
         saldo_final: saldo.length ? saldo[saldo.length - 1] : Math.round(totalBanco * 100) / 100,
       },
+      avisos,
     };
   });
 
@@ -263,7 +280,7 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
           buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar", data.data_inicio, data.data_fim),
           buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar", data.data_inicio, data.data_fim),
         ]);
-        return { empresa: emp, receber: montar(rec), pagar: montar(desp) };
+        return { empresa: emp, receber: montar(rec.dados), pagar: montar(desp.dados) };
       }),
     );
   });
