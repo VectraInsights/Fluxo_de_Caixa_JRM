@@ -311,30 +311,64 @@ export async function buscarSaldos(
   return { lista: r.lista, ok: r.ok, todas: r.todas };
 }
 
+// Lista TODAS as contas financeiras da empresa, paginando. A API da Conta Azul
+// usa tamanho_pagina=10 POR PADRAO em /v1/conta-financeira — sem este loop, só
+// as 10 primeiras contas chegavam ao dashboard e as demais sumiam silenciosamente.
+async function listarContasFinanceiras(
+  empresa: string,
+  tokenInicial: string,
+): Promise<{ ok: boolean; contas: any[]; token: string }> {
+  let token = tokenInicial;
+  const contas: any[] = [];
+  let pagina = 1;
+  let totais = Number.POSITIVE_INFINITY;
+  let jaRenovou = false;
+  let algumaPaginaOk = false;
+
+  while (pagina <= 50 && contas.length < totais) {
+    const res = await fetchComRetry(
+      `https://api-v2.contaazul.com/v1/conta-financeira?pagina=${pagina}&tamanho_pagina=100`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+
+    // Token expirado no meio da paginacao: renova uma vez e refaz a pagina.
+    if (res.status === 401 && !jaRenovou) {
+      const novo = await renovarToken(empresa);
+      if (!novo) break;
+      token = novo;
+      jaRenovou = true;
+      continue;
+    }
+
+    if (!res.ok) {
+      log("warn", `buscarSaldos contas ${empresa} status=${res.status} pg=${pagina}`);
+      break;
+    }
+
+    const j: any = await res.json();
+    const itens: any[] = Array.isArray(j) ? j : j.itens || [];
+    algumaPaginaOk = true;
+    contas.push(...itens);
+    if (typeof j?.itens_totais === "number") totais = j.itens_totais;
+    if (!itens.length) break;
+    pagina++;
+  }
+
+  return { ok: algumaPaginaOk, contas, token };
+}
+
 async function buscarSaldosInterna(
   empresa: string,
   tokenInicial: string,
 ): Promise<{ lista: { nome: string; saldo: number }[]; ok: boolean; todas: ContaSaldo[] }> {
-  let token = tokenInicial;
   const lista: { nome: string; saldo: number }[] = [];
   const todas: ContaSaldo[] = [];
-  let res = await fetchComRetry("https://api-v2.contaazul.com/v1/conta-financeira", {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (res.status === 401) {
-    const novo = await renovarToken(empresa);
-    if (!novo) return { lista, ok: false, todas };
-    token = novo;
-    res = await fetchComRetry("https://api-v2.contaazul.com/v1/conta-financeira", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-  }
-  if (!res.ok) {
-    log("warn", `buscarSaldos ${empresa} status=${res.status}`);
+
+  const { ok, contas, token } = await listarContasFinanceiras(empresa, tokenInicial);
+  if (!ok) {
+    log("warn", `buscarSaldos ${empresa} nao foi possivel listar contas financeiras`);
     return { lista, ok: false, todas };
   }
-  const j: any = await res.json();
-  const contas: any[] = Array.isArray(j) ? j : j.itens || [];
 
   const resps = await Promise.all(
     contas.map(async (c) => {

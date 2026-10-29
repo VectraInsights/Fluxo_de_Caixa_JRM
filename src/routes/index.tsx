@@ -304,18 +304,15 @@ function Dashboard() {
     "Rosângela Transportes": [],
   };
 
-  // Empresas que também exibem contas com saldo zerado — serve para localizar
-  // uma conta que existe na Conta Azul mas não aparece no painel (ex.: Sicoob
-  // 3109). Remover da lista assim que a conta for identificada.
-  const mostrarContasZeradas = new Set([chave("Rosângela Transportes")]);
-
   const regraBancos = Object.entries(bancosPorEmpresa).find(
     ([k]) => chave(k) === chave(empresa),
   )?.[1];
   const bancosPermitidos = regraBancos ?? ["ITAU", "SICOOB", "SICOOB 3109", "BRADESCO"];
   const mostrarTodos = regraBancos !== undefined && bancosPermitidos.length === 0;
-  const exibirZeradas = mostrarContasZeradas.has(chave(empresa));
 
+  // Todas as contas retornadas pela API sao exibidas, inclusive as de saldo
+  // zerado: esconder uma conta existente na Conta Azul fazia o usuario achar
+  // que a conta nao estava integrada.
   const bancosFiltrados = useMemo(() => {
     const bancos = data?.saldos_por_banco || [];
     const vistos = new Set<string>();
@@ -323,14 +320,13 @@ function Dashboard() {
       .filter((b) => {
         const nu = (b.nome || "").toUpperCase();
         if (vistos.has(nu)) return false;
-        if (!exibirZeradas && Math.abs(b.saldo) < 0.01) return false;
         if (!mostrarTodos && !bancosPermitidos.some((p) => nu.includes(p))) return false;
         vistos.add(nu);
         return true;
       })
       .sort((a, b) => a.nome.localeCompare(b.nome));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, exibirZeradas, mostrarTodos, bancosPermitidos.join("|")]);
+  }, [data, mostrarTodos, bancosPermitidos.join("|")]);
 
   const saldoAtual = bancosFiltrados.reduce((acc, b) => acc + b.saldo, 0);
   const totalSaldoBancos = bancosFiltrados.reduce((sum, b) => sum + Math.max(b.saldo, 0), 0);
