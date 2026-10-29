@@ -366,15 +366,19 @@ function Dashboard() {
     const round = (n: number) => Math.round(n * 100) / 100;
     const receber: (TituloDetalhe & { empresa: string })[] = [];
     const pagar: (TituloDetalhe & { empresa: string })[] = [];
+    const pagos: (TituloDetalhe & { empresa: string })[] = [];
     for (const eb of breakdown) {
       for (const t of eb.receber.titulos) receber.push({ ...t, empresa: eb.empresa });
       for (const t of eb.pagar.titulos) pagar.push({ ...t, empresa: eb.empresa });
+      for (const t of eb.pagos?.titulos ?? []) pagos.push({ ...t, empresa: eb.empresa });
     }
     receber.sort((a, b) => a.data.localeCompare(b.data));
     pagar.sort((a, b) => a.data.localeCompare(b.data));
+    pagos.sort((a, b) => a.data.localeCompare(b.data));
     return {
       receber: { total: round(receber.reduce((a, b) => a + b.valor, 0)), titulos: receber },
       pagar: { total: round(pagar.reduce((a, b) => a + b.valor, 0)), titulos: pagar },
+      pagos: { total: round(pagos.reduce((a, b) => a + b.valor, 0)), titulos: pagos },
     };
   }, [breakdown]);
 
@@ -836,10 +840,10 @@ function Dashboard() {
             </div>
           </div>
 
-          {/* Detalhamento consolidado: a receber / a pagar de todas as empresas */}
+          {/* Detalhamento consolidado: a receber / a pagar / pagos de todas as empresas */}
           <div className="mt-6 rounded-2xl border border-border bg-card/60 backdrop-blur-xl p-6 shadow-xl">
             <div className="mb-5">
-              <h2 className="font-display text-lg font-semibold">A Receber e A Pagar</h2>
+              <h2 className="font-display text-lg font-semibold">A Receber, A Pagar e Pagos</h2>
               <p className="text-xs text-muted-foreground mt-0.5">
                 {empresa === "todas"
                   ? "Todas as empresas consolidadas no período selecionado"
@@ -848,12 +852,13 @@ function Dashboard() {
             </div>
 
             {!breakdown ? (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                <SkeletonCard />
                 <SkeletonCard />
                 <SkeletonCard />
               </div>
             ) : consolidado ? (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-success">
@@ -875,6 +880,17 @@ function Dashboard() {
                     </span>
                   </div>
                   <TitulosLista itens={consolidado.pagar.titulos} accent="text-destructive" />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-destructive">
+                      Pagos — Consolidado
+                    </span>
+                    <span className="text-sm font-bold tabular-nums text-destructive">
+                      {fmt(consolidado.pagos.total)}
+                    </span>
+                  </div>
+                  <TitulosLista itens={consolidado.pagos.titulos} accent="text-destructive" />
                 </div>
               </div>
             ) : (

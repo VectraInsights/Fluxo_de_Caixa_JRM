@@ -358,6 +358,7 @@ export type EmpresaBreakdown = {
   empresa: string;
   receber: { total: number; titulos: TituloDetalhe[] };
   pagar: { total: number; titulos: TituloDetalhe[] };
+  pagos: { total: number; titulos: TituloDetalhe[] };
 };
 
 export const getEmpresaBreakdown = createServerFn({ method: "GET" })
@@ -392,13 +393,24 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
       empresas.map(async (emp): Promise<EmpresaBreakdown> => {
         const token = await obterToken(emp);
         if (!token) {
-          return { empresa: emp, receber: { total: 0, titulos: [] }, pagar: { total: 0, titulos: [] } };
+          return {
+            empresa: emp,
+            receber: { total: 0, titulos: [] },
+            pagar: { total: 0, titulos: [] },
+            pagos: { total: 0, titulos: [] },
+          };
         }
-        const [rec, desp] = await Promise.all([
+        const [rec, desp, pagas] = await Promise.all([
           buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar", data.data_inicio, data.data_fim),
           buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar", data.data_inicio, data.data_fim),
+          buscarPagas(emp, data.data_inicio, data.data_fim),
         ]);
-        return { empresa: emp, receber: montar(rec.dados), pagar: montar(desp.dados) };
+        return {
+          empresa: emp,
+          receber: montar(rec.dados),
+          pagar: montar(desp.dados),
+          pagos: montar(pagas.dados),
+        };
       }),
     );
   });
