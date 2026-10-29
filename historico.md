@@ -62,7 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
-| `PENDENTE` | feat: rodapé com tres colunas — A Receber, A Pagar e Pagos (relação dos títulos quitados no período) | 29/10/2026 |
+| `63be4ab` | feat: rodapé com tres colunas — A Receber, A Pagar e Pagos (relação dos títulos quitados no período) | 29/10/2026 |
 | `9eda174` | fix: falha ao classificar metodo de pagamento nao acende mais a bolinha vermelha; reduz retries das buscas secundarias (lentidao em dias cheios) | 29/10/2026 |
 | `b96f7b0` | fix: status ACQUITTED para buscar contas pagas (orientacao oficial Conta Azul); fallback PAGO | 29/10/2026 |
 | `798a957` | fix: busca de pagas em chamada unica rapida (sem cadencia de endpoints); adiciona rota debug-pagas para diagnostico | 29/10/2026 |
@@ -96,9 +96,9 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 ## 4. Commit de Reversão Padrao
 
-### Commit recomendado para revert​​ao: `9eda174`
+### Commit recomendado para revert​​ao: `63be4ab`
 
-**Mensagem:** `fix: falha ao classificar metodo de pagamento nao marca erro de sincronizacao; reduz retries de buscas secundarias para aliviar dias cheios`
+**Mensagem:** `feat: rodape com tres colunas — A Receber, A Pagar e Pagos (lista de titulos quitados no periodo)`
 
 **Estado conhecido como funcional (29/10/2026):**
 - Dashboard carrega valores reais da Conta Azul automaticamente ao abrir (nao precisa de F5).
