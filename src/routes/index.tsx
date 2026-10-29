@@ -302,6 +302,7 @@ function Dashboard() {
     // array vazio = mostra TODOS os bancos que a API retornar
     "LGP Transportes": ["BRADESCO", "ITAU", "SICOOB 3049", "SICOOB 3109"],
     "Rosângela Transportes": ["BRADESCO", "ITAU", "SICOOB 3049", "SICOOB 3109"],
+    "JRM Transportes": ["BRADESCO", "ITAU", "SICOOB 3049", "SICOOB 3109"],
   };
 
   const regraBancos = Object.entries(bancosPorEmpresa).find(
