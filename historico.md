@@ -62,7 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
-| `PENDENTE` | **(proximo commit)** — fix: card Contas Pagas soma apenas titulos efetivamente baixados (status PAGO + data de pagamento), para de espelhar Saidas Previstas | 29/10/2026 |
+| `d74e605` | fix: card Contas Pagas soma apenas titulos efetivamente baixados (status PAGO + data de pagamento), para de espelhar Saidas Previstas | 29/10/2026 |
 | `9449fa5` | docs: atualiza historico.md com commit aba1d3d como referencia de reversao | 29/10/2026 |
 | `aba1d3d` | **(commit padrao / referencia atual)** — feat: remove cards Receber via Boleto e Outros Meios, adiciona card Contas Pagas | 29/10/2026 |
 | `bc69a7a` | fix: refetchOnMount true para carregar dados automaticamente ao abrir dashboard | 29/10/2026 |
@@ -91,9 +91,9 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 ## 4. Commit de Reversão Padrao
 
-### Commit recomendado para revert​​ao: `aba1d3d`
+### Commit recomendado para revert​​ao: `d74e605`
 
-**Mensagem:** `feat: remove cards Receber via Boleto e Outros Meios, adiciona card Contas Pagas`
+**Mensagem:** `fix: card Contas Pagas soma apenas titulos efetivamente baixados (status PAGO + data de pagamento), para de espelhar Saidas Previstas`
 
 **Estado conhecido como funcional (29/10/2026):**
 - Dashboard carrega valores reais da Conta Azul automaticamente ao abrir (nao precisa de F5).
