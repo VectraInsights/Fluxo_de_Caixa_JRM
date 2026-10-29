@@ -944,6 +944,135 @@ async function buscarV2Interna(
   return { dados: resultado, ok: !teveErroGeral };
 }
 
+// ------------------- Contas efetivamente pagas (baixadas) -------------------
+// Busca titulos de contas a pagar com status PAGO baixados no periodo, usando o
+// filtro data_pagamento_de/_ate da API. Diferente do buscarV2 (que traz titulos
+// EM_ABERTO pelo vencimento), aqui o que interessa e a DATA REAL do pagamento.
+
+// Extrai a data de pagamento/baixa de um titulo (varias estruturas possiveis)
+function extrairDataPagamento(i: any): string | null {
+  const candidatos = [
+    i?.data_pagamento,
+    i?.data_baixa,
+    i?.baixas?.[0]?.data_pagamento,
+    i?.baixas?.[0]?.data,
+    i?.parcelas?.[0]?.data_pagamento,
+    i?.parcelas?.[0]?.data_baixa,
+  ];
+  for (const c of candidatos) {
+    if (typeof c === "string" && c.trim()) return c.slice(0, 10);
+  }
+  return null;
+}
+
+export async function buscarPagas(
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
+  const cacheKey = `pagas:${empresa}:${dataInicio}:${dataFim}`;
+  const r = await lerOuCriar(
+    listCache,
+    cacheKey,
+    LIST_TTL_MS,
+    () => buscarPagasInterna(empresa, dataInicio, dataFim),
+    (x) => x.ok,
+  );
+  return { dados: r.dados, ok: r.ok };
+}
+
+async function buscarPagasInterna(
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
+  const tokenInicial = await obterToken(empresa);
+  if (!tokenInicial) {
+    log("warn", `buscarPagas sem token: ${empresa}`);
+    return { dados: [], ok: false };
+  }
+  const tokenRef = { token: tokenInicial };
+
+  // Janela de vencimento generosa: a API exige data_vencimento_de/_ate mesmo
+  // quando o filtro real e por data de pagamento (titulo vencido pode ser pago
+  // no periodo; pagamento antecipado de titulo futuro tambem entra).
+  const vencInicio = new Date(dataInicio + "T00:00:00Z");
+  vencInicio.setUTCDate(vencInicio.getUTCDate() - 365);
+  const vencFim = new Date(dataFim + "T00:00:00Z");
+  vencFim.setUTCDate(vencFim.getUTCDate() + 30);
+
+  const brutos: ItemLancamento[] = [];
+  let pagina = 1;
+  let tentativasReauth = 0;
+  let teveErroGeral = false;
+
+  while (true) {
+    const params = new URLSearchParams({
+      data_vencimento_de: vencInicio.toISOString().slice(0, 10),
+      data_vencimento_ate: vencFim.toISOString().slice(0, 10),
+      data_pagamento_de: dataInicio,
+      data_pagamento_ate: dataFim,
+      status: "PAGO",
+      tamanho_pagina: "100",
+      pagina: String(pagina),
+    });
+    const url = `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar?${params}`;
+    const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+
+    if (res.status === 401 && tentativasReauth < 1) {
+      const novo = await renovarToken(empresa);
+      if (!novo) {
+        teveErroGeral = true;
+        break;
+      }
+      tokenRef.token = novo;
+      tentativasReauth++;
+      continue;
+    }
+    if (!res.ok) {
+      log("warn", `buscarPagas ${empresa} pg=${pagina} status=${res.status}`);
+      teveErroGeral = true;
+      break;
+    }
+
+    const j: any = await res.json();
+    const itens: any[] = j.itens || [];
+    if (!itens.length) break;
+
+    for (const i of itens) {
+      // Valor efetivamente pago; fallback para total quando pago vier zerado
+      const valor = (i.pago as number) > 0 ? (i.pago as number) : ((i.total as number) || 0);
+      if (!i.id || valor <= 0) continue;
+      const data =
+        extrairDataPagamento(i) ||
+        (i.data_vencimento ? String(i.data_vencimento).slice(0, 10) : null);
+      if (!data) continue;
+      brutos.push({
+        data,
+        valor,
+        metodo: null,
+        conta_id: i.conta_financeira_id || i.conta_id || undefined,
+        descricao: extrairDescricao(i),
+        terceiro: extrairTerceiro(i),
+      });
+    }
+    if (itens.length < 100) break;
+    pagina++;
+    tentativasReauth = 0;
+  }
+
+  const total = brutos.reduce((a, b) => a + b.valor, 0);
+  log(
+    "info",
+    `buscarPagas ${empresa}: ${brutos.length} titulos pagos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)}, erro=${teveErroGeral})`,
+  );
+
+  if (teveErroGeral) {
+    log("warn", `buscarPagas finalizou com erros para ${empresa}. Dados nao cacheados.`);
+  }
+  return { dados: brutos, ok: !teveErroGeral };
+}
+
 // Inspeciona o detalhe de N itens — usado pelo painel de debug pra ver o JSON cru.
 export async function inspecionarPrimeirosRecebimentos(
   empresa: string,

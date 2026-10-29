@@ -346,6 +346,7 @@ function Dashboard() {
   const totalRecBoleto = data?.resumo.total_rec_boleto || 0;
   const totalRecOutros = Math.max(0, totalRec - totalRecBoleto);
   const totalDesp = Math.abs(data?.resumo.total_desp || 0);
+  const totalPagas = Math.abs(data?.resumo.total_pagas || 0);
   const saldoPrevisto = saldoAtual + totalRec - totalDesp;
   const positivo = saldoPrevisto >= saldoAtual;
 
@@ -747,13 +748,13 @@ function Dashboard() {
               <>
                 <KpiCard
                   label="Contas Pagas"
-                  valor={totalDesp}
-                  icon={<TrendingDown className="h-5 w-5" />}
-                  gradient="from-destructive/30 via-destructive/10 to-transparent"
-                  accent="text-destructive"
+                  valor={totalPagas}
+                  icon={<CheckCircle2 className="h-5 w-5" />}
+                  gradient="from-success/30 via-success/10 to-transparent"
+                  accent="text-success"
                   sub={
-                    totalRec > 0
-                      ? `${((totalDesp / (totalRec + totalDesp)) * 100).toFixed(1)}% do total de movimentacao`
+                    totalPagas > 0
+                      ? `${((totalPagas / (totalRec + totalDesp)) * 100).toFixed(1)}% do total de movimentacao`
                       : "Sem pagamentos no período"
                   }
                 />

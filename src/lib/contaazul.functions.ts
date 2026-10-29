@@ -7,6 +7,7 @@ import {
   obterToken,
   buscarSaldos,
   buscarV2,
+  buscarPagas,
   removerAcentos,
   getLogs,
   limparLogs,
@@ -153,6 +154,7 @@ export type DashboardData = {
     total_rec: number;
     total_desp: number;
     total_rec_boleto: number;
+    total_pagas: number;
     saldo_final: number;
   };
   avisos: string[];
@@ -203,9 +205,9 @@ export const getDashboard = createServerFn({ method: "GET" })
             `${emp}: sem token válido — reconecte a empresa na Conta Azul.`,
           );
           empresasComProblema.add(emp);
-          return { empresa: emp, bancos: [], rec: [], desp: [] };
+          return { empresa: emp, bancos: [], rec: [], desp: [], pagas: [] };
         }
-        const [sal, rec, desp] = await Promise.all([
+        const [sal, rec, desp, pagas] = await Promise.all([
           buscarSaldos(emp, token),
           buscarV2(
             emp,
@@ -219,6 +221,7 @@ export const getDashboard = createServerFn({ method: "GET" })
             data.data_inicio,
             data.data_fim,
           ),
+          buscarPagas(emp, data.data_inicio, data.data_fim),
         ]);
         const contasComFalha = sal.todas.filter((c) => c.erro);
         if (!sal.ok) {
@@ -239,7 +242,17 @@ export const getDashboard = createServerFn({ method: "GET" })
           avisos.push(`${emp}: falha ao buscar contas a pagar.`);
           empresasComProblema.add(emp);
         }
-        return { empresa: emp, bancos: sal.lista, rec: rec.dados, desp: desp.dados };
+        if (!pagas.ok) {
+          avisos.push(`${emp}: falha ao buscar contas pagas.`);
+          empresasComProblema.add(emp);
+        }
+        return {
+          empresa: emp,
+          bancos: sal.lista,
+          rec: rec.dados,
+          desp: desp.dados,
+          pagas: pagas.dados,
+        };
       }),
     );
 
@@ -284,6 +297,12 @@ export const getDashboard = createServerFn({ method: "GET" })
       for (const i of r.desp) despPorDia[i.data] = (despPorDia[i.data] || 0) + i.valor;
     }
 
+    // Total de contas EFETIVAMENTE pagas no periodo (baixa registrada na Conta Azul)
+    let totalPagas = 0;
+    for (const r of resultados) {
+      for (const i of r.pagas) totalPagas += i.valor;
+    }
+
     const receitas: number[] = [];
     const receitas_boleto: number[] = [];
     const despesas: number[] = [];
@@ -319,6 +338,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         total_rec: Math.round(total_rec * 100) / 100,
         total_desp: Math.round(total_desp * 100) / 100,
         total_rec_boleto: Math.round(total_rec_boleto * 100) / 100,
+        total_pagas: Math.round(totalPagas * 100) / 100,
         saldo_final: saldo.length ? saldo[saldo.length - 1] : Math.round(totalBanco * 100) / 100,
       },
       avisos,
