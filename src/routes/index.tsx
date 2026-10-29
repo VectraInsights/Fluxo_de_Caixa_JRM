@@ -19,7 +19,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
-  Wallet,
   TrendingUp,
   TrendingDown,
   RefreshCw,
@@ -268,7 +267,7 @@ function Dashboard() {
   });
 
   // Faturamento do periodo (planilha de cargas — aba do dia, direcionado por remetente).
-  const { data: faturamento, refetch: refetchFaturamento } = useQuery({
+  const { data: faturamento, isFetching: isFaturamentoFetching, refetch: refetchFaturamento } = useQuery({
     queryKey: ["faturamento", empresa, dataInicio, dataFim],
     queryFn: () =>
       getFaturamentoFn({ data: { empresa, data_inicio: dataInicio, data_fim: dataFim } }),
@@ -357,15 +356,12 @@ function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, mostrarTodos, bancosPermitidos.join("|")]);
 
-  const saldoAtual = bancosFiltrados.reduce((acc, b) => acc + b.saldo, 0);
   const totalSaldoBancos = bancosFiltrados.reduce((sum, b) => sum + Math.max(b.saldo, 0), 0);
   const totalRec = data?.resumo.total_rec || 0;
   const totalRecBoleto = data?.resumo.total_rec_boleto || 0;
   const totalRecOutros = Math.max(0, totalRec - totalRecBoleto);
   const totalDesp = Math.abs(data?.resumo.total_desp || 0);
   const totalPagas = Math.abs(data?.resumo.total_pagas || 0);
-  const saldoPrevisto = saldoAtual + totalRec - totalDesp;
-  const positivo = saldoPrevisto >= saldoAtual;
 
   const chartData = useMemo(() => {
     if (!data) return [];
@@ -710,79 +706,52 @@ function Dashboard() {
             </div>
           )}
 
-          {/* KPI cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
-            {!data && isFetching ? (
-              Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
+          {/* KPI cards: Faturamento, Entradas, Saídas, Pagos */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-6">
+            {faturamento === undefined && isFaturamentoFetching ? (
+              <SkeletonCard />
             ) : (
-              <>
-                <KpiCard
-                  label="Saldo Atual"
-                  valor={saldoAtual}
-                  icon={<Wallet className="h-5 w-5" />}
-                  gradient="from-brand/30 via-brand/10 to-transparent"
-                  accent="text-brand"
-                />
-                <KpiCard
-                  label="Entradas Previstas"
-                  valor={totalRec}
-                  icon={<TrendingUp className="h-5 w-5" />}
-                  gradient="from-success/30 via-success/10 to-transparent"
-                  accent="text-success"
-                />
-                <KpiCard
-                  label="Saídas Previstas"
-                  valor={-totalDesp}
-                  icon={<TrendingDown className="h-5 w-5" />}
-                  gradient="from-destructive/30 via-destructive/10 to-transparent"
-                  accent="text-destructive"
-                />
-                <KpiCard
-                  label="Saldo Previsto"
-                  valor={saldoPrevisto}
-                  icon={
-                    positivo ? (
-                      <ArrowUpRight className="h-5 w-5" />
-                    ) : (
-                      <ArrowDownRight className="h-5 w-5" />
-                    )
-                  }
-                  gradient={
-                    positivo
-                      ? "from-success/30 via-success/10 to-transparent"
-                      : "from-destructive/30 via-destructive/10 to-transparent"
-                  }
-                  accent={positivo ? "text-success" : "text-destructive"}
-                />
-              </>
+              <KpiCard
+                label="Faturamento"
+                valor={faturamento?.total ?? 0}
+                icon={<Banknote className="h-5 w-5" />}
+                gradient="from-success/30 via-success/10 to-transparent"
+                accent="text-success"
+              />
             )}
-          </div>
-
-          {/* Breakdown de recebimentos por meio de pagamento */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
             {!data && isFetching ? (
-              <>
-                <SkeletonCard />
-                <SkeletonCard />
-              </>
+              <SkeletonCard />
             ) : (
-              <>
-                <KpiCard
-                  label="Contas Pagas"
-                  valor={-totalPagas}
-                  icon={<TrendingDown className="h-5 w-5" />}
-                  gradient="from-destructive/30 via-destructive/10 to-transparent"
-                  accent="text-destructive"
-                  sub={totalPagas > 0 ? undefined : "Sem pagamentos no período"}
-                />
-                <KpiCard
-                  label="Faturamento"
-                  valor={faturamento?.total ?? 0}
-                  icon={<Banknote className="h-5 w-5" />}
-                  gradient="from-success/30 via-success/10 to-transparent"
-                  accent="text-success"
-                />
-              </>
+              <KpiCard
+                label="Entradas Previstas"
+                valor={totalRec}
+                icon={<TrendingUp className="h-5 w-5" />}
+                gradient="from-success/30 via-success/10 to-transparent"
+                accent="text-success"
+              />
+            )}
+            {!data && isFetching ? (
+              <SkeletonCard />
+            ) : (
+              <KpiCard
+                label="Saídas Previstas"
+                valor={-totalDesp}
+                icon={<TrendingDown className="h-5 w-5" />}
+                gradient="from-destructive/30 via-destructive/10 to-transparent"
+                accent="text-destructive"
+              />
+            )}
+            {!data && isFetching ? (
+              <SkeletonCard />
+            ) : (
+              <KpiCard
+                label="Contas Pagas"
+                valor={-totalPagas}
+                icon={<TrendingDown className="h-5 w-5" />}
+                gradient="from-destructive/30 via-destructive/10 to-transparent"
+                accent="text-destructive"
+                sub={totalPagas > 0 ? undefined : "Sem pagamentos no período"}
+              />
             )}
           </div>
 
