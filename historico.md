@@ -62,6 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `e55fa9c` | fix: Rosangela Transportes exibe apenas Bradesco, Itaú, Sicoob 3049 e Sicoob 3109 (remove Bradesco ap. e Veloe que nao existem na empresa) | 29/10/2026 |
 | `87c673f` | fix: LGP Transportes exibe apenas Bradesco, Itaú, Sicoob 3049 e Sicoob 3109 | 29/10/2026 |
 | `1981bb8` | fix: pagina a listagem de contas financeiras e remove filtro de saldo zerado para exibir todas as contas da Conta Azul | 29/10/2026 |
 | `f9f4082` | fix: mostra detalhe da falha no tooltip da bolinha vermelha e remove alertas redundantes causados por status defasado | 29/10/2026 |
