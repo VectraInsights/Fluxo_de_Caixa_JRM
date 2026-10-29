@@ -62,7 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
-| `PENDENTE` | feat: faturamento direcionado por remetente (coluna B) — Juvenal/Rosângela/Alvarenga; Alvarenga só em Todas as Empresas | 29/10/2026 |
+| `66dabe9` | feat: faturamento direcionado por remetente (coluna B) — Juvenal/Rosângela/Alvarenga; Alvarenga só em Todas as Empresas | 29/10/2026 |
 | `605a656` | fix: faturamento por dia (aba da data na planilha) com parser estrito pt-BR (valor = R$ 195.594,57 no dia 29/10); remove subtítulo de cargas | 29/10/2026 |
 | `a08dec3` | feat: card Faturamento ao lado de Contas Pagas, somando a coluna VALOR da planilha de cargas (Google Sheets) | 29/10/2026 |
 | `1f07893` | fix: remove "Consolidado" dos titulos do rodape e remove percentual Infinity% do card Contas Pagas | 29/10/2026 |
@@ -95,6 +95,42 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 | `b58ab10` | versao funcional original — perf: deduplica requisicoes concorrentes, paraleliza busca por empresa e mantem dados anteriores durante recarga | Antes de 28/10/2026 |
 | `193c74e` | feat: define Hoje como intervalo padrao de pesquisa ao abrir o sistema | Anterior |
 | `d2d8ddb` | feat: header simplificado com status de sincronizacao ao lado do Recarregar | Anterior |
+
+---
+
+## 3.1 Regras de Faturamento (planilha de cargas)
+
+**Fonte:** planilha do Google Sheets `173ertIvql5v6l_9v6HJAQkdeL66CA4RSKo5IZrGkFhM`.
+Uma aba por dia, com o nome igual ao numero do dia ("01".."31"). Coluna B = REMETENTE, coluna F = VALOR.
+
+**Direcionamento:** o faturamento pertence a empresa do REMETENTE. Os nomes vem no formato
+`EMPRESA (CIDADE - UF)` — somente a empresa e considerada (tudo entre parenteses e ignorado).
+
+| Remetente (normalizado) | Empresa |
+|-------------------------|---------|
+| S.A.GONDOLAS | Rosângela |
+| EMATEX | Rosângela |
+| FARMAX | Juvenal |
+| EMBARE | Juvenal |
+| TECNO2000 | Juvenal |
+| ORTHOCRIN | **Alvarenga** |
+| ESPUMIL | Juvenal |
+| BELACCI | Juvenal |
+| COPRA | Juvenal |
+| AGRONORTE | Juvenal |
+| DESIGNTEX | Juvenal |
+| AMAPA | Juvenal |
+| MODERNA | Juvenal |
+| ITABOX | Juvenal |
+| ECONOMART | Juvenal |
+| ESTHAMPA | Juvenal |
+| FIBRASA | Juvenal |
+
+**ATENCAO — Alvarenga:** nao existe (e nao vai existir) no dropdown de empresas. Ela aparece
+APENAS na visao "Todas as Empresas". Remetente sem regra cai em "OUTROS" (entra no "todas").
+
+**Valores:** parser estrito pt-BR, mesmo criterio do SUM do Sheets (`R$ 23.000,00` vale;
+`21,999.10` e texto invalido e nao conta; `Pendente` nao conta).
 
 ---
 
