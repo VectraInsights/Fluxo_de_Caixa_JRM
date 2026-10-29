@@ -62,7 +62,8 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
-| `PENDENTE` | fix: faturamento por dia (aba da data na planilha) com parser estrito pt-BR (valor = R$ 195.594,57 no dia 29/10); remove subtítulo de cargas | 29/10/2026 |
+| `PENDENTE` | feat: faturamento direcionado por remetente (coluna B) — Juvenal/Rosângela/Alvarenga; Alvarenga só em Todas as Empresas | 29/10/2026 |
+| `605a656` | fix: faturamento por dia (aba da data na planilha) com parser estrito pt-BR (valor = R$ 195.594,57 no dia 29/10); remove subtítulo de cargas | 29/10/2026 |
 | `a08dec3` | feat: card Faturamento ao lado de Contas Pagas, somando a coluna VALOR da planilha de cargas (Google Sheets) | 29/10/2026 |
 | `1f07893` | fix: remove "Consolidado" dos titulos do rodape e remove percentual Infinity% do card Contas Pagas | 29/10/2026 |
 | `63be4ab` | feat: rodapé com tres colunas — A Receber, A Pagar e Pagos (relação dos títulos quitados no período) | 29/10/2026 |
