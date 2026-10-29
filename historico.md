@@ -45,9 +45,16 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 ### 2.3 Indicador de Sincronizacao
 
-- Bolinha verde: todas as empresas do filtro estao com token ATIVO.
-- Bolinha vermelha: a empresa selecionada esta com status `ERRO` no Supabase (precisa reautenticar).
-- Bolinha azul pulsando: sincronizacao em andamento.
+- **Bolinha verde:** nenhuma falha nesta consulta.
+- **Bolinha azul pulsando:** sincronizacao em andamento.
+- **Bolinha vermelha:** houve falha real nesta consulta (token ausente/invalido ou
+  a API da Conta Azul respondeu com erro). Passe o mouse sobre a bolinha para ver
+  o detalhe.
+
+> O sinal e decidido pelo campo `avisos` retornado pelo `getDashboard`, **nao**
+> pela coluna `status` da tabela `tokens`. Essa coluna atrasa: so e corrigida no
+> proximo refresh bem-sucedido e por isso podia manter `ERRO` depois de a empresa
+> ja estar funcionando (causava alerta falso).
 
 ---
 
@@ -55,6 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `f9f4082` | fix: mostra detalhe da falha no tooltip da bolinha vermelha e remove alertas redundantes causados por status defasado | 29/10/2026 |
 | `c065eaf` | fix: remove painel de contas nao exibidas e deixa Rosangela listar todos os bancos para localizar o Sicoob 3109 | 29/10/2026 |
 | `a626bd8` | *(commit padrao / referencia atual)* — feat: mostra contas nao exibidas no painel de Bancos para diagnosticar banco ausente | 29/10/2026 |
 | `902e617` | fix: usa endpoint de token v2 da Conta Azul para corrigir invalid_client na troca de code e na renovacao | 29/10/2026 |
@@ -138,6 +146,22 @@ Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 | Erro 400 no callback | `redirect_uri` nao confere com o cadastrado na Conta Azul | Usar exatamente `https://jrm-dashboard.vercel.app/` |
 | Token nao salva no Supabase | Credenciais `CONTA_AZUL_CLIENT_ID`/`SECRET` nao configuradas na Vercel | Adicionar as env vars e fazer Redeploy |
 | Banco nao aparece na lista | Filtro `BANCOS_PERMITIDOS` no backend | Removido no commit `ff37c8e` — backend agora envia todos os bancos da API |
+| Alerta de falha aparece mesmo com tudo sincronizado | A coluna `status` da tabela `tokens` **atrasa** em relacao ao estado real: ela so e corrigida para `ATIVO` no proximo refresh bem-sucedido, entao pode continuar `ERRO` depois que a empresa ja voltou a funcionar. O frontend usava esse campo para acender o alerta | Corrigido no commit `f9f4082`: o sinal autoritativo passou a ser o campo `avisos` do `getDashboard` (o que falhou **nesta** consulta). O `status` do banco ficou so como pista para as empresas que nao foram consultadas na carga atual |
+
+### Indicador de sincronizacao (UI)
+
+- **Bolinha verde** + "Ultima sincronizacao: HH:MM": tudo ok.
+- **Bolinha azul pulsando**: consulta em andamento.
+- **Bolinha vermelha** + "Falha na sincronizacao": houve falha real nesta consulta.
+  Passe o mouse sobre a bolinha para ver o detalhe (qual empresa e qual falha) e a
+  orientacao de correcao.
+
+O detalhe fica em **tooltip** no cabecalho, e nao mais em caixa fixa — antes havia
+duas caixas de alerta (uma vermelha no topo e uma amarela no fim da tela) que
+davam o mesmo aviso e ainda disparavam por engano por causa do `status` defasado.
+
+O botao **"Conectar Conta Azul"** aparece na lateral quando a empresa selecionada
+esta entre as que falharam nesta consulta (`empresas_com_problema`).
 | Banco existe na Conta Azul mas nao aparece no painel | (a) saldo da conta zerado — o painel esconde contas com `|saldo| < 0,01`; (b) a chamada `saldo-atual` falhou; (c) o nome nao contem nenhuma das chaves de `bancosPermitidos` em `index.tsx` | Ver secao abaixo. Se for (c), adicionar a chave do banco em `bancosPermitidos` |
 
 ### Diagnosticando um banco que nao aparece
