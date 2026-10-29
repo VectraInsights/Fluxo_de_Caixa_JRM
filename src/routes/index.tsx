@@ -301,7 +301,7 @@ function Dashboard() {
   const bancosPorEmpresa: Record<string, string[]> = {
     // array vazio = mostra TODOS os bancos que a API retornar
     "LGP Transportes": ["BRADESCO", "ITAU", "SICOOB 3049", "SICOOB 3109"],
-    "Rosângela Transportes": [],
+    "Rosângela Transportes": ["BRADESCO", "ITAU", "SICOOB 3049", "SICOOB 3109"],
   };
 
   const regraBancos = Object.entries(bancosPorEmpresa).find(
