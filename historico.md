@@ -55,7 +55,8 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
-| `a626bd8` | **COMMIT PADRAO / REFERENCIA ATUAL** — feat: mostra contas nao exibidas no painel de Bancos para diagnosticar banco ausente | 29/10/2026 |
+| `c065eaf` | fix: remove painel de contas nao exibidas e deixa Rosangela listar todos os bancos para localizar o Sicoob 3109 | 29/10/2026 |
+| `a626bd8` | *(commit padrao / referencia atual)* — feat: mostra contas nao exibidas no painel de Bancos para diagnosticar banco ausente | 29/10/2026 |
 | `902e617` | fix: usa endpoint de token v2 da Conta Azul para corrigir invalid_client na troca de code e na renovacao | 29/10/2026 |
 | `68fc942` | feat: adiciona botao e rota de reconexao com a Conta Azul para renovar token de empresa | 29/10/2026 |
 | `5af8199` | feat: sinaliza falhas de sincronizacao no dashboard com bolinha vermelha e avisos detalhados | 29/10/2026 |
@@ -137,17 +138,34 @@ Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 | Erro 400 no callback | `redirect_uri` nao confere com o cadastrado na Conta Azul | Usar exatamente `https://jrm-dashboard.vercel.app/` |
 | Token nao salva no Supabase | Credenciais `CONTA_AZUL_CLIENT_ID`/`SECRET` nao configuradas na Vercel | Adicionar as env vars e fazer Redeploy |
 | Banco nao aparece na lista | Filtro `BANCOS_PERMITIDOS` no backend | Removido no commit `ff37c8e` — backend agora envia todos os bancos da API |
-| Banco existe na Conta Azul mas nao aparece no painel | (a) saldo da conta zerado — o painel esconde contas com `|saldo| < 0,01`; (b) a chamada `saldo-atual` falhou; (c) o nome nao contem nenhuma das chaves de `bancosPermitidos` em `index.tsx` | Ver o bloco **"Contas nao exibidas"** na lateral, que mostra cada conta retornada pela API e o motivo de nao estar visivel. Se for (c), adicionar a chave do banco em `bancosPermitidos` |
+| Banco existe na Conta Azul mas nao aparece no painel | (a) saldo da conta zerado — o painel esconde contas com `|saldo| < 0,01`; (b) a chamada `saldo-atual` falhou; (c) o nome nao contem nenhuma das chaves de `bancosPermitidos` em `index.tsx` | Ver secao abaixo. Se for (c), adicionar a chave do banco em `bancosPermitidos` |
 
 ### Diagnosticando um banco que nao aparece
 
-O painel **"Contas nao exibidas"** (lateral, abaixo de BANCOS, quando uma empresa especifica esta selecionada) lista toda conta que a API da Conta Azul retornou mas que o painel escondeu, com o motivo:
+O backend envia **todas** as contas financeiras que a API da Conta Azul retornar
+(`buscarSaldos`); quem filtra e o frontend, em `src/routes/index.tsx`. Tres motivos
+fazem uma conta ficar de fora do painel:
 
-- `saldo zerado` — a conta existe e o saldo foi lido, mas e `R$ 0,00`. O filtro de exibicao esconde contas zeradas de proposito.
-- `falha ao ler o saldo` — a chamada `GET /v1/conta-financeira/{id}/saldo-atual` retornou erro para essa conta.
-- `fora do filtro de bancos` — tem saldo, mas o nome nao bate com nenhuma chave de `bancosPermitidos` (em `src/routes/index.tsx`).
+- **Saldo zerado** — o filtro esconde contas com `|saldo| < 0,01` de proposito.
+- **Falha ao ler o saldo** — a chamada `GET /v1/conta-financeira/{id}/saldo-atual`
+  retornou erro. Nesse caso o dashboard emite aviso na bolinha vermelha
+  ("nao foi possivel ler o saldo de X").
+- **Fora do filtro de bancos** — tem saldo, mas o nome nao bate com nenhuma chave.
 
-A lista de chaves aceitas hoje e `["ITAU", "SICOOB", "SICOOB 3109", "BRADESCO"]`, aplicada por **substring** (maiuzculas): qualquer conta cujo nome contenha "SICOOB" passa, inclusive "Sicoob 3049" e "SICOOB 3109". Para aceitar outro banco, adicione a chave correspondente em `bancosPermitidos`.
+A lista de chaves padrao e `["ITAU", "SICOOB", "SICOOB 3109", "BRADESCO"]`, aplicada
+por **substring** sem distincao de maiusculas: qualquer conta cujo nome contenha
+"SICOOB" passa, inclusive "Sicoob 3049". Para aceitar outro banco, adicione a chave
+correspondente em `bancosPermitidos`.
+
+**Como localizar uma conta que nao aparece:** coloque a empresa em
+`bancosPorEmpresa` (em `index.tsx`) com array vazio `[]` — isso faz a empresa
+mostrar **todas** as contas que a API retornar, sem filtro de nome. Se mesmo assim
+a conta nao aparecer, ela nao existe na Conta Azul para essa empresa (confira se
+esta no CNPJ/empresa errado). Para exibir tambem as contas zeradas, adicione o
+nome da empresa em `mostrarContasZeradas` (mesmo arquivo).
+
+> **Atencao:** o Sicoob 3109 que aparece no painel da **JRM Transportes** e da JRM,
+> nao da Rosângela Transportes. Sao contas de empresas diferentes.
 
 ---
 
