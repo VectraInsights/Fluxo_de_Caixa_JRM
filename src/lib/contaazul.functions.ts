@@ -12,7 +12,6 @@ import {
   limparLogs,
   inspecionarPrimeirosRecebimentos,
   limparCacheDetalhes,
-  type ContaSaldo,
 } from "./contaazul.server";
 
 export const listarEmpresas = createServerFn({ method: "GET" }).handler(async () => {
@@ -158,10 +157,6 @@ export type DashboardData = {
   };
   avisos: string[];
   empresas_com_problema: string[];
-  // Todas as contas financeiras que a API retornou por empresa — inclusive as
-  // com saldo zerado ou com falha ao buscar saldo. Serve para diagnosticar
-  // contas que existem na Conta Azul mas nao aparecem no painel de Bancos.
-  contas_por_empresa: Record<string, ContaSaldo[]>;
 };
 
 function dateRange(inicio: string, fim: string): string[] {
@@ -198,7 +193,6 @@ export const getDashboard = createServerFn({ method: "GET" })
     const empresas = await resolverEmpresas(data.empresa);
     const avisos: string[] = [];
     const empresasComProblema = new Set<string>();
-    const contasPorEmpresa: Record<string, ContaSaldo[]> = {};
 
     // Empresas em paralelo (tokens e chamadas à API são independentes)
     const resultados = await Promise.all(
@@ -209,7 +203,7 @@ export const getDashboard = createServerFn({ method: "GET" })
             `${emp}: sem token válido — reconecte a empresa na Conta Azul.`,
           );
           empresasComProblema.add(emp);
-          return { empresa: emp, bancos: [], contas: [] as ContaSaldo[], rec: [], desp: [] };
+          return { empresa: emp, bancos: [], rec: [], desp: [] };
         }
         const [sal, rec, desp] = await Promise.all([
           buscarSaldos(emp, token),
@@ -226,7 +220,6 @@ export const getDashboard = createServerFn({ method: "GET" })
             data.data_fim,
           ),
         ]);
-        contasPorEmpresa[emp] = sal.todas;
         const contasComFalha = sal.todas.filter((c) => c.erro);
         if (!sal.ok) {
           avisos.push(`${emp}: falha ao buscar saldos bancários.`);
@@ -246,7 +239,7 @@ export const getDashboard = createServerFn({ method: "GET" })
           avisos.push(`${emp}: falha ao buscar contas a pagar.`);
           empresasComProblema.add(emp);
         }
-        return { empresa: emp, bancos: sal.lista, contas: sal.todas, rec: rec.dados, desp: desp.dados };
+        return { empresa: emp, bancos: sal.lista, rec: rec.dados, desp: desp.dados };
       }),
     );
 
@@ -330,7 +323,6 @@ export const getDashboard = createServerFn({ method: "GET" })
       },
       avisos,
       empresas_com_problema: Array.from(empresasComProblema),
-      contas_por_empresa: contasPorEmpresa,
     };
   });
 

@@ -294,52 +294,46 @@ function Dashboard() {
   }
 
 
+  // Normaliza para comparar nomes de empresa sem depender de acento/maiúsculas.
+  const chave = (s: string) =>
+    (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().trim();
+
   const bancosPorEmpresa: Record<string, string[]> = {
-    // LGP Transportes: array vazio = mostra TODOS os bancos que a API retornar
+    // array vazio = mostra TODOS os bancos que a API retornar
     "LGP Transportes": [],
+    "Rosângela Transportes": [],
   };
-  const bancosPermitidos = bancosPorEmpresa[empresa] || ["ITAU", "SICOOB", "SICOOB 3109", "BRADESCO"];
-  const mostrarTodos = bancosPorEmpresa.hasOwnProperty(empresa) && bancosPermitidos.length === 0;
+
+  // Empresas que também exibem contas com saldo zerado — serve para localizar
+  // uma conta que existe na Conta Azul mas não aparece no painel (ex.: Sicoob
+  // 3109). Remover da lista assim que a conta for identificada.
+  const mostrarContasZeradas = new Set([chave("Rosângela Transportes")]);
+
+  const regraBancos = Object.entries(bancosPorEmpresa).find(
+    ([k]) => chave(k) === chave(empresa),
+  )?.[1];
+  const bancosPermitidos = regraBancos ?? ["ITAU", "SICOOB", "SICOOB 3109", "BRADESCO"];
+  const mostrarTodos = regraBancos !== undefined && bancosPermitidos.length === 0;
+  const exibirZeradas = mostrarContasZeradas.has(chave(empresa));
+
   const bancosFiltrados = useMemo(() => {
     const bancos = data?.saldos_por_banco || [];
     const vistos = new Set<string>();
     return bancos
       .filter((b) => {
         const nu = (b.nome || "").toUpperCase();
-        if (!mostrarTodos) {
-          const ok = bancosPermitidos.some((p) => nu.includes(p));
-          if (!ok || vistos.has(nu) || Math.abs(b.saldo) < 0.01) return false;
-        } else if (vistos.has(nu) || Math.abs(b.saldo) < 0.01) {
-          return false;
-        }
+        if (vistos.has(nu)) return false;
+        if (!exibirZeradas && Math.abs(b.saldo) < 0.01) return false;
+        if (!mostrarTodos && !bancosPermitidos.some((p) => nu.includes(p))) return false;
         vistos.add(nu);
         return true;
       })
       .sort((a, b) => a.nome.localeCompare(b.nome));
-  }, [data]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, exibirZeradas, mostrarTodos, bancosPermitidos.join("|")]);
 
   const saldoAtual = bancosFiltrados.reduce((acc, b) => acc + b.saldo, 0);
   const totalSaldoBancos = bancosFiltrados.reduce((sum, b) => sum + Math.max(b.saldo, 0), 0);
-
-  // Contas que a API da Conta Azul retornou para a empresa selecionada mas que
-  // NAO aparecem no painel de Bancos, com o motivo. Existe para responder
-  // "por que o Sicoob 3109 nao aparece?" sem precisar adivinhar.
-  const contasNaoExibidas = useMemo(() => {
-    if (empresa === "todas") return [];
-    const todas = data?.contas_por_empresa?.[empresa] || [];
-    const exibidas = new Set(bancosFiltrados.map((b) => (b.nome || "").trim().toUpperCase()));
-    return todas
-      .filter((c) => !exibidas.has((c.nome || "").trim().toUpperCase()))
-      .map((c) => ({
-        nome: c.nome || "(conta sem nome)",
-        motivo: c.erro
-          ? "falha ao ler o saldo"
-          : Math.abs(c.saldo) < 0.01
-          ? "saldo zerado"
-          : "fora do filtro de bancos",
-        saldo: c.saldo,
-      }));
-  }, [data, empresa, bancosFiltrados]);
   const totalRec = data?.resumo.total_rec || 0;
   const totalRecBoleto = data?.resumo.total_rec_boleto || 0;
   const totalRecOutros = Math.max(0, totalRec - totalRecBoleto);
@@ -517,30 +511,6 @@ function Dashboard() {
             })
           )}
         </div>
-
-        {/* Diagnóstico: contas que a API retornou mas não aparecem acima */}
-        {empresa !== "todas" && contasNaoExibidas.length > 0 && (
-          <div className="mt-3 rounded-xl border border-border/40 bg-card/30 p-3">
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
-              Contas não exibidas
-            </div>
-            <ul className="space-y-1.5">
-              {contasNaoExibidas.map((c) => (
-                <li key={c.nome} className="flex items-start justify-between gap-2 text-[11px]">
-                  <div className="min-w-0">
-                    <div className="truncate text-foreground/80" title={c.nome}>
-                      {c.nome}
-                    </div>
-                    <div className="text-muted-foreground">{c.motivo}</div>
-                  </div>
-                  <div className="tabular-nums shrink-0 text-muted-foreground">
-                    {fmt(c.saldo)}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
       </aside>
 
       {/* Sidebar toggle */}
