@@ -227,7 +227,7 @@ function Dashboard() {
     queryFn: () => listarEmpresasFn(),
     staleTime: Infinity,
     gcTime: Infinity,
-    refetchOnMount: false,
+    refetchOnMount: true,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
@@ -246,7 +246,7 @@ function Dashboard() {
     staleTime: Infinity,
     gcTime: Infinity,
     placeholderData: keepPreviousData,
-    refetchOnMount: false,
+    refetchOnMount: true,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
@@ -259,7 +259,7 @@ function Dashboard() {
     staleTime: Infinity,
     gcTime: Infinity,
     placeholderData: keepPreviousData,
-    refetchOnMount: false,
+    refetchOnMount: true,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
