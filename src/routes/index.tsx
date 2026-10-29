@@ -795,7 +795,6 @@ function Dashboard() {
                 icon={<TrendingDown className="h-5 w-5" />}
                 gradient="from-destructive/30 via-destructive/10 to-transparent"
                 accent="text-destructive"
-                sub={totalPagas > 0 ? undefined : "Sem pagamentos no período"}
               />
             )}
           </div>
