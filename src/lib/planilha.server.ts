@@ -191,10 +191,22 @@ export async function buscarFaturamentoPlanilha(
     d.setUTCDate(d.getUTCDate() + 1);
   }
 
-  const totaisPorDia = await Promise.all(dias.map((dia) => buscarAbaDoDia(dia)));
+  // Busca as abas com concistencia limitada (no modo "Mês atual" sao ~31 abas)
+  const CONCORRENCIA = 5;
+  const totaisPorDia: Record<string, number>[] = new Array(dias.length);
+  let idx = 0;
+  async function worker() {
+    while (true) {
+      const meu = idx++;
+      if (meu >= dias.length) return;
+      totaisPorDia[meu] = await buscarAbaDoDia(dias[meu]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCORRENCIA, dias.length) }, worker));
 
   let total = 0;
   for (const porEmpresa of totaisPorDia) {
+    if (!porEmpresa) continue;
     for (const [chave, valor] of Object.entries(porEmpresa)) {
       if (filtro === null || chave === filtro) total += valor;
     }

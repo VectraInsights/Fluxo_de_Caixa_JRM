@@ -82,6 +82,28 @@ function shiftDays(iso: string, dias: number): string {
   return new Date(d.getTime() - tz * 60000).toISOString().slice(0, 10);
 }
 
+// Primeiro dia do mes da data informada (YYYY-MM-DD)
+function primeiroDiaDoMes(iso: string): string {
+  return `${iso.slice(0, 7)}-01`;
+}
+
+// Ultimo dia do mes da data informada (YYYY-MM-DD)
+function ultimoDiaDoMes(iso: string): string {
+  const d = new Date(iso + "T00:00:00");
+  const ultimo = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  const tz = ultimo.getTimezoneOffset();
+  return new Date(ultimo.getTime() - tz * 60000).toISOString().slice(0, 10);
+}
+
+// Soma/subtrai meses (mantem o dia 1 para nao "pular" mes)
+function shiftMeses(iso: string, meses: number): string {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(1);
+  d.setMonth(d.getMonth() + meses);
+  const tz = d.getTimezoneOffset();
+  return new Date(d.getTime() - tz * 60000).toISOString().slice(0, 10);
+}
+
 // Traduz os erros mais comuns do OAuth da Conta Azul para uma mensagem
 // acionável, em vez de mostrar o JSON cru que a API retorna.
 function explicarErroOAuth(detalhe: string, httpStatus?: number): string {
@@ -155,8 +177,19 @@ function Dashboard() {
 
   useEffect(() => {
     if (intervalo === "personalizado") return;
+    const hoje = todayLocalISO(0);
+    if (intervalo === "mes") {
+      // Mês atual: do dia 1 até o último dia do mês corrente
+      const inicio = primeiroDiaDoMes(hoje);
+      const fim = ultimoDiaDoMes(hoje);
+      setDataInicio(inicio);
+      setDataFim(fim);
+      setPendingInicio(inicio);
+      setPendingFim(fim);
+      return;
+    }
     const dias = parseInt(intervalo);
-    const inicio = todayLocalISO(0);
+    const inicio = hoje;
     const fim = todayLocalISO(dias);
     setDataInicio(inicio);
     setDataFim(fim);
@@ -298,10 +331,21 @@ function Dashboard() {
     refetchFaturamento();
   }
 
-  // Setas de navegação quando o filtro está em um único dia (ex.: "Hoje")
+  // Setas de navegação: quando o filtro está em um único dia (ex.: "Hoje") navegam
+  // por dia; quando está em "Mês atual", navegam de mês para mês.
   const diaUnico = dataInicio === dataFim;
+  const intervaloMes = intervalo === "mes";
 
   function navegarDia(delta: number) {
+    if (intervaloMes) {
+      const novoInicio = shiftMeses(dataInicio, delta);
+      const novoFim = ultimoDiaDoMes(novoInicio);
+      setDataInicio(novoInicio);
+      setDataFim(novoFim);
+      setPendingInicio(novoInicio);
+      setPendingFim(novoFim);
+      return;
+    }
     const novo = shiftDays(dataInicio, delta);
     setDataInicio(novo);
     setDataFim(novo);
@@ -508,6 +552,7 @@ function Dashboard() {
           <option value="7">Próximos 7 dias</option>
           <option value="15">Próximos 15 dias</option>
           <option value="30">Próximos 30 dias</option>
+          <option value="mes">Mês atual</option>
           <option value="personalizado">Personalizado</option>
         </Select>
 
@@ -578,12 +623,12 @@ function Dashboard() {
                 Fluxo de Caixa
               </h1>
               <p className="text-sm text-muted-foreground mt-1 flex items-center gap-2">
-                {diaUnico && (
+                {(diaUnico || intervaloMes) && (
                   <button
                     onClick={() => navegarDia(-1)}
                     className="rounded-full border border-border bg-card/60 backdrop-blur p-1.5 text-foreground/70 hover:text-foreground hover:border-brand/40 transition-all"
-                    title="Dia anterior"
-                    aria-label="Dia anterior"
+                    title={intervaloMes ? "Mês anterior" : "Dia anterior"}
+                    aria-label={intervaloMes ? "Mês anterior" : "Dia anterior"}
                   >
                     <ChevronLeft className="h-3.5 w-3.5" />
                   </button>
@@ -592,12 +637,12 @@ function Dashboard() {
                   Projeção de {dataInicio.split("-").reverse().join("/")} até{" "}
                   {dataFim.split("-").reverse().join("/")}
                 </span>
-                {diaUnico && (
+                {(diaUnico || intervaloMes) && (
                   <button
                     onClick={() => navegarDia(1)}
                     className="rounded-full border border-border bg-card/60 backdrop-blur p-1.5 text-foreground/70 hover:text-foreground hover:border-brand/40 transition-all"
-                    title="Próximo dia"
-                    aria-label="Próximo dia"
+                    title={intervaloMes ? "Próximo mês" : "Próximo dia"}
+                    aria-label={intervaloMes ? "Próximo mês" : "Próximo dia"}
                   >
                     <ChevronRight className="h-3.5 w-3.5" />
                   </button>
