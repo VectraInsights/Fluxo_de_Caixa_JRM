@@ -756,11 +756,7 @@ function Dashboard() {
                   icon={<TrendingDown className="h-5 w-5" />}
                   gradient="from-destructive/30 via-destructive/10 to-transparent"
                   accent="text-destructive"
-                  sub={
-                    totalPagas > 0
-                      ? `${((totalPagas / (totalRec + totalDesp)) * 100).toFixed(1)}% do total de movimentacao`
-                      : "Sem pagamentos no período"
-                  }
+                  sub={totalPagas > 0 ? undefined : "Sem pagamentos no período"}
                 />
               </>
             )}
@@ -862,7 +858,7 @@ function Dashboard() {
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-success">
-                      A Receber — Consolidado
+                      A Receber
                     </span>
                     <span className="text-sm font-bold tabular-nums text-success">
                       {fmt(consolidado.receber.total)}
@@ -873,7 +869,7 @@ function Dashboard() {
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-destructive">
-                      A Pagar — Consolidado
+                      A Pagar
                     </span>
                     <span className="text-sm font-bold tabular-nums text-destructive">
                       {fmt(consolidado.pagar.total)}
@@ -884,7 +880,7 @@ function Dashboard() {
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-destructive">
-                      Pagos — Consolidado
+                      Pagos
                     </span>
                     <span className="text-sm font-bold tabular-nums text-destructive">
                       {fmt(consolidado.pagos.total)}
