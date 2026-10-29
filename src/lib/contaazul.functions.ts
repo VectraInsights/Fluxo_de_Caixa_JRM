@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import {
   getSupabase,
+  basicAuth,
   obterToken,
   buscarSaldos,
   buscarV2,
@@ -41,6 +42,89 @@ export const limparCache = createServerFn({ method: "POST" }).handler(async () =
   return { ok: true };
 });
 
+// Troca o code OAuth (que volta para a raiz) por access/refresh token e salva no Supabase.
+// O parâmetro "empresa" vem do state e garante que atualizamos o registro correto.
+export const finalizarAutorizacao = createServerFn({ method: "POST" })
+  .validator((d) =>
+    z
+      .object({
+        code: z.string(),
+        empresa: z.string().optional(),
+        origin: z.string(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    // Mesma redirect_uri usada na autorização (raiz da aplicação).
+    const redirectUri = `${data.origin.replace(/\/+$/, "")}/`;
+
+    const tokenRes = await fetch("https://auth.contaazul.com/oauth2/token", {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basicAuth()}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        redirect_uri: redirectUri,
+        code: data.code,
+      }),
+    });
+
+    if (!tokenRes.ok) {
+      const detalhe = await tokenRes.text();
+      return { status: "erro" as const, detalhe };
+    }
+
+    const dados: any = await tokenRes.json();
+    const access = dados.access_token as string;
+    const refresh = dados.refresh_token as string;
+
+    // Nome da empresa: usa o que veio no state; senão busca na API da Conta Azul.
+    let nome = (data.empresa || "").trim();
+    if (!nome) {
+      const info = await fetch("https://api-v2.contaazul.com/v1/info", {
+        headers: { Authorization: `Bearer ${access}` },
+      });
+      if (info.ok) {
+        const ij: any = await info.json();
+        if (ij?.name) nome = String(ij.name).toUpperCase();
+      }
+    }
+    if (!nome) nome = "NOVA_EMPRESA";
+
+    const sb = getSupabase();
+    const agora = new Date().toISOString();
+
+    // Atualiza o registro existente pela empresa; se não existir, insere novo.
+    const { data: atualizado } = await sb
+      .from("tokens")
+      .update({
+        access_token: access,
+        refresh_token: refresh,
+        status: "ATIVO",
+        mensagem_erro: null,
+        updated_at: agora,
+      })
+      .eq("empresa", nome)
+      .select("id");
+
+    if (!atualizado || atualizado.length === 0) {
+      await sb.from("tokens").insert({
+        empresa: nome,
+        access_token: access,
+        refresh_token: refresh,
+        status: "ATIVO",
+        mensagem_erro: null,
+        updated_at: agora,
+      });
+    }
+
+    limparCacheDetalhes();
+
+    return { status: "sucesso" as const, empresa: nome };
+  });
+
 export const inspecionarRecebimentos = createServerFn({ method: "GET" })
   .validator((d) =>
     z
@@ -70,6 +154,7 @@ export type DashboardData = {
     saldo_final: number;
   };
   avisos: string[];
+  empresas_com_problema: string[];
 };
 
 function dateRange(inicio: string, fim: string): string[] {
@@ -105,6 +190,7 @@ export const getDashboard = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<DashboardData> => {
     const empresas = await resolverEmpresas(data.empresa);
     const avisos: string[] = [];
+    const empresasComProblema = new Set<string>();
 
     // Empresas em paralelo (tokens e chamadas à API são independentes)
     const resultados = await Promise.all(
@@ -114,6 +200,7 @@ export const getDashboard = createServerFn({ method: "GET" })
           avisos.push(
             `${emp}: sem token válido — reconecte a empresa na Conta Azul.`,
           );
+          empresasComProblema.add(emp);
           return { empresa: emp, bancos: [], rec: [], desp: [] };
         }
         const [sal, rec, desp] = await Promise.all([
@@ -133,12 +220,15 @@ export const getDashboard = createServerFn({ method: "GET" })
         ]);
         if (!sal.ok) {
           avisos.push(`${emp}: falha ao buscar saldos bancários.`);
+          empresasComProblema.add(emp);
         }
         if (!rec.ok) {
           avisos.push(`${emp}: falha ao buscar contas a receber.`);
+          empresasComProblema.add(emp);
         }
         if (!desp.ok) {
           avisos.push(`${emp}: falha ao buscar contas a pagar.`);
+          empresasComProblema.add(emp);
         }
         return { empresa: emp, bancos: sal.lista, rec: rec.dados, desp: desp.dados };
       }),
@@ -223,6 +313,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         saldo_final: saldo.length ? saldo[saldo.length - 1] : Math.round(totalBanco * 100) / 100,
       },
       avisos,
+      empresas_com_problema: Array.from(empresasComProblema),
     };
   });
 

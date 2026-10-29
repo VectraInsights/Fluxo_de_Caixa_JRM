@@ -10,11 +10,17 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiAutorizarRouteImport } from './routes/api/autorizar'
 import { Route as ApiCallbackRouteImport } from './routes/api/callback'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAutorizarRoute = ApiAutorizarRouteImport.update({
+  id: '/api/autorizar',
+  path: '/api/autorizar',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiCallbackRoute = ApiCallbackRouteImport.update({
@@ -25,27 +31,31 @@ const ApiCallbackRoute = ApiCallbackRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/callback'
+  fullPaths: '/' | '/api/autorizar' | '/api/callback'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/callback'
-  id: '__root__' | '/' | '/api/callback'
+  to: '/' | '/api/autorizar' | '/api/callback'
+  id: '__root__' | '/' | '/api/autorizar' | '/api/callback'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiAutorizarRoute: typeof ApiAutorizarRoute
   ApiCallbackRoute: typeof ApiCallbackRoute
 }
 
@@ -56,6 +66,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/autorizar': {
+      id: '/api/autorizar'
+      path: '/api/autorizar'
+      fullPath: '/api/autorizar'
+      preLoaderRoute: typeof ApiAutorizarRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/callback': {
@@ -70,6 +87,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiAutorizarRoute: ApiAutorizarRoute,
   ApiCallbackRoute: ApiCallbackRoute,
 }
 export const routeTree = rootRouteImport

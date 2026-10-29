@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import {
@@ -27,12 +27,15 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Barcode,
+  Link2,
+  CheckCircle2,
 } from "lucide-react";
 import {
   listarEmpresas,
   getDashboard,
   limparCache,
   getEmpresaBreakdown,
+  finalizarAutorizacao,
   type TituloDetalhe,
 } from "@/lib/contaazul.functions";
 import { useQueryClient } from "@tanstack/react-query";
@@ -93,6 +96,12 @@ function Dashboard() {
   const [pendingInicio, setPendingInicio] = useState(todayLocalISO(0));
   const [pendingFim, setPendingFim] = useState(todayLocalISO(0));
 
+  // Estado do fluxo de (re)conexão com a Conta Azul
+  const [oauthStatus, setOauthStatus] = useState<
+    "ocioso" | "processando" | "sucesso" | "erro"
+  >("ocioso");
+  const [oauthMsg, setOauthMsg] = useState("");
+
     useEffect(() => {
     const saved = localStorage.getItem("theme");
     if (saved === "light") setTheme("light");
@@ -127,7 +136,55 @@ function Dashboard() {
   const getDashboardFn = useServerFn(getDashboard);
   const limparCacheFn = useServerFn(limparCache);
   const getEmpresaBreakdownFn = useServerFn(getEmpresaBreakdown);
+  const finalizarAutorizacaoFn = useServerFn(finalizarAutorizacao);
   const queryClient = useQueryClient();
+
+  // Detecta o retorno do OAuth (code + state na URL) e troca por token.
+  // O Conta Azul redireciona para a RAIZ com ?code=...&state=... .
+  const processarOAuthRef = useRef(false);
+  useEffect(() => {
+    if (processarOAuthRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    const state = params.get("state");
+    if (!code) return;
+    processarOAuthRef.current = true;
+
+    // Limpa a URL para não reprocessar o mesmo code ao recarregar
+    params.delete("code");
+    params.delete("state");
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}`,
+    );
+
+    (async () => {
+      setOauthStatus("processando");
+      setOauthMsg("Conectando à Conta Azul...");
+      try {
+        const r = await finalizarAutorizacaoFn({
+          data: { code, empresa: state || "", origin: window.location.origin },
+        });
+        if (r.status === "sucesso") {
+          setOauthStatus("sucesso");
+          setOauthMsg(`Empresa "${r.empresa}" conectada com sucesso.`);
+          refetchEmpresas();
+          refetch();
+        } else {
+          setOauthStatus("erro");
+          setOauthMsg(
+            `Falha ao conectar: ${(r as any).detalhe || "erro desconhecido"}`,
+          );
+        }
+      } catch (e) {
+        setOauthStatus("erro");
+        setOauthMsg(`Falha ao conectar: ${String((e as any)?.message || e)}`);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const { data: empresas = [], refetch: refetchEmpresas } = useQuery({
     queryKey: ["empresas"],
@@ -267,6 +324,11 @@ function Dashboard() {
   const temProblema =
     (data?.avisos?.length ?? 0) > 0 || empresas.some((e) => e.status === "ERRO");
 
+  const empresaSelecionadaProblema =
+    empresa !== "todas" &&
+    (empresas.find((e) => e.nome === empresa)?.status === "ERRO" ||
+      (data?.empresas_com_problema?.includes(empresa) ?? false));
+
   return (
     <div className="min-h-screen w-full bg-background text-foreground font-sans relative overflow-hidden">
       {/* Background ambient glow */}
@@ -281,6 +343,16 @@ function Dashboard() {
           <div className="flex flex-col items-center gap-3">
             <Loader2 className="h-10 w-10 animate-spin text-brand" />
             <span className="text-sm text-muted-foreground">Sincronizando...</span>
+          </div>
+        </div>
+      )}
+
+      {/* Overlay durante a conexão OAuth */}
+      {oauthStatus === "processando" && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-background/60 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3">
+            <Loader2 className="h-10 w-10 animate-spin text-brand" />
+            <span className="text-sm text-muted-foreground">Conectando à Conta Azul...</span>
           </div>
         </div>
       )}
@@ -328,6 +400,16 @@ function Dashboard() {
             </option>
           ))}
         </Select>
+
+        {empresaSelecionadaProblema && (
+          <a
+            href={`/api/autorizar?empresa=${encodeURIComponent(empresa)}`}
+            className="mt-1 mb-2 flex items-center justify-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-xs font-semibold text-destructive hover:bg-destructive/20 transition-colors"
+          >
+            <Link2 className="h-3.5 w-3.5" />
+            Conectar Conta Azul
+          </a>
+        )}
 
         <Label>Intervalo de Projeção</Label>
         <Select value={intervalo} onChange={(e) => setIntervalo(e.target.value)}>
@@ -474,6 +556,42 @@ function Dashboard() {
             </div>
           </div>
 
+          {/* Banner de resultado da conexão OAuth */}
+          {oauthStatus === "sucesso" && (
+            <div className="mb-5 flex items-start justify-between gap-3 rounded-xl border border-success/30 bg-success/10 p-4">
+              <div className="flex items-start gap-3 text-sm">
+                <CheckCircle2 className="h-5 w-5 text-success shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-semibold">Conectado</div>
+                  <div className="text-muted-foreground">{oauthMsg}</div>
+                </div>
+              </div>
+              <button
+                onClick={() => setOauthStatus("ocioso")}
+                className="text-xs text-muted-foreground hover:text-foreground shrink-0"
+              >
+                Fechar
+              </button>
+            </div>
+          )}
+          {oauthStatus === "erro" && (
+            <div className="mb-5 flex items-start justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/10 p-4">
+              <div className="flex items-start gap-3 text-sm">
+                <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-semibold">Falha na conexão</div>
+                  <div className="text-muted-foreground">{oauthMsg}</div>
+                </div>
+              </div>
+              <button
+                onClick={() => setOauthStatus("ocioso")}
+                className="text-xs text-muted-foreground hover:text-foreground shrink-0"
+              >
+                Fechar
+              </button>
+            </div>
+          )}
+
           {/* Alerta de problemas de sincronização */}
           {temProblema && !isFetching && (
             <div className="mb-5 rounded-xl border border-destructive/30 bg-destructive/10 p-4">
@@ -496,10 +614,24 @@ function Dashboard() {
                     </ul>
                   )}
                   <div className="mt-2 text-muted-foreground">
-                    <span className="font-medium">Como resolver:</span> se a mensagem indicar token
-                    inválido ou expirado, será necessário reconectar a empresa na Conta Azul (o
-                    fluxo de reconexão ainda não está disponível na interface).
+                    <span className="font-medium">Como resolver:</span> clique em{" "}
+                    <span className="font-medium">Conectar Conta Azul</span> abaixo para
+                    reautenticar a empresa e gerar um token novo.
                   </div>
+                  {(data?.empresas_com_problema?.length ?? 0) > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {data!.empresas_com_problema.map((emp) => (
+                        <a
+                          key={emp}
+                          href={`/api/autorizar?empresa=${encodeURIComponent(emp)}`}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/20 transition-colors"
+                        >
+                          <Link2 className="h-3 w-3" />
+                          Conectar {emp}
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
