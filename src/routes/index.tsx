@@ -29,12 +29,14 @@ import {
   Barcode,
   Link2,
   CheckCircle2,
+  Banknote,
 } from "lucide-react";
 import {
   listarEmpresas,
   getDashboard,
   limparCache,
   getEmpresaBreakdown,
+  getFaturamento,
   finalizarAutorizacao,
   type TituloDetalhe,
 } from "@/lib/contaazul.functions";
@@ -174,6 +176,7 @@ function Dashboard() {
   const getDashboardFn = useServerFn(getDashboard);
   const limparCacheFn = useServerFn(limparCache);
   const getEmpresaBreakdownFn = useServerFn(getEmpresaBreakdown);
+  const getFaturamentoFn = useServerFn(getFaturamento);
   const finalizarAutorizacaoFn = useServerFn(finalizarAutorizacao);
   const queryClient = useQueryClient();
 
@@ -264,6 +267,17 @@ function Dashboard() {
     refetchOnReconnect: false,
   });
 
+  // Faturamento do dia (planilha de cargas no Google Sheets — coluna VALOR).
+  const { data: faturamento, refetch: refetchFaturamento } = useQuery({
+    queryKey: ["faturamento"],
+    queryFn: () => getFaturamentoFn(),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnMount: true,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+
   async function recarregarTudo() {
     // 1. Limpa o cache no servidor
     await limparCacheFn();
@@ -278,8 +292,9 @@ function Dashboard() {
       refetch();
     }
     
-    // 4. Refresca a lista de empresas
+    // 4. Refresca a lista de empresas e o faturamento (planilha)
     refetchEmpresas();
+    refetchFaturamento();
   }
 
   // Setas de navegação quando o filtro está em um único dia (ex.: "Hoje")
@@ -757,6 +772,18 @@ function Dashboard() {
                   gradient="from-destructive/30 via-destructive/10 to-transparent"
                   accent="text-destructive"
                   sub={totalPagas > 0 ? undefined : "Sem pagamentos no período"}
+                />
+                <KpiCard
+                  label="Faturamento"
+                  valor={faturamento?.total ?? 0}
+                  icon={<Banknote className="h-5 w-5" />}
+                  gradient="from-success/30 via-success/10 to-transparent"
+                  accent="text-success"
+                  sub={
+                    faturamento && faturamento.quantidade > 0
+                      ? `${faturamento.quantidade} cargas na planilha`
+                      : "Sem cargas lançadas"
+                  }
                 />
               </>
             )}
