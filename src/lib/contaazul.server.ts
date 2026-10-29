@@ -618,13 +618,14 @@ async function buscarViaCobrancas(
 ): Promise<{ metodo: string | null; erro?: boolean }> {
   try {
     const url = `https://api-v2.contaazul.com/v1/cobranca/buscar?recebimento_id=${recebimentoId}`;
-    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+    // Busca secundaria (metodo): poucas tentativas para nao atrasar o dashboard
+    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
     
     if (res.status === 401) {
       const novo = await renovarToken(empresa);
       if (!novo) return { metodo: null, erro: true };
       tokenRef.token = novo;
-      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1);
     }
     
     if (!res.ok) {
@@ -660,13 +661,14 @@ async function buscarParcelaDetalhesPorId(
   for (const url of urls) {
     let tentativasReauth = 0;
     try {
-      let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+      // Busca secundaria (metodo): poucas tentativas para nao atrasar o dashboard
+      let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
       if (res.status === 401 && tentativasReauth < 1) {
         const novo = await renovarToken(empresa);
         if (!novo) return { metodo: null, erro: true };
         tokenRef.token = novo;
         tentativasReauth++;
-        res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+        res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1);
       }
 
       if (!res.ok) {
@@ -716,7 +718,9 @@ async function buscarMetodoPorListaReceber(
       pagina: String(pagina),
     });
     const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-receber?${params}`;
-    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+    // Busca secundaria (classificacao de metodo): poucas tentativas para nao
+    // atrasar o dashboard em dias com muitos titulos.
+    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
 
     if (res.status === 401 && tentativasReauth < 1) {
       const novo = await renovarToken(empresa);
@@ -726,7 +730,7 @@ async function buscarMetodoPorListaReceber(
       }
       tokenRef.token = novo;
       tentativasReauth++;
-      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1);
     }
     if (!res.ok) {
       log("warn", `buscarMetodoPorListaReceber ${empresa} pg=${pagina} status=${res.status}`);
@@ -792,6 +796,9 @@ async function buscarV2Interna(
   const tokenRef = { token: tokenInicial };
 
   let teveErroGeral = false;
+  // Falha em buscas SECUNDARIAS (metodo/forma de pagamento): os titulos ja foram
+  // obtidos, entao nao deve acender a bolinha vermelha de sincronizacao.
+  let falhaDetalhe = false;
   const brutos: {
     id: string;
     data: string;
@@ -875,7 +882,9 @@ async function buscarV2Interna(
   // Para contas a receber, primeiro tenta buscar métodos via lista de contas-a-receber
   const { mapa: metodoPorId, erro: erroMetodosLista } = await buscarMetodoPorListaReceber(empresa, dataInicio, dataFim, tokenRef);
   if (erroMetodosLista) {
-    teveErroGeral = true;
+    // Falha ao classificar metodo NAO e falha de sincronizacao: os titulos em si
+    // ja foram trazidos. Vira apenas log (evita bolinha vermelha falsa).
+    falhaDetalhe = true;
   }
   log("info", `buscarV2 ${empresa} encontrou ${metodoPorId.size} itens com metodo via lista (erro=${erroMetodosLista})`);
 
@@ -909,7 +918,9 @@ async function buscarV2Interna(
         const resDet = await buscarDetalheFormaPagamento(empresa, endpoint, b.id, tokenRef);
         metodo = resDet.metodo;
         if (resDet.erro) {
-          teveErroGeral = true;
+          // Erro ao buscar APENAS o metodo de pagamento: o titulo ja esta aqui.
+          // Nao marca a consulta como falha (evita erro falso de sincronizacao).
+          falhaDetalhe = true;
         }
       } else {
         log("info", `${empresa} item ${String(b.id).slice(0, 8)} data=${b.data} valor=${b.valor} classificado de lista como: ${metodo}`);
@@ -938,6 +949,12 @@ async function buscarV2Interna(
     `${empresa} a_receber=${brutos.length} com_metodo=${comMetodo} boletos=${boletos}`,
   );
 
+  if (falhaDetalhe) {
+    log(
+      "warn",
+      `${empresa}: falha ao classificar forma de pagamento de parte dos titulos (dados completos, apenas metodo incompleto) — nao afeta a sincronizacao`,
+    );
+  }
   if (teveErroGeral) {
     log("warn", `buscarV2 finalizou com erros para ${empresa} (receber). Dados não cacheados.`);
   }
@@ -945,9 +962,10 @@ async function buscarV2Interna(
 }
 
 // ------------------- Contas efetivamente pagas (baixadas) -------------------
-// Busca titulos de contas a pagar com status PAGO baixados no periodo, usando o
-// filtro data_pagamento_de/_ate da API. Diferente do buscarV2 (que traz titulos
-// EM_ABERTO pelo vencimento), aqui o que interessa e a DATA REAL do pagamento.
+// Busca titulos de contas a pagar quitados no periodo, com o filtro
+// data_pagamento_de/_ate e status ACQUITTED (documentacao oficial Conta Azul).
+// Diferente do buscarV2 (que traz titulos EM_ABERTO pelo vencimento), aqui o que
+// interessa e a DATA REAL do pagamento.
 
 // Extrai a data de pagamento/baixa de um titulo (varias estruturas possiveis)
 function extrairDataPagamento(i: any): string | null {
