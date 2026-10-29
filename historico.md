@@ -62,7 +62,8 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
-| `bc69a7a` | **(commit padrao / referencia atual)** — fix: refetchOnMount true para carregar dados automaticamente ao abrir dashboard | 29/10/2026 |
+| `PENDENTE` | **(proximo commit)** — fix: card Contas Pagas soma apenas titulos efetivamente baixados (status PAGO + data de pagamento), para de espelhar Saidas Previstas | 29/10/2026 |
+| `9449fa5` | docs: atualiza historico.md com commit aba1d3d como referencia de reversao | 29/10/2026 |
 | `aba1d3d` | **(commit padrao / referencia atual)** — feat: remove cards Receber via Boleto e Outros Meios, adiciona card Contas Pagas | 29/10/2026 |
 | `bc69a7a` | fix: refetchOnMount true para carregar dados automaticamente ao abrir dashboard | 29/10/2026 |
 | `0f168e1` | fix: JRM Transportes exibe apenas Bradesco, Itaú, Sicoob 3049 e Sicoob 3109 (remove Sicoob sem numero que nao existe na empresa) | 29/10/2026 |
