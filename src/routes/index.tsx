@@ -267,10 +267,11 @@ function Dashboard() {
     refetchOnReconnect: false,
   });
 
-  // Faturamento do dia (planilha de cargas no Google Sheets — coluna VALOR).
+  // Faturamento do periodo (planilha de cargas no Google Sheets — aba do dia, coluna VALOR).
   const { data: faturamento, refetch: refetchFaturamento } = useQuery({
-    queryKey: ["faturamento"],
-    queryFn: () => getFaturamentoFn(),
+    queryKey: ["faturamento", dataInicio, dataFim],
+    queryFn: () => getFaturamentoFn({ data: { data_inicio: dataInicio, data_fim: dataFim } }),
+    enabled: !!dataInicio && !!dataFim,
     staleTime: Infinity,
     gcTime: Infinity,
     refetchOnMount: true,
@@ -779,11 +780,6 @@ function Dashboard() {
                   icon={<Banknote className="h-5 w-5" />}
                   gradient="from-success/30 via-success/10 to-transparent"
                   accent="text-success"
-                  sub={
-                    faturamento && faturamento.quantidade > 0
-                      ? `${faturamento.quantidade} cargas na planilha`
-                      : "Sem cargas lançadas"
-                  }
                 />
               </>
             )}

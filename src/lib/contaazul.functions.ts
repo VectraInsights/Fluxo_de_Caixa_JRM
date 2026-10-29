@@ -46,18 +46,25 @@ export const limparCache = createServerFn({ method: "POST" }).handler(async () =
   return { ok: true };
 });
 
-// Faturamento do dia (planilha de cargas no Google Sheets, coluna VALOR).
-// Nao afeta o dashboard da Conta Azul: se falhar, devolve erro leve.
-export const getFaturamento = createServerFn({ method: "GET" }).handler(
-  async (): Promise<{ total: number; quantidade: number; data: string | null }> => {
+// Faturamento do periodo (planilha de cargas no Google Sheets — aba do dia, coluna VALOR).
+// Nao afeta o dashboard da Conta Azul: se falhar, devolve 0.
+export const getFaturamento = createServerFn({ method: "GET" })
+  .validator((d) =>
+    z
+      .object({
+        data_inicio: z.string(),
+        data_fim: z.string(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }): Promise<{ total: number }> => {
     try {
-      return await buscarFaturamentoPlanilha();
+      return await buscarFaturamentoPlanilha(data.data_inicio, data.data_fim);
     } catch (e) {
       log("warn", `faturamento planilha: ${(e as Error).message}`);
-      return { total: 0, quantidade: 0, data: null };
+      return { total: 0 };
     }
-  },
-);
+  });
 
 // Troca o code OAuth (que volta para a raiz) por access/refresh token e salva no Supabase.
 // O parâmetro "empresa" vem do state e garante que atualizamos o registro correto.
