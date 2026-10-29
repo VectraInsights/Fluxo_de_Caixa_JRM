@@ -746,27 +746,15 @@ function Dashboard() {
             ) : (
               <>
                 <KpiCard
-                  label="A Receber via Boleto"
-                  valor={totalRecBoleto}
-                  icon={<Barcode className="h-5 w-5" />}
-                  gradient="from-brand-2/30 via-brand-2/10 to-transparent"
-                  accent="text-brand-2"
+                  label="Contas Pagas"
+                  valor={totalDesp}
+                  icon={<TrendingDown className="h-5 w-5" />}
+                  gradient="from-destructive/30 via-destructive/10 to-transparent"
+                  accent="text-destructive"
                   sub={
                     totalRec > 0
-                      ? `${((totalRecBoleto / totalRec) * 100).toFixed(1)}% do total a receber`
-                      : "Sem recebimentos no período"
-                  }
-                />
-                <KpiCard
-                  label="A Receber - Outros Meios"
-                  valor={totalRecOutros}
-                  icon={<TrendingUp className="h-5 w-5" />}
-                  gradient="from-success/30 via-success/10 to-transparent"
-                  accent="text-success"
-                  sub={
-                    totalRec > 0
-                      ? `${((totalRecOutros / totalRec) * 100).toFixed(1)}% do total a receber`
-                      : "Sem recebimentos no período"
+                      ? `${((totalDesp / (totalRec + totalDesp)) * 100).toFixed(1)}% do total de movimentacao`
+                      : "Sem pagamentos no período"
                   }
                 />
               </>

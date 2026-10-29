@@ -62,6 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `bc69a7a` | **(commit padrao / referencia atual)** — fix: refetchOnMount true para carregar dados automaticamente ao abrir dashboard | 29/10/2026 |
 | `0f168e1` | fix: JRM Transportes exibe apenas Bradesco, Itaú, Sicoob 3049 e Sicoob 3109 (remove Sicoob sem numero que nao existe na empresa) | 29/10/2026 |
 | `c16fbfd` | fix: filtro de bancos por correspondencia exata para nao mostrar Bradesco ap. nem Veloe na Rosangela | 29/10/2026 |
 | `e55fa9c` | fix: Rosangela Transportes exibe apenas Bradesco, Itaú, Sicoob 3049 e Sicoob 3109 (remove Bradesco ap. e Veloe que nao existem na empresa) | 29/10/2026 |
@@ -69,17 +70,17 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 | `1981bb8` | fix: pagina a listagem de contas financeiras e remove filtro de saldo zerado para exibir todas as contas da Conta Azul | 29/10/2026 |
 | `f9f4082` | fix: mostra detalhe da falha no tooltip da bolinha vermelha e remove alertas redundantes causados por status defasado | 29/10/2026 |
 | `c065eaf` | fix: remove painel de contas nao exibidas e deixa Rosangela listar todos os bancos para localizar o Sicoob 3109 | 29/10/2026 |
-| `a626bd8` | *(commit padrao / referencia atual)* — feat: mostra contas nao exibidas no painel de Bancos para diagnosticar banco ausente | 29/10/2026 |
+| `a626bd8` | feat: mostra contas nao exibidas no painel de Bancos para diagnosticar banco ausente | 29/10/2026 |
 | `902e617` | fix: usa endpoint de token v2 da Conta Azul para corrigir invalid_client na troca de code e na renovacao | 29/10/2026 |
 | `68fc942` | feat: adiciona botao e rota de reconexao com a Conta Azul para renovar token de empresa | 29/10/2026 |
 | `5af8199` | feat: sinaliza falhas de sincronizacao no dashboard com bolinha vermelha e avisos detalhados | 29/10/2026 |
-| `ff37c8e` | *(referencia antiga, superada)* — fix: remove filtro BANCOS_PERMITIDOS do backend para LGP Transportes receber todos os bancos da API | 28/10/2026 |
+| `ff37c8e` | fix: remove filtro BANCOS_PERMITIDOS do backend para LGP Transportes receber todos os bancos da API | 28/10/2026 |
 | `8ec7d90` | feat: LGP Transportes mostra todos os bancos da API para diagnostico | 28/10/2026 |
 | `8a45410` | feat: LGP Transportes mostra apenas ITAU, SICOOB 3049, BRADESCO e SICOOB 3109 | 28/10/2026 |
 | `ee1001c` | feat: bancos especificos por empresa — LGP Transportes mostra apenas Bradesco e Sicoob 3109 | 28/10/2026 |
 | `344db44` | feat: adiciona aliases BRADESCO S.A e SICOOB para LGP Transportes | 28/10/2026 |
 | `29edb6d` | feat: LGP Transportes mostra todos os bancos da API (sem filtro restritivo) | 28/10/2026 |
-| `b58ab10` | **Versao funcional original** — perf: deduplica requisicoes concorrentes, paraleliza busca por empresa e mantem dados anteriores durante recarga | Antes de 28/10/2026 |
+| `b58ab10` | versao funcional original — perf: deduplica requisicoes concorrentes, paraleliza busca por empresa e mantem dados anteriores durante recarga | Antes de 28/10/2026 |
 | `193c74e` | feat: define Hoje como intervalo padrao de pesquisa ao abrir o sistema | Anterior |
 | `d2d8ddb` | feat: header simplificado com status de sincronizacao ao lado do Recarregar | Anterior |
 
@@ -87,27 +88,28 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 ## 4. Commit de Reversão Padrao
 
-### Commit recomendado para revert​​ao: `ff37c8e`
+### Commit recomendado para revert​​ao: `bc69a7a`
 
-**Mensagem:** `feat: mostra contas nao exibidas no painel de Bancos para diagnosticar banco ausente`
+**Mensagem:** `fix: refetchOnMount true para carregar dados automaticamente ao abrir dashboard`
 
 **Estado conhecido como funcional (29/10/2026):**
-- Dashboard carrega valores reais da Conta Azul (saldo atual, entradas, saidas).
-- Bolinha de sincronizacao fica **vermelha** e lista as empresas com falha.
+- Dashboard carrega valores reais da Conta Azul automaticamente ao abrir (nao precisa de F5).
+- Bolinha de sincronizacao fica vermelha se houver falha.
 - Botao **"Conectar Conta Azul"** funciona: gera um token novo para a empresa.
 - Renovacao automatica de token funciona (endpoint v2 da Conta Azul).
+- Bolinha de sincronizacao mostra status correto (verde/vermelho/azul pulsando).
 
 **Como reverter para este estado:**
 
 ```bash
 # No repositorio local
-git reset --hard a626bd8
+git reset --hard bc69a7a
 git push origin main --force
 ```
 
 Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 
-**IMPORTANTE:** Nao faca mais alteracoes no codigo sem testar primeiro em ambiente local. O commit `a626bd8` e o estado de referencia funcional.
+**IMPORTANTE:** Nao faca mais alteracoes no codigo sem testar primeiro em ambiente local. O commit `bc69a7a` e o estado de referencia funcional.
 
 **Regra do projeto (AGENTS.md):** sempre `git commit` + `git push` apos qualquer alteracao, com mensagem em portugues no padrao `feat:`, `fix:` ou `chore:`. **Nunca** reescreva o historico ja publicado (force push / rebase / amend) — o projeto esta conectado ao Lovable.
 
