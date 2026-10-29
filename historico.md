@@ -20,9 +20,18 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 1. O usuario clica em "Conectar Conta Azul" para uma empresa com token expirado.
 2. O navegador e redirecionado para: `/api/autorizar?empresa=NOME_DA_EMPRESA`
-3. A Conta Azul autentica o usuario e devolve um `code` na URL da aplicacao.
-4. O dashboard captura o `code` e chama o `/api/callback` (GET) para trocar o codigo por `access_token` e `refresh_token`.
-5. O token e salvo no Supabase na tabela `tokens` com status `ATIVO`.
+3. A Conta Azul autentica o usuario e devolve um `code` na RAIZ da aplicacao
+   (`https://jrm-dashboard.vercel.app/?code=...&state=...`) — a `redirect_uri`
+   cadastrada no Portal da Conta Azul e a raiz, **nao** `/api/callback`.
+4. A pagina inicial detecta o `code` na URL e chama a server function
+   `finalizarAutorizacao`, que troca o codigo por `access_token` e `refresh_token`.
+5. O token e salvo no Supabase na tabela `tokens` com status `ATIVO`. O registro
+   existente da empresa e **atualizado** (o nome vem do parametro `state`), sem
+   criar linha duplicada.
+
+> **Endpoint de token:** usar sempre `https://api-v2.contaazul.com/oauth/token`
+> (documentado no portal novo). O host antigo `auth.contaazul.com/oauth2/token`
+> rejeita apps do portal novo com `invalid_client`. Ver secao 7.
 
 ### 2.2 Busca de Dados do Dashboard
 
@@ -46,7 +55,11 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
-| `ff37c8e` | **Versao funcional atual** — fix: remove filtro BANCOS_PERMITIDOS do backend para LGP Transportes receber todos os bancos da API | 28/10/2026 |
+| `a626bd8` | **COMMIT PADRAO / REFERENCIA ATUAL** — feat: mostra contas nao exibidas no painel de Bancos para diagnosticar banco ausente | 29/10/2026 |
+| `902e617` | fix: usa endpoint de token v2 da Conta Azul para corrigir invalid_client na troca de code e na renovacao | 29/10/2026 |
+| `68fc942` | feat: adiciona botao e rota de reconexao com a Conta Azul para renovar token de empresa | 29/10/2026 |
+| `5af8199` | feat: sinaliza falhas de sincronizacao no dashboard com bolinha vermelha e avisos detalhados | 29/10/2026 |
+| `ff37c8e` | *(referencia antiga, superada)* — fix: remove filtro BANCOS_PERMITIDOS do backend para LGP Transportes receber todos os bancos da API | 28/10/2026 |
 | `8ec7d90` | feat: LGP Transportes mostra todos os bancos da API para diagnostico | 28/10/2026 |
 | `8a45410` | feat: LGP Transportes mostra apenas ITAU, SICOOB 3049, BRADESCO e SICOOB 3109 | 28/10/2026 |
 | `ee1001c` | feat: bancos especificos por empresa — LGP Transportes mostra apenas Bradesco e Sicoob 3109 | 28/10/2026 |
@@ -62,31 +75,37 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 ### Commit recomendado para revert​​ao: `ff37c8e`
 
-**Mensagem:** `fix: remove filtro BANCOS_PERMITIDOS do backend para LGP Transportes receber todos os bancos da API`
+**Mensagem:** `feat: mostra contas nao exibidas no painel de Bancos para diagnosticar banco ausente`
 
-**Motivo:** Este e o ultimo commit conhecido como totalmente funcional. Todas as alteracoes feitas apos este commit (tentativas de corrigir renovacao de token, paginacao, filtros por empresa) quebraram o funcionamento do dashboard.
+**Estado conhecido como funcional (29/10/2026):**
+- Dashboard carrega valores reais da Conta Azul (saldo atual, entradas, saidas).
+- Bolinha de sincronizacao fica **vermelha** e lista as empresas com falha.
+- Botao **"Conectar Conta Azul"** funciona: gera um token novo para a empresa.
+- Renovacao automatica de token funciona (endpoint v2 da Conta Azul).
 
 **Como reverter para este estado:**
 
 ```bash
 # No repositorio local
-git reset --hard ff37c8e
+git reset --hard a626bd8
 git push origin main --force
 ```
 
 Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 
-**IMPORTANTE:** Nao faca mais alteracoes no codigo sem testar primeiro em ambiente local. O commit `ff37c8e` e o estado de referencia funcional.
+**IMPORTANTE:** Nao faca mais alteracoes no codigo sem testar primeiro em ambiente local. O commit `a626bd8` e o estado de referencia funcional.
+
+**Regra do projeto (AGENTS.md):** sempre `git commit` + `git push` apos qualquer alteracao, com mensagem em portugues no padrao `feat:`, `fix:` ou `chore:`. **Nunca** reescreva o historico ja publicado (force push / rebase / amend) — o projeto esta conectado ao Lovable.
 
 ---
 
 ## 5. Estrutura de Arquivos Relevantes
 
-- `src/lib/contaazul.functions.ts` — `getDashboard`, `listarEmpresas`, `inspecionarRecebimentos`
-- `src/lib/contaazul.server.ts` — `obterToken`, `renovarToken`, `buscarSaldos`, `buscarV2`, `basicAuth`, `getSupabase`
-- `src/routes/index.tsx` — Dashboard frontend, indicador de sync, KPI cards, projeto diaria
-- `src/routes/api/callback.ts` — Troca do `code` OAuth por `access_token`/`refresh_token`
-- `src/routes/api/autorizar.ts` — Redirecionamento para login da Conta Azul
+- `src/lib/contaazul.functions.ts` — `getDashboard`, `listarEmpresas`, `inspecionarRecebimentos`, `finalizarAutorizacao` (troca o `code` OAuth por token)
+- `src/lib/contaazul.server.ts` — `obterToken`, `renovarToken`, `pedirToken` (endpoint v2 com fallback legado), `buscarSaldos`, `buscarV2`, `basicAuth`, `getSupabase`
+- `src/routes/index.tsx` — Dashboard frontend, indicador de sync, KPI cards, projeto diaria, deteccao do `code` OAuth na raiz e botoes "Conectar Conta Azul"
+- `src/routes/api/autorizar.ts` — Redirecionamento para login da Conta Azul (`state` = nome da empresa)
+- `src/routes/api/callback.ts` — Legado (usa `redirect_uri` `/api/callback`, que nao e a cadastrada). **Nao e usado pelo fluxo atual.**
 
 ---
 
@@ -112,23 +131,47 @@ Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 | Problema | Causa | Solucao |
 |----------|-------|---------|
 | Cards zerados (R$ 0,00) | Token expirado ou empresa sem token no Supabase | Reautenticar via botao "Conectar Conta Azul" |
+| Bolinha vermelha + "falha ao buscar..." | `access_token` expirou e o `refresh_token` tambem esta invalido/revogado | Nao ha conserto automatico: reconectar a empresa na Conta Azul |
 | Bolinha verde com token expirado | Frontend nao detectava status ERRO | Corrigido: bolinha fica vermelha quando empresa esta com `status = ERRO` |
+| `{"error":"invalid_client"}` ao conectar | Endpoint de token errado: `auth.contaazul.com/oauth2/token` e o antigo (API v1, descontinuada) e rejeita apps do portal novo | Usar `https://api-v2.contaazul.com/oauth/token`. Corrigido no commit `902e617` (o legado ficou so como fallback) |
 | Erro 400 no callback | `redirect_uri` nao confere com o cadastrado na Conta Azul | Usar exatamente `https://jrm-dashboard.vercel.app/` |
 | Token nao salva no Supabase | Credenciais `CONTA_AZUL_CLIENT_ID`/`SECRET` nao configuradas na Vercel | Adicionar as env vars e fazer Redeploy |
 | Banco nao aparece na lista | Filtro `BANCOS_PERMITIDOS` no backend | Removido no commit `ff37c8e` — backend agora envia todos os bancos da API |
+| Banco existe na Conta Azul mas nao aparece no painel | (a) saldo da conta zerado — o painel esconde contas com `|saldo| < 0,01`; (b) a chamada `saldo-atual` falhou; (c) o nome nao contem nenhuma das chaves de `bancosPermitidos` em `index.tsx` | Ver o bloco **"Contas nao exibidas"** na lateral, que mostra cada conta retornada pela API e o motivo de nao estar visivel. Se for (c), adicionar a chave do banco em `bancosPermitidos` |
+
+### Diagnosticando um banco que nao aparece
+
+O painel **"Contas nao exibidas"** (lateral, abaixo de BANCOS, quando uma empresa especifica esta selecionada) lista toda conta que a API da Conta Azul retornou mas que o painel escondeu, com o motivo:
+
+- `saldo zerado` — a conta existe e o saldo foi lido, mas e `R$ 0,00`. O filtro de exibicao esconde contas zeradas de proposito.
+- `falha ao ler o saldo` — a chamada `GET /v1/conta-financeira/{id}/saldo-atual` retornou erro para essa conta.
+- `fora do filtro de bancos` — tem saldo, mas o nome nao bate com nenhuma chave de `bancosPermitidos` (em `src/routes/index.tsx`).
+
+A lista de chaves aceitas hoje e `["ITAU", "SICOOB", "SICOOB 3109", "BRADESCO"]`, aplicada por **substring** (maiuzculas): qualquer conta cujo nome contenha "SICOOB" passa, inclusive "Sicoob 3049" e "SICOOB 3109". Para aceitar outro banco, adicione a chave correspondente em `bancosPermitidos`.
 
 ---
 
-## 8. Como Reverter para `ff37c8e` em Caso de Problema
+## 8. Como Voltar ao Estado Funcional em Caso de Problema
+
+**Nao use force push / rebase / amend** — o repositorio esta conectado ao Lovable e
+reescrever o historico publicado faz o projeto perder o historico no editor.
+
+Forma segura:
 
 ```bash
-# 1. Baixe o commit funcional
-git reset --hard ff37c8e
+# 1. Reverte os commits que quebraram (cria commits novos, nao reescreve nada)
+git revert --no-commit <hash_do_commit_que_quebrou>
+git commit -m "fix: reverte <breve descricao>"
 
-# 2. Envie para o GitHub (force push)
-git push origin main --force
+# 2. Envie normalmente
+git push origin main
 
-# 3. Faça Redeploy na Vercel
+# 3. A Vercel faz o deploy automaticamente
 ```
 
-O commit `ff37c8e` e considerado o **estado de referencia funcional** para o dashboard. Qualquer alteracao futura que quebrar a exibicao de valores ou o fluxo OAuth deve ser revertida para este ponto.
+Alternativa sem tocar no git: na Vercel, escolher o commit funcional
+`a626bd8` na lista de deployments e fazer **Redeploy** (producao).
+
+O commit `a626bd8` e considerado o **estado de referencia funcional** para
+o dashboard. Qualquer alteracao futura que quebrar a exibicao de valores ou o
+fluxo OAuth deve ser revertida para este ponto.
