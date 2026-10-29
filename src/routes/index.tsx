@@ -81,6 +81,44 @@ function shiftDays(iso: string, dias: number): string {
   return new Date(d.getTime() - tz * 60000).toISOString().slice(0, 10);
 }
 
+// Traduz os erros mais comuns do OAuth da Conta Azul para uma mensagem
+// acionável, em vez de mostrar o JSON cru que a API retorna.
+function explicarErroOAuth(detalhe: string, httpStatus?: number): string {
+  const bruto = detalhe || "";
+  let d = bruto;
+  try {
+    const j = JSON.parse(bruto);
+    d = [j.error, j.error_subtype, j.error_description].filter(Boolean).join(" — ");
+  } catch {
+    // não é JSON: usa o texto como está
+  }
+  const dl = d.toLowerCase();
+
+  if (dl.includes("invalid_client")) {
+    return "A Conta Azul recusou as credenciais do aplicativo (client_id/client_secret). Verifique se as variáveis CONTA_AZUL_CLIENT_ID e CONTA_AZUL_CLIENT_SECRET da Vercel conferem com as do Portal do Desenvolvedor da Conta Azul.";
+  }
+  if (dl.includes("access_revoked")) {
+    return "O acesso desta empresa à aplicação foi revogado. É preciso reconectar para gerar um token novo.";
+  }
+  if (dl.includes("invalid_refresh_token")) {
+    return "O refresh_token não existe mais (foi substituído ou expirou). Reconecte a empresa para gerar um token novo.";
+  }
+  if (dl.includes("invalid_grant")) {
+    return "O código de autorização ou o refresh_token não é mais válido. Gere um novo clicando em Conectar Conta Azul (o código expira em 3 minutos).";
+  }
+  if (dl.includes("redirect_uri")) {
+    return "A redirect_uri enviada não confere com a cadastrada no Portal do Desenvolvedor. Deve ser exatamente https://jrm-dashboard.vercel.app/";
+  }
+  if (httpStatus === 401) {
+    return "A Conta Azul recusou a autenticação (HTTP 401). Confira o client_id e o client_secret.";
+  }
+  if (!d) {
+    return httpStatus
+      ? `A Conta Azul respondeu com erro (HTTP ${httpStatus}). Tente novamente em instantes.`
+      : "Erro desconhecido ao conectar. Tente novamente.";
+  }
+  return d;
+}
 
 function Dashboard() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -174,9 +212,7 @@ function Dashboard() {
           refetch();
         } else {
           setOauthStatus("erro");
-          setOauthMsg(
-            `Falha ao conectar: ${(r as any).detalhe || "erro desconhecido"}`,
-          );
+          setOauthMsg(explicarErroOAuth(r.detalhe ?? "", r.http_status));
         }
       } catch (e) {
         setOauthStatus("erro");

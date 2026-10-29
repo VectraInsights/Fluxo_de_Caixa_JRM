@@ -28,6 +28,57 @@ export function basicAuth(): string {
   return Buffer.from(`${id}:${secret}`).toString("base64");
 }
 
+// Endpoints de troca de token da Conta Azul.
+// O documentado hoje (portal novo / API v2) é api-v2.contaazul.com/oauth/token.
+// O host auth.contaazul.com/oauth2/token é o antigo (API v1, descontinuada) e
+// rejeita apps registrados no portal novo com "invalid_client" — por isso o
+// endpoint v2 é tentado primeiro e o legado só entra como fallback.
+const ENDPOINT_TOKEN_V2 = "https://api-v2.contaazul.com/oauth/token";
+const ENDPOINT_TOKEN_LEGADO = "https://auth.contaazul.com/oauth2/token";
+
+export async function pedirToken(params: Record<string, string>): Promise<Response> {
+  const tentar = (url: string) =>
+    fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basicAuth()}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams(params),
+    });
+
+  const resV2 = await tentar(ENDPOINT_TOKEN_V2);
+  if (resV2.ok) return resV2;
+
+  const corpoV2 = await resV2.clone().text();
+  log(
+    "warn",
+    `token ${params.grant_type} em ${ENDPOINT_TOKEN_V2} -> ${resV2.status} ${corpoV2.slice(0, 200)}`,
+  );
+
+  // 401 / invalid_client: as credenciais podem ser válidas apenas no host legado.
+  const pareceCredencial =
+    resV2.status === 401 || corpoV2.toLowerCase().includes("invalid_client");
+  if (!pareceCredencial) return resV2;
+
+  const resLegado = await tentar(ENDPOINT_TOKEN_LEGADO);
+  if (resLegado.ok) {
+    log("info", `token ${params.grant_type} obtido no endpoint legado`);
+    return resLegado;
+  }
+
+  const corpoLegado = await resLegado.text();
+  log(
+    "warn",
+    `token ${params.grant_type} em ${ENDPOINT_TOKEN_LEGADO} -> ${resLegado.status} ${corpoLegado.slice(0, 200)}`,
+  );
+  // Devolve o erro do endpoint documentado (é o mais explicativo).
+  return new Response(corpoV2, {
+    status: resV2.status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 // ------------------- Logs em memória (ring buffer) -------------------
 type LogEntry = { ts: number; nivel: "info" | "warn" | "error"; msg: string };
 const LOGS: LogEntry[] = [];
@@ -162,13 +213,9 @@ async function executarRefresh(empresa: string): Promise<string | null> {
   }
 
   log("info", `renovando token: ${empresa}`);
-  const res = await fetch("https://auth.contaazul.com/oauth2/token", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basicAuth()}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refresh }),
+  const res = await pedirToken({
+    grant_type: "refresh_token",
+    refresh_token: refresh,
   });
 
   if (res.ok) {

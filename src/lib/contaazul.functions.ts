@@ -2,7 +2,8 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import {
   getSupabase,
-  basicAuth,
+  pedirToken,
+  log,
   obterToken,
   buscarSaldos,
   buscarV2,
@@ -58,22 +59,23 @@ export const finalizarAutorizacao = createServerFn({ method: "POST" })
     // Mesma redirect_uri usada na autorização (raiz da aplicação).
     const redirectUri = `${data.origin.replace(/\/+$/, "")}/`;
 
-    const tokenRes = await fetch("https://auth.contaazul.com/oauth2/token", {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${basicAuth()}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        redirect_uri: redirectUri,
-        code: data.code,
-      }),
+    const tokenRes = await pedirToken({
+      grant_type: "authorization_code",
+      redirect_uri: redirectUri,
+      code: data.code,
     });
 
     if (!tokenRes.ok) {
       const detalhe = await tokenRes.text();
-      return { status: "erro" as const, detalhe };
+      log(
+        "error",
+        `troca de code por token falhou (${tokenRes.status}): ${detalhe.slice(0, 300)}`,
+      );
+      return {
+        status: "erro" as const,
+        http_status: tokenRes.status,
+        detalhe,
+      };
     }
 
     const dados: any = await tokenRes.json();
