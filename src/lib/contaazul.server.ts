@@ -981,6 +981,44 @@ export async function buscarPagas(
   return { dados: r.dados, ok: r.ok };
 }
 
+// Pagina um endpoint de listagem de contas a pagar ate esgotar as paginas.
+async function paginarPagas(
+  urlBase: string,
+  params: URLSearchParams,
+  tokenRef: { token: string },
+  empresa: string,
+): Promise<{ itens: any[]; ok: boolean }> {
+  const itens: any[] = [];
+  let pagina = 1;
+  let tentativasReauth = 0;
+
+  while (pagina <= 50) {
+    const url = `${urlBase}?${params.toString()}&pagina=${pagina}&tamanho_pagina=100`;
+    const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+
+    if (res.status === 401 && tentativasReauth < 1) {
+      const novo = await renovarToken(empresa);
+      if (!novo) return { itens, ok: false };
+      tokenRef.token = novo;
+      tentativasReauth++;
+      continue;
+    }
+    if (!res.ok) {
+      log("warn", `buscarPagas ${empresa} pg=${pagina} status=${res.status} url=${urlBase}`);
+      return { itens, ok: false };
+    }
+
+    const j: any = await res.json();
+    const lista: any[] = j.itens || (Array.isArray(j) ? j : []);
+    if (!lista.length) break;
+    itens.push(...lista);
+    if (lista.length < 100) break;
+    pagina++;
+    tentativasReauth = 0;
+  }
+  return { itens, ok: true };
+}
+
 async function buscarPagasInterna(
   empresa: string,
   dataInicio: string,
@@ -1000,77 +1038,91 @@ async function buscarPagasInterna(
   vencInicio.setUTCDate(vencInicio.getUTCDate() - 365);
   const vencFim = new Date(dataFim + "T00:00:00Z");
   vencFim.setUTCDate(vencFim.getUTCDate() + 30);
+  const venc = {
+    data_vencimento_de: vencInicio.toISOString().slice(0, 10),
+    data_vencimento_ate: vencFim.toISOString().slice(0, 10),
+  };
 
-  const brutos: ItemLancamento[] = [];
-  let pagina = 1;
-  let tentativasReauth = 0;
-  let teveErroGeral = false;
+  // Cadeia de tentativas: (1) endpoint documentado /v1/financeiro/contas-a-pagar
+  // com filtro de pagamento + status PAGO; (2) o mesmo no /buscar de eventos;
+  // (3) sem filtro de pagamento/status (filtragem no cliente). Alguma delas
+  // funciona mesmo quando a API rejeita combinacoes de parametros.
+  const tentativas: { url: string; params: Record<string, string> }[] = [
+    {
+      url: "https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar",
+      params: { ...venc, data_pagamento_de: dataInicio, data_pagamento_ate: dataFim, status: "PAGO" },
+    },
+    {
+      url: "https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar",
+      params: { ...venc, data_pagamento_de: dataInicio, data_pagamento_ate: dataFim, status: "PAGO" },
+    },
+    {
+      url: "https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar",
+      params: { ...venc },
+    },
+  ];
 
-  while (true) {
-    const params = new URLSearchParams({
-      data_vencimento_de: vencInicio.toISOString().slice(0, 10),
-      data_vencimento_ate: vencFim.toISOString().slice(0, 10),
-      data_pagamento_de: dataInicio,
-      data_pagamento_ate: dataFim,
-      status: "PAGO",
-      tamanho_pagina: "100",
-      pagina: String(pagina),
-    });
-    const url = `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar?${params}`;
-    const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
-
-    if (res.status === 401 && tentativasReauth < 1) {
-      const novo = await renovarToken(empresa);
-      if (!novo) {
-        teveErroGeral = true;
-        break;
-      }
-      tokenRef.token = novo;
-      tentativasReauth++;
-      continue;
-    }
-    if (!res.ok) {
-      log("warn", `buscarPagas ${empresa} pg=${pagina} status=${res.status}`);
-      teveErroGeral = true;
+  let itensBrutos: any[] = [];
+  let filtroServidor = false;
+  let achou = false;
+  for (const t of tentativas) {
+    const r = await paginarPagas(t.url, new URLSearchParams(t.params), tokenRef, empresa);
+    if (r.ok) {
+      itensBrutos = r.itens;
+      filtroServidor = "data_pagamento_de" in t.params;
+      achou = true;
+      log(
+        "info",
+        `buscarPagas ${empresa}: endpoint ok (${t.url.replace("https://api-v2.contaazul.com", "")}, ${r.itens.length} itens, filtro_servidor=${filtroServidor})`,
+      );
       break;
     }
+  }
+  if (!achou) {
+    log("warn", `buscarPagas ${empresa}: todos os endpoints falharam`);
+    return { dados: [], ok: false };
+  }
 
-    const j: any = await res.json();
-    const itens: any[] = j.itens || [];
-    if (!itens.length) break;
-
-    for (const i of itens) {
-      // Valor efetivamente pago; fallback para total quando pago vier zerado
-      const valor = (i.pago as number) > 0 ? (i.pago as number) : ((i.total as number) || 0);
-      if (!i.id || valor <= 0) continue;
-      const data =
-        extrairDataPagamento(i) ||
-        (i.data_vencimento ? String(i.data_vencimento).slice(0, 10) : null);
-      if (!data) continue;
-      brutos.push({
-        data,
-        valor,
-        metodo: null,
-        conta_id: i.conta_financeira_id || i.conta_id || undefined,
-        descricao: extrairDescricao(i),
-        terceiro: extrairTerceiro(i),
-      });
+  // Consolidacao: valor efetivamente pago + data real de pagamento
+  const brutos: ItemLancamento[] = [];
+  let semData = 0;
+  for (const i of itensBrutos) {
+    const pago = (i.pago as number) || 0;
+    const total = (i.total as number) || 0;
+    // Sem filtro de status no servidor, so entra o que tem valor pago > 0
+    if (!filtroServidor && pago <= 0) continue;
+    const valor = pago > 0 ? pago : total;
+    if (!i.id || valor <= 0) continue;
+    const dataPagamento = extrairDataPagamento(i);
+    // Sem filtro de pagamento no servidor, exige data de pagamento dentro do
+    // periodo (se o titulo nao expoe a data, fica de fora para nao inflar).
+    if (!filtroServidor) {
+      if (!dataPagamento) {
+        semData++;
+        continue;
+      }
+      if (dataPagamento < dataInicio || dataPagamento > dataFim) continue;
     }
-    if (itens.length < 100) break;
-    pagina++;
-    tentativasReauth = 0;
+    const data =
+      dataPagamento ||
+      (i.data_vencimento ? String(i.data_vencimento).slice(0, 10) : null);
+    if (!data) continue;
+    brutos.push({
+      data,
+      valor,
+      metodo: null,
+      conta_id: i.conta_financeira_id || i.conta_id || undefined,
+      descricao: extrairDescricao(i),
+      terceiro: extrairTerceiro(i),
+    });
   }
 
   const total = brutos.reduce((a, b) => a + b.valor, 0);
   log(
     "info",
-    `buscarPagas ${empresa}: ${brutos.length} titulos pagos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)}, erro=${teveErroGeral})`,
+    `buscarPagas ${empresa}: ${brutos.length} titulos pagos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)}, sem_data=${semData})`,
   );
-
-  if (teveErroGeral) {
-    log("warn", `buscarPagas finalizou com erros para ${empresa}. Dados nao cacheados.`);
-  }
-  return { dados: brutos, ok: !teveErroGeral };
+  return { dados: brutos, ok: true };
 }
 
 // Inspeciona o detalhe de N itens — usado pelo painel de debug pra ver o JSON cru.

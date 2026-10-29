@@ -748,10 +748,10 @@ function Dashboard() {
               <>
                 <KpiCard
                   label="Contas Pagas"
-                  valor={totalPagas}
-                  icon={<CheckCircle2 className="h-5 w-5" />}
-                  gradient="from-success/30 via-success/10 to-transparent"
-                  accent="text-success"
+                  valor={-totalPagas}
+                  icon={<TrendingDown className="h-5 w-5" />}
+                  gradient="from-destructive/30 via-destructive/10 to-transparent"
+                  accent="text-destructive"
                   sub={
                     totalPagas > 0
                       ? `${((totalPagas / (totalRec + totalDesp)) * 100).toFixed(1)}% do total de movimentacao`

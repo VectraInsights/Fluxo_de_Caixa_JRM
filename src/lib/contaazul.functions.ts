@@ -242,10 +242,8 @@ export const getDashboard = createServerFn({ method: "GET" })
           avisos.push(`${emp}: falha ao buscar contas a pagar.`);
           empresasComProblema.add(emp);
         }
-        if (!pagas.ok) {
-          avisos.push(`${emp}: falha ao buscar contas pagas.`);
-          empresasComProblema.add(emp);
-        }
+        // Nota: falha em buscarPagas NAO vira aviso/erro de sincronizacao —
+        // e um card complementar; o token ruim ja e detectado por rec/desp.
         return {
           empresa: emp,
           bancos: sal.lista,
