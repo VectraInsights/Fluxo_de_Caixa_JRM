@@ -118,7 +118,10 @@ const DETALHE_TTL_MS = 5 * 60 * 1000;
 const listCache = new Map<string, EntradaCache<{ dados: ItemLancamento[]; ok: boolean }>>();
 const LIST_TTL_MS = 2 * 60 * 1000; // 2 minutos de cache para listas
 
-const saldoCache = new Map<string, EntradaCache<{ lista: { nome: string; saldo: number }[]; ok: boolean }>>();
+const saldoCache = new Map<
+  string,
+  EntradaCache<{ lista: { nome: string; saldo: number }[]; ok: boolean; todas: ContaSaldo[] }>
+>();
 const SALDO_TTL_MS = 2 * 60 * 1000; // 2 minutos de cache para saldos
 
 // Lê o cache ou dispara a criação; chamadas concorrentes recebem a MESMA promise.
@@ -290,10 +293,14 @@ const BANCOS_PERMITIDOS = [
   "INTER",
 ];
 
+// Uma conta financeira retornada pela API da Conta Azul, com o motivo de ela
+// potencialmente nao aparecer no painel (saldo zerado ou falha ao buscar saldo).
+export type ContaSaldo = { nome: string; saldo: number; erro: boolean };
+
 export async function buscarSaldos(
   empresa: string,
   tokenInicial: string,
-): Promise<{ lista: { nome: string; saldo: number }[]; ok: boolean }> {
+): Promise<{ lista: { nome: string; saldo: number }[]; ok: boolean; todas: ContaSaldo[] }> {
   const r = await lerOuCriar(
     saldoCache,
     empresa,
@@ -301,21 +308,22 @@ export async function buscarSaldos(
     () => buscarSaldosInterna(empresa, tokenInicial),
     (x) => x.ok,
   );
-  return { lista: r.lista, ok: r.ok };
+  return { lista: r.lista, ok: r.ok, todas: r.todas };
 }
 
 async function buscarSaldosInterna(
   empresa: string,
   tokenInicial: string,
-): Promise<{ lista: { nome: string; saldo: number }[]; ok: boolean }> {
+): Promise<{ lista: { nome: string; saldo: number }[]; ok: boolean; todas: ContaSaldo[] }> {
   let token = tokenInicial;
   const lista: { nome: string; saldo: number }[] = [];
+  const todas: ContaSaldo[] = [];
   let res = await fetchComRetry("https://api-v2.contaazul.com/v1/conta-financeira", {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (res.status === 401) {
     const novo = await renovarToken(empresa);
-    if (!novo) return { lista, ok: false };
+    if (!novo) return { lista, ok: false, todas };
     token = novo;
     res = await fetchComRetry("https://api-v2.contaazul.com/v1/conta-financeira", {
       headers: { Authorization: `Bearer ${token}` },
@@ -323,28 +331,36 @@ async function buscarSaldosInterna(
   }
   if (!res.ok) {
     log("warn", `buscarSaldos ${empresa} status=${res.status}`);
-    return { lista, ok: false };
+    return { lista, ok: false, todas };
   }
   const j: any = await res.json();
   const contas: any[] = Array.isArray(j) ? j : j.itens || [];
 
-  const tarefas = contas
-    .map(async (c) => {
+  const resps = await Promise.all(
+    contas.map(async (c) => {
       const r = await fetchComRetry(
         `https://api-v2.contaazul.com/v1/conta-financeira/${c.id}/saldo-atual`,
         { headers: { Authorization: `Bearer ${token}` } },
       );
       if (r.ok) {
         const sj: any = await r.json();
-        return { nome: c.nome as string, saldo: (sj.saldo_atual as number) || 0 };
+        return {
+          nome: String(c.nome ?? "").trim(),
+          saldo: (sj.saldo_atual as number) || 0,
+          erro: false as const,
+        };
       }
-      return null;
-    });
+      log("warn", `buscarSaldos saldo-atual falhou: ${empresa} / ${c.nome} status=${r.status}`);
+      return { nome: String(c.nome ?? "").trim(), saldo: 0, erro: true as const };
+    }),
+  );
 
-  const resps = await Promise.all(tarefas);
-  for (const r of resps) if (r) lista.push(r);
+  for (const r of resps) {
+    todas.push(r);
+    if (!r.erro) lista.push({ nome: r.nome, saldo: r.saldo });
+  }
 
-  return { lista, ok: true };
+  return { lista, ok: true, todas };
 }
 
 function extrairMetodo(j: any): string | null {
