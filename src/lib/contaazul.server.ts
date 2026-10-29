@@ -993,35 +993,45 @@ async function buscarPagasInterna(
   }
   const tokenRef = { token: tokenInicial };
 
-  // Janela de vencimento generosa: a API exige data_vencimento_de/_ate mesmo
-  // quando o filtro real e por data de pagamento.
+  // Janela de vencimento de 12 meses: a API exige data_vencimento_de/_ate mesmo
+  // quando o filtro real e por data de pagamento (orientacao oficial Conta Azul).
   const vencInicio = new Date(dataInicio + "T00:00:00Z");
   vencInicio.setUTCDate(vencInicio.getUTCDate() - 365);
   const vencFim = new Date(dataFim + "T00:00:00Z");
   vencFim.setUTCDate(vencFim.getUTCDate() + 30);
-
-  // Endpoint documentado /v1/financeiro/contas-a-pagar com filtro de pagamento
-  // e status PAGO. Uma unica tentativa para nao atrasar o dashboard.
-  const params = new URLSearchParams({
+  const venc = {
     data_vencimento_de: vencInicio.toISOString().slice(0, 10),
     data_vencimento_ate: vencFim.toISOString().slice(0, 10),
-    data_pagamento_de: dataInicio,
-    data_pagamento_ate: dataFim,
-    status: "PAGO",
-    tamanho_pagina: "100",
-    pagina: "1",
-  });
-  const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar?${params}`;
-  const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
+  };
 
-  if (res.status === 401) {
-    const novo = await renovarToken(empresa);
-    if (novo) {
-      const res2 = await fetchComRetry(url, { headers: { Authorization: `Bearer ${novo}` } }, 1);
-      return processarPagasResposta(res2, empresa, dataInicio, dataFim);
+  // Status oficial para contas baixadas e ACQUITTED (documentacao Conta Azul);
+  // PAGO fica como fallback para contas que usem o valor antigo.
+  const statusTentativas = ["ACQUITTED", "PAGO"];
+  for (const status of statusTentativas) {
+    const params = new URLSearchParams({
+      ...venc,
+      data_pagamento_de: dataInicio,
+      data_pagamento_ate: dataFim,
+      status,
+      tamanho_pagina: "100",
+      pagina: "1",
+    });
+    const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar?${params}`;
+    const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
+
+    if (res.status === 401) {
+      const novo = await renovarToken(empresa);
+      if (novo) {
+        const res2 = await fetchComRetry(url, { headers: { Authorization: `Bearer ${novo}` } }, 1);
+        const r = await processarPagasResposta(res2, empresa, dataInicio, dataFim, status);
+        if (r.ok) return r;
+        continue;
+      }
     }
+    const r = await processarPagasResposta(res, empresa, dataInicio, dataFim, status);
+    if (r.ok) return r;
   }
-  return processarPagasResposta(res, empresa, dataInicio, dataFim);
+  return { dados: [], ok: false };
 }
 
 async function processarPagasResposta(
@@ -1029,9 +1039,10 @@ async function processarPagasResposta(
   empresa: string,
   dataInicio: string,
   dataFim: string,
+  status: string,
 ): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
   if (!res.ok) {
-    log("warn", `buscarPagas ${empresa} status=${res.status}`);
+    log("warn", `buscarPagas ${empresa} status=${res.status} (filtro status=${status})`);
     return { dados: [], ok: false };
   }
   const j: any = await res.json();

@@ -41,7 +41,19 @@ export const Route = createFileRoute("/api/debug-pagas")({
 
         const endpoints = [
           {
-            nome: "parcelas-lista-com-pagamento",
+            nome: "parcelas-ACQUITTED",
+            url: "https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar",
+            params: {
+              ...venc,
+              data_pagamento_de: dataInicio,
+              data_pagamento_ate: dataFim,
+              status: "ACQUITTED",
+              tamanho_pagina: "10",
+              pagina: "1",
+            },
+          },
+          {
+            nome: "parcelas-PAGO",
             url: "https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar",
             params: {
               ...venc,
@@ -53,23 +65,13 @@ export const Route = createFileRoute("/api/debug-pagas")({
             },
           },
           {
-            nome: "eventos-buscar-com-pagamento",
+            nome: "eventos-buscar-ACQUITTED",
             url: "https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar",
             params: {
               ...venc,
               data_pagamento_de: dataInicio,
               data_pagamento_ate: dataFim,
-              status: "PAGO",
-              tamanho_pagina: "10",
-              pagina: "1",
-            },
-          },
-          {
-            nome: "parcelas-lista-sem-pagamento",
-            url: "https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar",
-            params: {
-              ...venc,
-              status: "PAGO",
+              status: "ACQUITTED",
               tamanho_pagina: "10",
               pagina: "1",
             },
