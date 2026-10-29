@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiAutorizarRouteImport } from './routes/api/autorizar'
 import { Route as ApiCallbackRouteImport } from './routes/api/callback'
+import { Route as ApiDebugPagasRouteImport } from './routes/api/debug-pagas'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -28,35 +29,44 @@ const ApiCallbackRoute = ApiCallbackRouteImport.update({
   path: '/api/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDebugPagasRoute = ApiDebugPagasRouteImport.update({
+  id: '/api/debug-pagas',
+  path: '/api/debug-pagas',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
+  '/api/debug-pagas': typeof ApiDebugPagasRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
+  '/api/debug-pagas': typeof ApiDebugPagasRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
+  '/api/debug-pagas': typeof ApiDebugPagasRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/autorizar' | '/api/callback'
+  fullPaths: '/' | '/api/autorizar' | '/api/callback' | '/api/debug-pagas'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/autorizar' | '/api/callback'
-  id: '__root__' | '/' | '/api/autorizar' | '/api/callback'
+  to: '/' | '/api/autorizar' | '/api/callback' | '/api/debug-pagas'
+  id: '__root__' | '/' | '/api/autorizar' | '/api/callback' | '/api/debug-pagas'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ApiAutorizarRoute: typeof ApiAutorizarRoute
   ApiCallbackRoute: typeof ApiCallbackRoute
+  ApiDebugPagasRoute: typeof ApiDebugPagasRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -82,6 +92,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/debug-pagas': {
+      id: '/api/debug-pagas'
+      path: '/api/debug-pagas'
+      fullPath: '/api/debug-pagas'
+      preLoaderRoute: typeof ApiDebugPagasRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -89,6 +106,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ApiAutorizarRoute: ApiAutorizarRoute,
   ApiCallbackRoute: ApiCallbackRoute,
+  ApiDebugPagasRoute: ApiDebugPagasRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

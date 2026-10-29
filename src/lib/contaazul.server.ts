@@ -981,44 +981,6 @@ export async function buscarPagas(
   return { dados: r.dados, ok: r.ok };
 }
 
-// Pagina um endpoint de listagem de contas a pagar ate esgotar as paginas.
-async function paginarPagas(
-  urlBase: string,
-  params: URLSearchParams,
-  tokenRef: { token: string },
-  empresa: string,
-): Promise<{ itens: any[]; ok: boolean }> {
-  const itens: any[] = [];
-  let pagina = 1;
-  let tentativasReauth = 0;
-
-  while (pagina <= 50) {
-    const url = `${urlBase}?${params.toString()}&pagina=${pagina}&tamanho_pagina=100`;
-    const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
-
-    if (res.status === 401 && tentativasReauth < 1) {
-      const novo = await renovarToken(empresa);
-      if (!novo) return { itens, ok: false };
-      tokenRef.token = novo;
-      tentativasReauth++;
-      continue;
-    }
-    if (!res.ok) {
-      log("warn", `buscarPagas ${empresa} pg=${pagina} status=${res.status} url=${urlBase}`);
-      return { itens, ok: false };
-    }
-
-    const j: any = await res.json();
-    const lista: any[] = j.itens || (Array.isArray(j) ? j : []);
-    if (!lista.length) break;
-    itens.push(...lista);
-    if (lista.length < 100) break;
-    pagina++;
-    tentativasReauth = 0;
-  }
-  return { itens, ok: true };
-}
-
 async function buscarPagasInterna(
   empresa: string,
   dataInicio: string,
@@ -1032,79 +994,58 @@ async function buscarPagasInterna(
   const tokenRef = { token: tokenInicial };
 
   // Janela de vencimento generosa: a API exige data_vencimento_de/_ate mesmo
-  // quando o filtro real e por data de pagamento (titulo vencido pode ser pago
-  // no periodo; pagamento antecipado de titulo futuro tambem entra).
+  // quando o filtro real e por data de pagamento.
   const vencInicio = new Date(dataInicio + "T00:00:00Z");
   vencInicio.setUTCDate(vencInicio.getUTCDate() - 365);
   const vencFim = new Date(dataFim + "T00:00:00Z");
   vencFim.setUTCDate(vencFim.getUTCDate() + 30);
-  const venc = {
+
+  // Endpoint documentado /v1/financeiro/contas-a-pagar com filtro de pagamento
+  // e status PAGO. Uma unica tentativa para nao atrasar o dashboard.
+  const params = new URLSearchParams({
     data_vencimento_de: vencInicio.toISOString().slice(0, 10),
     data_vencimento_ate: vencFim.toISOString().slice(0, 10),
-  };
+    data_pagamento_de: dataInicio,
+    data_pagamento_ate: dataFim,
+    status: "PAGO",
+    tamanho_pagina: "100",
+    pagina: "1",
+  });
+  const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar?${params}`;
+  const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
 
-  // Cadeia de tentativas: (1) endpoint documentado /v1/financeiro/contas-a-pagar
-  // com filtro de pagamento + status PAGO; (2) o mesmo no /buscar de eventos;
-  // (3) sem filtro de pagamento/status (filtragem no cliente). Alguma delas
-  // funciona mesmo quando a API rejeita combinacoes de parametros.
-  const tentativas: { url: string; params: Record<string, string> }[] = [
-    {
-      url: "https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar",
-      params: { ...venc, data_pagamento_de: dataInicio, data_pagamento_ate: dataFim, status: "PAGO" },
-    },
-    {
-      url: "https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar",
-      params: { ...venc, data_pagamento_de: dataInicio, data_pagamento_ate: dataFim, status: "PAGO" },
-    },
-    {
-      url: "https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar",
-      params: { ...venc },
-    },
-  ];
-
-  let itensBrutos: any[] = [];
-  let filtroServidor = false;
-  let achou = false;
-  for (const t of tentativas) {
-    const r = await paginarPagas(t.url, new URLSearchParams(t.params), tokenRef, empresa);
-    if (r.ok) {
-      itensBrutos = r.itens;
-      filtroServidor = "data_pagamento_de" in t.params;
-      achou = true;
-      log(
-        "info",
-        `buscarPagas ${empresa}: endpoint ok (${t.url.replace("https://api-v2.contaazul.com", "")}, ${r.itens.length} itens, filtro_servidor=${filtroServidor})`,
-      );
-      break;
+  if (res.status === 401) {
+    const novo = await renovarToken(empresa);
+    if (novo) {
+      const res2 = await fetchComRetry(url, { headers: { Authorization: `Bearer ${novo}` } }, 1);
+      return processarPagasResposta(res2, empresa, dataInicio, dataFim);
     }
   }
-  if (!achou) {
-    log("warn", `buscarPagas ${empresa}: todos os endpoints falharam`);
+  return processarPagasResposta(res, empresa, dataInicio, dataFim);
+}
+
+async function processarPagasResposta(
+  res: Response,
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
+  if (!res.ok) {
+    log("warn", `buscarPagas ${empresa} status=${res.status}`);
     return { dados: [], ok: false };
   }
+  const j: any = await res.json();
+  const itens: any[] = j.itens || (Array.isArray(j) ? j : []);
 
-  // Consolidacao: valor efetivamente pago + data real de pagamento
   const brutos: ItemLancamento[] = [];
-  let semData = 0;
-  for (const i of itensBrutos) {
+  for (const i of itens) {
     const pago = (i.pago as number) || 0;
     const total = (i.total as number) || 0;
-    // Sem filtro de status no servidor, so entra o que tem valor pago > 0
-    if (!filtroServidor && pago <= 0) continue;
     const valor = pago > 0 ? pago : total;
     if (!i.id || valor <= 0) continue;
-    const dataPagamento = extrairDataPagamento(i);
-    // Sem filtro de pagamento no servidor, exige data de pagamento dentro do
-    // periodo (se o titulo nao expoe a data, fica de fora para nao inflar).
-    if (!filtroServidor) {
-      if (!dataPagamento) {
-        semData++;
-        continue;
-      }
-      if (dataPagamento < dataInicio || dataPagamento > dataFim) continue;
-    }
     const data =
-      dataPagamento ||
+      extrairDataPagamento(i) ||
+      (i.data_pagamento ? String(i.data_pagamento).slice(0, 10) : null) ||
       (i.data_vencimento ? String(i.data_vencimento).slice(0, 10) : null);
     if (!data) continue;
     brutos.push({
@@ -1120,7 +1061,7 @@ async function buscarPagasInterna(
   const total = brutos.reduce((a, b) => a + b.valor, 0);
   log(
     "info",
-    `buscarPagas ${empresa}: ${brutos.length} titulos pagos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)}, sem_data=${semData})`,
+    `buscarPagas ${empresa}: ${brutos.length} titulos pagos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)})`,
   );
   return { dados: brutos, ok: true };
 }
