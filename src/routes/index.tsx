@@ -267,10 +267,11 @@ function Dashboard() {
     refetchOnReconnect: false,
   });
 
-  // Faturamento do periodo (planilha de cargas no Google Sheets — aba do dia, coluna VALOR).
+  // Faturamento do periodo (planilha de cargas — aba do dia, direcionado por remetente).
   const { data: faturamento, refetch: refetchFaturamento } = useQuery({
-    queryKey: ["faturamento", dataInicio, dataFim],
-    queryFn: () => getFaturamentoFn({ data: { data_inicio: dataInicio, data_fim: dataFim } }),
+    queryKey: ["faturamento", empresa, dataInicio, dataFim],
+    queryFn: () =>
+      getFaturamentoFn({ data: { empresa, data_inicio: dataInicio, data_fim: dataFim } }),
     enabled: !!dataInicio && !!dataFim,
     staleTime: Infinity,
     gcTime: Infinity,

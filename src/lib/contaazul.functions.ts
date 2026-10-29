@@ -47,11 +47,13 @@ export const limparCache = createServerFn({ method: "POST" }).handler(async () =
 });
 
 // Faturamento do periodo (planilha de cargas no Google Sheets — aba do dia, coluna VALOR).
-// Nao afeta o dashboard da Conta Azul: se falhar, devolve 0.
+// Direcionado pelo REMETENTE: cada carga pertence a empresa dona do remetente.
+// "todas" soma tudo (inclui Alvarenga, que nao existe no dropdown).
 export const getFaturamento = createServerFn({ method: "GET" })
   .validator((d) =>
     z
       .object({
+        empresa: z.string(),
         data_inicio: z.string(),
         data_fim: z.string(),
       })
@@ -59,7 +61,7 @@ export const getFaturamento = createServerFn({ method: "GET" })
   )
   .handler(async ({ data }): Promise<{ total: number }> => {
     try {
-      return await buscarFaturamentoPlanilha(data.data_inicio, data.data_fim);
+      return await buscarFaturamentoPlanilha(data.data_inicio, data.data_fim, data.empresa);
     } catch (e) {
       log("warn", `faturamento planilha: ${(e as Error).message}`);
       return { total: 0 };
