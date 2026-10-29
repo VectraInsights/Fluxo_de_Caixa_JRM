@@ -63,6 +63,8 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 | Commit | Descricao | Data |
 |--------|-----------|------|
 | `bc69a7a` | **(commit padrao / referencia atual)** — fix: refetchOnMount true para carregar dados automaticamente ao abrir dashboard | 29/10/2026 |
+| `aba1d3d` | **(commit padrao / referencia atual)** — feat: remove cards Receber via Boleto e Outros Meios, adiciona card Contas Pagas | 29/10/2026 |
+| `bc69a7a` | fix: refetchOnMount true para carregar dados automaticamente ao abrir dashboard | 29/10/2026 |
 | `0f168e1` | fix: JRM Transportes exibe apenas Bradesco, Itaú, Sicoob 3049 e Sicoob 3109 (remove Sicoob sem numero que nao existe na empresa) | 29/10/2026 |
 | `c16fbfd` | fix: filtro de bancos por correspondencia exata para nao mostrar Bradesco ap. nem Veloe na Rosangela | 29/10/2026 |
 | `e55fa9c` | fix: Rosangela Transportes exibe apenas Bradesco, Itaú, Sicoob 3049 e Sicoob 3109 (remove Bradesco ap. e Veloe que nao existem na empresa) | 29/10/2026 |
@@ -88,9 +90,9 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 ## 4. Commit de Reversão Padrao
 
-### Commit recomendado para revert​​ao: `bc69a7a`
+### Commit recomendado para revert​​ao: `aba1d3d`
 
-**Mensagem:** `fix: refetchOnMount true para carregar dados automaticamente ao abrir dashboard`
+**Mensagem:** `feat: remove cards Receber via Boleto e Outros Meios, adiciona card Contas Pagas`
 
 **Estado conhecido como funcional (29/10/2026):**
 - Dashboard carrega valores reais da Conta Azul automaticamente ao abrir (nao precisa de F5).
@@ -98,18 +100,19 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 - Botao **"Conectar Conta Azul"** funciona: gera um token novo para a empresa.
 - Renovacao automatica de token funciona (endpoint v2 da Conta Azul).
 - Bolinha de sincronizacao mostra status correto (verde/vermelho/azul pulsando).
+- Cards mostram: Saldo Atual, Entradas Previstas, Saídas Previstas, Saldo Previsto, Contas Pagas.
 
 **Como reverter para este estado:**
 
 ```bash
 # No repositorio local
-git reset --hard bc69a7a
+git reset --hard aba1d3d
 git push origin main --force
 ```
 
 Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 
-**IMPORTANTE:** Nao faca mais alteracoes no codigo sem testar primeiro em ambiente local. O commit `bc69a7a` e o estado de referencia funcional.
+**IMPORTANTE:** Nao faca mais alteracoes no codigo sem testar primeiro em ambiente local. O commit `aba1d3d` e o estado de referencia funcional.
 
 **Regra do projeto (AGENTS.md):** sempre `git commit` + `git push` apos qualquer alteracao, com mensagem em portugues no padrao `feat:`, `fix:` ou `chore:`. **Nunca** reescreva o historico ja publicado (force push / rebase / amend) — o projeto esta conectado ao Lovable.
 
