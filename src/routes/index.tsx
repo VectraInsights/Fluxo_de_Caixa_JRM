@@ -300,7 +300,7 @@ function Dashboard() {
 
   const bancosPorEmpresa: Record<string, string[]> = {
     // array vazio = mostra TODOS os bancos que a API retornar
-    "LGP Transportes": [],
+    "LGP Transportes": ["BRADESCO", "ITAU", "SICOOB 3049", "SICOOB 3109"],
     "Rosângela Transportes": [],
   };
 
