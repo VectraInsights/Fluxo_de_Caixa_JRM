@@ -371,13 +371,25 @@ function Dashboard() {
 
 
 
-  const temProblema =
-    (data?.avisos?.length ?? 0) > 0 || empresas.some((e) => e.status === "ERRO");
+  // O status "ERRO" gravado no Supabase atrasa em relacao ao estado real: ele so
+  // e corrigido no proximo refresh bem-sucedido, entao pode continuar "ERRO"
+  // mesmo com a empresa funcionando. Por isso o sinal autoritativo de problema e
+  // o que o getDashboard reportou NESTA consulta, o campo "avisos".
+  const empresasComFalha = data?.empresas_com_problema ?? [];
+  const temProblema = isError || (data?.avisos?.length ?? 0) > 0;
+
+  // Empresas que esta consulta cobriu. As demais nao tem sinal fresco, entao o
+  // status gravado no Supabase ainda e a melhor pista para elas.
+  const consultadas =
+    empresa === "todas" ? new Set(empresas.map((e) => e.nome)) : new Set([empresa]);
 
   const empresaSelecionadaProblema =
-    empresa !== "todas" &&
-    (empresas.find((e) => e.nome === empresa)?.status === "ERRO" ||
-      (data?.empresas_com_problema?.includes(empresa) ?? false));
+    empresa !== "todas" && empresasComFalha.includes(empresa);
+
+  // Detalhes exibidos ao passar o mouse sobre a bolinha vermelha de sincronizacao.
+  const detalheProblema: string[] = isError
+    ? [`Erro ao consultar o servidor: ${String((error as any)?.message || error)}`]
+    : (data?.avisos ?? []);
 
   return (
     <div className="min-h-screen w-full bg-background text-foreground font-sans relative overflow-hidden">
@@ -446,7 +458,10 @@ function Dashboard() {
           {empresas.map((e) => (
             <option key={e.nome} value={e.nome}>
               {e.nome}
-              {e.status === "ERRO" ? " ⚠" : ""}
+              {empresasComFalha.includes(e.nome) ||
+              (e.status === "ERRO" && !consultadas.has(e.nome))
+                ? " ⚠"
+                : ""}
             </option>
           ))}
         </Select>
@@ -565,10 +580,10 @@ function Dashboard() {
             </div>
             <div className="flex items-center gap-3 flex-wrap justify-end pl-12 lg:pl-0">
               {/* Estado do sync ao lado do botão Recarregar */}
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <div className="group relative flex items-center gap-2 text-xs text-muted-foreground">
                 <span
                   className={`inline-flex h-2 w-2 rounded-full shrink-0 ${
-                    isError || temProblema
+                    temProblema
                       ? "bg-destructive"
                       : isFetching
                       ? "bg-brand animate-pulse"
@@ -576,9 +591,7 @@ function Dashboard() {
                   }`}
                 />
                 <span className="tabular-nums">
-                  {isError
-                    ? `Erro: ${String((error as any)?.message || error).slice(0, 120)}`
-                    : isFetching
+                  {isFetching
                     ? "Sincronizando com a Conta Azul..."
                     : temProblema
                     ? "⚠ Falha na sincronização"
@@ -586,6 +599,31 @@ function Dashboard() {
                         dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString("pt-BR") : "—"
                       }`}
                 </span>
+
+                {/* Tooltip com o detalhe da falha (aparece ao passar o mouse) */}
+                {temProblema && !isFetching && detalheProblema.length > 0 && (
+                  <div className="pointer-events-none absolute right-0 top-full z-50 mt-2 w-[min(90vw,30rem)] origin-top-right scale-95 opacity-0 transition-all duration-150 group-hover:scale-100 group-hover:opacity-100">
+                    <div className="rounded-xl border border-destructive/30 bg-card/95 p-3 shadow-xl backdrop-blur">
+                      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-destructive">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                        Falha na sincronização com a Conta Azul
+                      </div>
+                      <ul className="space-y-1 text-[11px] text-muted-foreground">
+                        {detalheProblema.map((l, i) => (
+                          <li key={i} className="flex items-start gap-1.5">
+                            <span className="shrink-0 text-destructive">•</span>
+                            <span>{l}</span>
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="mt-2 border-t border-border/40 pt-2 text-[11px] text-muted-foreground">
+                        Se a mensagem indicar token inválido ou expirado, use{" "}
+                        <span className="font-medium text-foreground">Conectar Conta Azul</span>{" "}
+                        na lateral para reautenticar a empresa.
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
               <button
                 onClick={recarregarTudo}
@@ -639,51 +677,6 @@ function Dashboard() {
               >
                 Fechar
               </button>
-            </div>
-          )}
-
-          {/* Alerta de problemas de sincronização */}
-          {temProblema && !isFetching && (
-            <div className="mb-5 rounded-xl border border-destructive/30 bg-destructive/10 p-4">
-              <div className="flex items-start gap-3">
-                <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
-                <div className="text-sm">
-                  <div className="font-semibold mb-1">Falha na sincronização com a Conta Azul</div>
-                  <div className="text-muted-foreground">
-                    Os valores abaixo podem estar zerados ou incompletos porque não foi possível
-                    obter os dados dessas empresas:
-                  </div>
-                  {(data?.avisos?.length ?? 0) > 0 && (
-                    <ul className="mt-2 space-y-1 text-muted-foreground">
-                      {data!.avisos.map((a, i) => (
-                        <li key={i} className="flex items-start gap-2">
-                          <span className="text-destructive shrink-0">•</span>
-                          <span>{a}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  <div className="mt-2 text-muted-foreground">
-                    <span className="font-medium">Como resolver:</span> clique em{" "}
-                    <span className="font-medium">Conectar Conta Azul</span> abaixo para
-                    reautenticar a empresa e gerar um token novo.
-                  </div>
-                  {(data?.empresas_com_problema?.length ?? 0) > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {data!.empresas_com_problema.map((emp) => (
-                        <a
-                          key={emp}
-                          href={`/api/autorizar?empresa=${encodeURIComponent(emp)}`}
-                          className="inline-flex items-center gap-1.5 rounded-full border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/20 transition-colors"
-                        >
-                          <Link2 className="h-3 w-3" />
-                          Conectar {emp}
-                        </a>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
             </div>
           )}
 
@@ -893,19 +886,6 @@ function Dashboard() {
               </div>
             )}
           </div>
-
-          {/* Alerta de empresas com erro */}
-          {empresas.some((e) => e.status === "ERRO") && (
-            <div className="mt-6 flex items-start gap-3 rounded-xl border border-warning/30 bg-warning/10 p-4">
-              <AlertTriangle className="h-5 w-5 text-warning shrink-0 mt-0.5" />
-              <div className="text-sm">
-                <div className="font-semibold mb-1">Algumas empresas precisam reautenticar</div>
-                <div className="text-muted-foreground">
-                  {empresas.filter((e) => e.status === "ERRO").map((e) => e.nome).join(", ")}
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       </main>
     </div>
