@@ -40,10 +40,13 @@ const ROTULOS: {
   { chave: "pagos", titulo: "Pagos", cor: [220, 38, 38], rotuloTerceiro: "Fornecedor" },
 ];
 
-// Relacoes que entram no RESUMO dos relatorios (cards do topo do PDF e aba
-// "Resumo" do XLSX): apenas "A Receber" e "A Pagar". Faturamento e Pagos
-// continuam exportados nas suas secoes, mas nao entram nos totais do resumo.
-const ROTULOS_RESUMO = ROTULOS.filter((item) => item.chave === "receber" || item.chave === "pagar");
+// Resultado do periodo: A Receber - A Pagar. Considera APENAS as listas de
+// titulos em aberto (Faturamento e Pagos ficam de fora do calculo).
+function calcularResultado(rel: RelatorioListas): number {
+  const receber = (rel.receber ?? []).reduce((s, t) => s + (Number(t.valor) || 0), 0);
+  const pagar = (rel.pagar ?? []).reduce((s, t) => s + (Number(t.valor) || 0), 0);
+  return receber - pagar;
+}
 
 function formatarDataBR(iso: string): string {
   if (!iso) return "";
@@ -142,6 +145,7 @@ const XLSX_CORES = {
   total: "FFE2E8F0",
   totalDia: "FFF1F5F9",
   verde: "FF16A34A",
+  vermelho: "FFDC2626",
 };
 
 const XLSX_MOEDA = '"R$" #,##0.00;[Red]-"R$" #,##0.00';
@@ -386,10 +390,16 @@ export async function construirXlsx(rel: RelatorioListas): Promise<Uint8Array<Ar
   }`;
 
   // ---------------- Aba Resumo (visual dos cards do PDF) ----------------
-  // Resumo do relatorio: somente "A Receber" e "A Pagar" (Faturamento e Pagos
-  // continuam exportados nas abas proprias, mas nao entram nos totais).
-  const resumoLinhas: LinhaXlsx[] = [];
-  for (const item of ROTULOS_RESUMO) {
+  // Mesmas 4 relacoes dos cards do PDF + o "Resultado" (A Receber - A Pagar).
+  const resultado = calcularResultado(rel);
+  const resumoLinhas: LinhaXlsx[] = [
+    {
+      valores: ["Faturamento", fat.total, fat.porDia.filter((d) => d.total !== 0).length],
+      tipo: "acento",
+      cor: XLSX_CORES.verde,
+    },
+  ];
+  for (const item of ROTULOS) {
     const lista = ordenarTitulosRelatorio(rel[item.chave]);
     const total = lista.reduce((s, t) => s + (Number(t.valor) || 0), 0);
     resumoLinhas.push({
@@ -398,6 +408,11 @@ export async function construirXlsx(rel: RelatorioListas): Promise<Uint8Array<Ar
       cor: xlsxHex(item.cor),
     });
   }
+  resumoLinhas.push({
+    valores: ["Resultado", resultado, ""],
+    tipo: "acento",
+    cor: resultado >= 0 ? XLSX_CORES.verde : XLSX_CORES.vermelho,
+  });
 
   const wsResumo = montarTabelaXlsx(XLSX, {
     titulo: "Fluxo de Caixa — Resumo",
@@ -410,8 +425,17 @@ export async function construirXlsx(rel: RelatorioListas): Promise<Uint8Array<Ar
     colunaInteiro: 2,
   });
 
-  // Rodapé com a data/hora de geração
-  const linhaGerado = 4 + resumoLinhas.length + 1;
+  // Nota do calculo do Resultado + rodape com a data/hora de geracao
+  const linhaNota = 4 + resumoLinhas.length + 1;
+  const linhaGerado = linhaNota + 2;
+  const enderecoNota = XLSX.utils.encode_cell({ r: linhaNota - 1, c: 0 });
+  wsResumo[enderecoNota] = {
+    v: "Resultado = A Receber − A Pagar (Faturamento e Pagos não entram no cálculo)",
+    t: "s",
+    s: { font: { name: "Calibri", sz: 9, italic: true, color: { rgb: XLSX_CORES.subtitulo } } },
+  };
+  wsResumo["!merges"].push({ s: { r: linhaNota - 1, c: 0 }, e: { r: linhaNota - 1, c: 2 } });
+
   const enderecoGerado = XLSX.utils.encode_cell({ r: linhaGerado - 1, c: 0 });
   wsResumo[enderecoGerado] = {
     v: `Gerado em ${new Date().toLocaleString("pt-BR")}`,
@@ -541,23 +565,30 @@ export async function exportarPdf(rel: RelatorioListas) {
   doc.text(
     `Período: ${formatarDataBR(rel.dataInicio)} a ${formatarDataBR(rel.dataFim)}    |    Empresa: ${
       rel.empresa === "todas" ? "Todas as Empresas" : rel.empresa
-    }`,
+    }    |    Resultado = A Receber − A Pagar`,
     margem,
     23,
   );
   doc.setTextColor(0);
 
   // ---- Cards de totais no topo ----
-  // Resumo do relatorio: somente "A Receber" e "A Pagar" (Faturamento e
-  // Pagos continuam nas suas secoes, mas nao entram nos cards de topo).
+  // Sao 4 cards (Faturamento, A Receber, A Pagar, Pagos) + o card "Resultado",
+  // que considera apenas A Receber e A Pagar.
   const fat = rel.faturamento ?? { total: 0, porDia: [] };
-  const cards: { rotulo: string; valor: number; cor: [number, number, number] }[] = ROTULOS_RESUMO.map(
-    (item) => ({
+  const resultado = calcularResultado(rel);
+  const cards: { rotulo: string; valor: number; cor: [number, number, number] }[] = [
+    { rotulo: "Faturamento", valor: fat.total, cor: [22, 163, 74] },
+    ...ROTULOS.map((item) => ({
       rotulo: item.titulo,
       valor: ordenarTitulos(rel[item.chave]).reduce((s, t) => s + (Number(t.valor) || 0), 0),
       cor: item.cor,
-    }),
-  );
+    })),
+    {
+      rotulo: "Resultado",
+      valor: resultado,
+      cor: resultado >= 0 ? ([22, 163, 74] as [number, number, number]) : ([220, 38, 38] as [number, number, number]),
+    },
+  ];
 
   const alturaCard = 17;
   const gapCard = 4;
