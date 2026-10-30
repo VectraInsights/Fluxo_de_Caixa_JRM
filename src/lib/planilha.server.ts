@@ -16,11 +16,17 @@ function urlAba(diaNome: string) {
 }
 
 // Cache por aba/dia (evita refazer fetch a cada render)
+// Guarda o total POR REMETENTE (cliente); o total por empresa e derivado na hora,
+// assim conseguimos mostrar o detalhamento por cliente dentro de cada dia.
 const TTL_CACHE_MS = 5 * 60 * 1000;
-const cacheDias = new Map<string, { porEmpresa: Record<string, number>; em: number }>();
+const cacheDias = new Map<string, { porRemetente: Record<string, number>; em: number }>();
+
+// nome normalizado -> nome como aparece na planilha (sem a cidade), para exibir
+const nomeExibicao = new Map<string, string>();
 
 export function limparCachePlanilha() {
   cacheDias.clear();
+  nomeExibicao.clear();
 }
 
 // ------------------- Regras de direcionamento (remetente -> empresa) -------------------
@@ -131,14 +137,23 @@ export function parseValorPlanilha(s: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-// Aba do dia -> totais por empresa (JUVENAL / ROSANGELA / ALVARENGA / OUTROS).
+// Nome de exibicao do remetente: o valor da planilha sem o "(CIDADE - UF)".
+function nomeSemCidade(bruto: string): string {
+  return String(bruto)
+    .replace(/\s*\([^)]*\)\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Aba do dia -> totais POR REMETENTE (chave normalizada; o dono da empresa e
+// derivado depois, quando filtramos por empresa no periodo).
 // Na aba de dia: coluna B (indice 1) = REMETENTE, coluna F (indice 5) = VALOR.
-// Retorna 0/totais vazios se a aba nao existir (o gviz cai na primeira aba do
+// Retorna vazio se a aba nao existir (o gviz cai na primeira aba do
 // arquivo nesse caso; detectamos pelo cabecalho, que nas abas de dia comeca
 // com a data "dd.mm.aaaa").
 async function buscarAbaDoDia(dataIso: string): Promise<Record<string, number>> {
   const cacheado = cacheDias.get(dataIso);
-  if (cacheado && Date.now() - cacheado.em < TTL_CACHE_MS) return cacheado.porEmpresa;
+  if (cacheado && Date.now() - cacheado.em < TTL_CACHE_MS) return cacheado.porRemetente;
 
   const [, mm, dd] = dataIso.split("-");
   const dataPt = `${dd}.${mm}.${dataIso.slice(0, 4)}`;
@@ -153,7 +168,7 @@ async function buscarAbaDoDia(dataIso: string): Promise<Record<string, number>> 
   const cabecalho = (linhas[0]?.[0] ?? "").trim();
   if (!cabecalho.startsWith(dataPt)) {
     const vazio: Record<string, number> = {};
-    cacheDias.set(dataIso, { porEmpresa: vazio, em: Date.now() });
+    cacheDias.set(dataIso, { porRemetente: vazio, em: Date.now() });
     return vazio;
   }
 
@@ -163,24 +178,32 @@ async function buscarAbaDoDia(dataIso: string): Promise<Record<string, number>> 
     if (!f) continue;
     const v = parseValorPlanilha(f);
     if (v === null) continue; // "Pendente" ou formato invalido (mesmo criterio do SUM)
-    const remetente = normalizarNome(linhas[i][1] ?? ""); // coluna B = REMETENTE
-    const dono = EMPRESA_POR_REMETENTE[remetente] ?? "OUTROS";
-    bruto[dono] = (bruto[dono] ?? 0) + v;
+    const brutoRemetente = (linhas[i][1] ?? "").trim(); // coluna B = REMETENTE
+    if (!brutoRemetente) continue;
+    const remetente = normalizarNome(brutoRemetente);
+    // Guarda o nome de exibicao (sem a cidade) do primeiro jeito que vimos
+    if (!nomeExibicao.has(remetente)) nomeExibicao.set(remetente, nomeSemCidade(brutoRemetente));
+    bruto[remetente] = (bruto[remetente] ?? 0) + v;
   }
-  const porEmpresa: Record<string, number> = {};
+  const porRemetente: Record<string, number> = {};
   for (const [chave, valor] of Object.entries(bruto)) {
-    porEmpresa[chave] = Math.round(valor * 100) / 100;
+    porRemetente[chave] = Math.round(valor * 100) / 100;
   }
-  cacheDias.set(dataIso, { porEmpresa, em: Date.now() });
-  return porEmpresa;
+  cacheDias.set(dataIso, { porRemetente, em: Date.now() });
+  return porRemetente;
 }
 
 // Faturamento do periodo para a empresa selecionada ("todas" = tudo, inclui ALVARENGA).
+// porDia traz o detalhamento por CLIENTE (remetente) dentro de cada dia, ja
+// filtrado pela empresa selecionada e ordenado por valor crescente.
 export async function buscarFaturamentoPlanilha(
   dataInicio: string,
   dataFim: string,
   empresa: string,
-): Promise<{ total: number; porDia: { data: string; total: number }[] }> {
+): Promise<{
+  total: number;
+  porDia: { data: string; total: number; clientes: { nome: string; total: number }[] }[];
+}> {
   const filtro = filtroDaEmpresa(empresa);
 
   const dias: string[] = [];
@@ -204,20 +227,26 @@ export async function buscarFaturamentoPlanilha(
   }
   await Promise.all(Array.from({ length: Math.min(CONCORRENCIA, dias.length) }, worker));
 
-  // Detalhamento por dia (para o relatorio/exportacao) + total do periodo
-  const porDia: { data: string; total: number }[] = [];
+  // Detalhamento por dia e por cliente + total do periodo
+  const porDia: { data: string; total: number; clientes: { nome: string; total: number }[] }[] = [];
   let total = 0;
   for (let i = 0; i < dias.length; i++) {
-    const porEmpresa = totaisPorDia[i];
+    const porRemetente = totaisPorDia[i];
+    const clientes: { nome: string; total: number }[] = [];
     let dia = 0;
-    if (porEmpresa) {
-      for (const [chave, valor] of Object.entries(porEmpresa)) {
-        if (filtro === null || chave === filtro) dia += valor;
+    if (porRemetente) {
+      for (const [remetente, valor] of Object.entries(porRemetente)) {
+        const dono = EMPRESA_POR_REMETENTE[remetente] ?? "OUTROS";
+        if (filtro !== null && dono !== filtro) continue;
+        clientes.push({ nome: nomeExibicao.get(remetente) ?? remetente, total: valor });
+        dia += valor;
       }
     }
     dia = Math.round(dia * 100) / 100;
     total += dia;
-    porDia.push({ data: dias[i], total: dia });
+    // Mesma regra de ordenacao das listas: valor crescente, depois nome
+    clientes.sort((a, b) => a.total - b.total || a.nome.localeCompare(b.nome));
+    porDia.push({ data: dias[i], total: dia, clientes });
   }
   return { total: Math.round(total * 100) / 100, porDia };
 }

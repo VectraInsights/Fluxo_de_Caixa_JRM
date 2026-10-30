@@ -8,7 +8,13 @@ export type LinhaExport = TituloDetalhe & { empresa?: string };
 
 export type FaturamentoExport = {
   total: number;
-  porDia: { data: string; total: number }[];
+  porDia: {
+    data: string;
+    total: number;
+    // Detalhe por cliente (remetente) dentro do dia; opcional para
+    // compatibilidade com dados antigos (dia sem detalhe sai sem linhas).
+    clientes?: { nome: string; total: number }[];
+  }[];
 };
 
 export type RelatorioListas = {
@@ -102,16 +108,27 @@ export async function exportarXlsx(rel: RelatorioListas) {
   }
   XLSX.utils.book_append_sheet(wb, wsResumo, "Resumo");
 
-  // Aba de faturamento por dia (uma linha por dia do periodo)
+  // Aba de faturamento: uma linha por cliente (remetente) em cada dia,
+  // seguida do total do dia; no fim, o TOTAL do periodo.
   {
-    const aoa: (string | number)[][] = [["Data", "Faturamento (R$)"]];
-    for (const d of fat.porDia) aoa.push([formatarDataBR(d.data), Number(d.total) || 0]);
-    aoa.push(["TOTAL", fat.total]);
+    const aoa: (string | number)[][] = [["Data", "Cliente", "Faturamento (R$)"]];
+    for (const d of fat.porDia) {
+      const clientes = d.clientes ?? [];
+      if (clientes.length === 0) {
+        aoa.push([formatarDataBR(d.data), "", Number(d.total) || 0]);
+        continue;
+      }
+      for (const c of clientes) {
+        aoa.push([formatarDataBR(d.data), c.nome, Number(c.total) || 0]);
+      }
+      aoa.push([formatarDataBR(d.data), "Total do dia", Number(d.total) || 0]);
+    }
+    aoa.push(["", "TOTAL", fat.total]);
 
     const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws["!cols"] = [{ wch: 14 }, { wch: 20 }];
+    ws["!cols"] = [{ wch: 14 }, { wch: 34 }, { wch: 20 }];
     for (let i = 1; i < aoa.length; i++) {
-      const addr = XLSX.utils.encode_cell({ r: i, c: 1 });
+      const addr = XLSX.utils.encode_cell({ r: i, c: 2 });
       if (ws[addr]) ws[addr].z = 'R$ #,##0.00';
     }
     XLSX.utils.book_append_sheet(wb, ws, "Faturamento");
@@ -248,18 +265,46 @@ export async function exportarPdf(rel: RelatorioListas) {
     doc.setTextColor(0);
     y += 8;
 
+    // Linhas: uma por cliente (remetente) em cada dia + linha "Total do dia".
+    type LinhaFat = { data: string; cliente: string; valor: string; ehTotalDia: boolean };
+    const linhasFat: LinhaFat[] = [];
+    for (const d of fat.porDia) {
+      const clientes = d.clientes ?? [];
+      if (clientes.length === 0) {
+        linhasFat.push({ data: formatarDataBR(d.data), cliente: "", valor: formatarValor(d.total), ehTotalDia: false });
+        continue;
+      }
+      for (const c of clientes) {
+        linhasFat.push({ data: formatarDataBR(d.data), cliente: c.nome, valor: formatarValor(c.total), ehTotalDia: false });
+      }
+      linhasFat.push({
+        data: formatarDataBR(d.data),
+        cliente: "Total do dia",
+        valor: formatarValor(d.total),
+        ehTotalDia: true,
+      });
+    }
+
     autoTable(doc, {
       startY: y,
-      head: [["Data", "Faturamento (R$)"]],
-      body: fat.porDia.map((d) => [formatarDataBR(d.data), formatarValor(d.total)]),
-      foot: [["TOTAL", formatarValor(fat.total)]],
+      head: [["Data", "Cliente", "Faturamento (R$)"]],
+      body: linhasFat.map((l) => [l.data, l.cliente, l.valor]),
+      foot: [["", "TOTAL", formatarValor(fat.total)]],
       theme: "grid",
       styles: { fontSize: 8, cellPadding: 2, overflow: "linebreak" },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
       footStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: "bold" },
+      // Linha de total do dia em negrito e com fundo claro
+      didParseCell: (data: any) => {
+        if (data.section === "body" && linhasFat[data.row.index]?.ehTotalDia) {
+          data.cell.styles.fontStyle = "bold";
+          data.cell.styles.fillColor = [240, 240, 240];
+        }
+      },
       columnStyles: {
         0: { maxWidth: 24 },
-        1: { maxWidth: 30, halign: "right" },
+        1: { maxWidth: 60 },
+        2: { maxWidth: 30, halign: "right" },
       } as any,
       margin: { top: 30, bottom: 16, left: margem, right: margem },
     });

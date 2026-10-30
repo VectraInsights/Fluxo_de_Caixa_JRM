@@ -62,7 +62,10 @@ export const getFaturamento = createServerFn({ method: "GET" })
   .handler(
     async ({
       data,
-    }): Promise<{ total: number; porDia: { data: string; total: number }[] }> => {
+    }): Promise<{
+      total: number;
+      porDia: { data: string; total: number; clientes: { nome: string; total: number }[] }[];
+    }> => {
       try {
         return await buscarFaturamentoPlanilha(data.data_inicio, data.data_fim, data.empresa);
       } catch (e) {
