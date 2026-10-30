@@ -29,6 +29,8 @@ import {
   Link2,
   CheckCircle2,
   Banknote,
+  FileText,
+  FileSpreadsheet,
 } from "lucide-react";
 import {
   listarEmpresas,
@@ -39,6 +41,7 @@ import {
   finalizarAutorizacao,
   type TituloDetalhe,
 } from "@/lib/contaazul.functions";
+import { ordenarTitulos, exportarXlsx, exportarPdf } from "@/lib/exportar";
 import { useQueryClient } from "@tanstack/react-query";
 // using public SVG logo
 const logo = "/jrmicon.png";
@@ -162,6 +165,10 @@ function Dashboard() {
     "ocioso" | "processando" | "sucesso" | "erro"
   >("ocioso");
   const [oauthMsg, setOauthMsg] = useState("");
+
+  // Estado da exportação das listas (PDF / XLSX)
+  const [exportando, setExportando] = useState<null | "pdf" | "xlsx">(null);
+  const [erroExportacao, setErroExportacao] = useState<string | null>(null);
 
     useEffect(() => {
     const saved = localStorage.getItem("theme");
@@ -429,15 +436,37 @@ function Dashboard() {
       for (const t of eb.pagar.titulos) pagar.push({ ...t, empresa: eb.empresa });
       for (const t of eb.pagos?.titulos ?? []) pagos.push({ ...t, empresa: eb.empresa });
     }
-    receber.sort((a, b) => a.data.localeCompare(b.data));
-    pagar.sort((a, b) => a.data.localeCompare(b.data));
-    pagos.sort((a, b) => a.data.localeCompare(b.data));
+    // Ordenacao cronologica (data), depois por valor e por descricao (alfabetica)
     return {
-      receber: { total: round(receber.reduce((a, b) => a + b.valor, 0)), titulos: receber },
-      pagar: { total: round(pagar.reduce((a, b) => a + b.valor, 0)), titulos: pagar },
-      pagos: { total: round(pagos.reduce((a, b) => a + b.valor, 0)), titulos: pagos },
+      receber: { total: round(receber.reduce((a, b) => a + b.valor, 0)), titulos: ordenarTitulos(receber) },
+      pagar: { total: round(pagar.reduce((a, b) => a + b.valor, 0)), titulos: ordenarTitulos(pagar) },
+      pagos: { total: round(pagos.reduce((a, b) => a + b.valor, 0)), titulos: ordenarTitulos(pagos) },
     };
   }, [breakdown]);
+
+  // Exporta as tres listas (A Receber, A Pagar, Pagos) para PDF ou XLSX
+  async function exportar(formato: "pdf" | "xlsx") {
+    if (!consolidado || exportando) return;
+    setExportando(formato);
+    setErroExportacao(null);
+    try {
+      const relatorio = {
+        empresa,
+        dataInicio,
+        dataFim,
+        receber: consolidado.receber.titulos,
+        pagar: consolidado.pagar.titulos,
+        pagos: consolidado.pagos.titulos,
+      };
+      if (formato === "pdf") await exportarPdf(relatorio);
+      else await exportarXlsx(relatorio);
+    } catch (e) {
+      console.error("Falha ao exportar listas:", e);
+      setErroExportacao("Não foi possível gerar o arquivo. Tente novamente.");
+    } finally {
+      setExportando(null);
+    }
+  }
 
 
 
@@ -875,13 +904,46 @@ function Dashboard() {
 
           {/* Detalhamento consolidado: a receber / a pagar / pagos de todas as empresas */}
           <div className="mt-6 rounded-2xl border border-border bg-card/60 backdrop-blur-xl p-6 shadow-xl">
-            <div className="mb-5">
-              <h2 className="font-display text-lg font-semibold">A Receber, A Pagar e Pagos</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {empresa === "todas"
-                  ? "Todas as empresas consolidadas no período selecionado"
-                  : `Empresa selecionada: ${empresa}`}
-              </p>
+            <div className="mb-5 flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <h2 className="font-display text-lg font-semibold">A Receber, A Pagar e Pagos</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {empresa === "todas"
+                    ? "Todas as empresas consolidadas no período selecionado"
+                    : `Empresa selecionada: ${empresa}`}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {erroExportacao && (
+                  <span className="text-[11px] text-destructive">{erroExportacao}</span>
+                )}
+                <button
+                  onClick={() => exportar("pdf")}
+                  disabled={!consolidado || exportando !== null}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background/60 px-3 py-1.5 text-xs font-medium text-foreground/80 hover:text-foreground hover:border-brand/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Exportar as listas em PDF"
+                >
+                  {exportando === "pdf" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <FileText className="h-3.5 w-3.5" />
+                  )}
+                  PDF
+                </button>
+                <button
+                  onClick={() => exportar("xlsx")}
+                  disabled={!consolidado || exportando !== null}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background/60 px-3 py-1.5 text-xs font-medium text-foreground/80 hover:text-foreground hover:border-brand/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Exportar as listas em Excel (XLSX)"
+                >
+                  {exportando === "xlsx" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <FileSpreadsheet className="h-3.5 w-3.5" />
+                  )}
+                  XLSX
+                </button>
+              </div>
             </div>
 
             {!breakdown ? (
