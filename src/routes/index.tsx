@@ -615,9 +615,9 @@ function Dashboard() {
           sidebarOpen ? "ml-[280px]" : "ml-0"
         }`}
       >
-        <div className="mx-auto max-w-[1400px] p-6 lg:p-10">
+        <div className="mx-auto max-w-[1400px] p-6 lg:p-6">
           {/* Header */}
-          <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
+          <div className="flex items-start justify-between mb-4 gap-4 flex-wrap">
             <div className="pl-12 lg:pl-0">
               <h1 className="font-display text-3xl lg:text-4xl font-bold tracking-tight">
                 Fluxo de Caixa
@@ -752,7 +752,7 @@ function Dashboard() {
           )}
 
           {/* KPI cards: Faturamento, Entradas, Saídas, Pagos */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
             {faturamento === undefined && isFaturamentoFetching ? (
               <SkeletonCard />
             ) : (
@@ -804,10 +804,10 @@ function Dashboard() {
 
 
           {/* Chart */}
-          <div className="relative rounded-2xl border border-border bg-card/60 backdrop-blur-xl p-6 shadow-xl overflow-hidden">
+          <div className="relative rounded-2xl border border-border bg-card/60 backdrop-blur-xl p-5 shadow-xl overflow-hidden">
             <div className="absolute inset-0 bg-gradient-to-br from-brand/5 via-transparent to-brand-2/5 pointer-events-none" />
             <div className="relative">
-              <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+              <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
                 <div>
                   <h2 className="font-display text-lg font-semibold">Projeção Diária</h2>
                   <p className="text-xs text-muted-foreground mt-0.5">
@@ -821,7 +821,7 @@ function Dashboard() {
                 </div>
               </div>
 
-              <div className="h-[420px]">
+              <div className="h-[300px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <ComposedChart data={chartData} stackOffset="sign" margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
                     <defs>
