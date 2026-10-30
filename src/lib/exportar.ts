@@ -182,10 +182,55 @@ export async function exportarPdf(rel: RelatorioListas) {
   );
   doc.setTextColor(0);
 
-  let y = 32;
+  // ---- Cards de totais no topo (mesma ordem das secoes do relatorio) ----
+  const fat = rel.faturamento ?? { total: 0, porDia: [] };
+  const cards: { rotulo: string; valor: number; cor: [number, number, number] }[] = [
+    { rotulo: "Faturamento", valor: fat.total, cor: [22, 163, 74] },
+    ...ROTULOS.map((item) => ({
+      rotulo: item.titulo,
+      valor: ordenarTitulos(rel[item.chave]).reduce((s, t) => s + (Number(t.valor) || 0), 0),
+      cor: item.cor,
+    })),
+  ];
+
+  const alturaCard = 17;
+  const gapCard = 4;
+  const larguraCard = (largura - margem * 2 - gapCard * (cards.length - 1)) / cards.length;
+  const yCard = 30;
+  let xCard = margem;
+  for (const c of cards) {
+    // Fundo claro com moldura na cor da relacao
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(...c.cor);
+    doc.setLineWidth(0.6);
+    doc.rect(xCard, yCard, larguraCard, alturaCard, "FD");
+
+    // Rotulo pequeno em cima
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(110);
+    doc.text(c.rotulo, xCard + 3, yCard + 6);
+
+    // Valor em negrito (fonte encolhe se nao couber no card)
+    const valorTxt = formatarValor(c.valor);
+    let fs = 12;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(fs);
+    while (fs > 7 && doc.getTextWidth(valorTxt) > larguraCard - 6) {
+      fs -= 0.5;
+      doc.setFontSize(fs);
+    }
+    doc.setTextColor(30);
+    doc.text(valorTxt, xCard + 3, yCard + 14);
+
+    xCard += larguraCard + gapCard;
+  }
+  doc.setDrawColor(0);
+  doc.setTextColor(0);
+
+  let y = yCard + alturaCard + 10;
 
   // Seção Faturamento (planilha de cargas), antes das listas de títulos
-  const fat = rel.faturamento ?? { total: 0, porDia: [] };
   if (fat.porDia.length > 0) {
     if (altura - margem - y < 45) {
       doc.addPage();
