@@ -380,6 +380,7 @@ export type TituloDetalhe = {
   metodo: string | null;
   descricao: string | null;
   terceiro: string | null; // cliente (receber) ou fornecedor (pagar)
+  categoria: string | null; // categoria financeira da Conta Azul
 };
 
 export type EmpresaBreakdown = {
@@ -410,6 +411,7 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
           metodo: i.metodo ?? null,
           descricao: i.descricao ?? null,
           terceiro: i.terceiro ?? null,
+          categoria: i.categoria ?? null,
         }))
         .sort((a, b) => a.data.localeCompare(b.data));
       const total = titulos.reduce((a, b) => a + b.valor, 0);

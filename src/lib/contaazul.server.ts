@@ -108,6 +108,7 @@ export type ItemLancamento = {
   conta_id?: string;
   descricao?: string | null;
   terceiro?: string | null;
+  categoria?: string | null;
 };
 
 type EntradaCache<T> = { promessa: Promise<T>; exp: number };
@@ -557,6 +558,53 @@ function extrairDescricao(j: any): string | null {
   return null;
 }
 
+// Extrai a(s) categoria(s) financeira(s) do título.
+// Os endpoints "eventos-financeiros/.../buscar" (receber e pagar) devolvem
+// `itens.categorias = [{ id, nome }]`. Já o endpoint de parcelas
+// ("/v1/financeiro/contas-a-pagar", usado nas PAGAS) traz a categoria dentro do
+// rateio do evento: `evento.rateio = [{ id_categoria, nome_categoria }]`.
+// Então cobrimos as duas estruturas (e variantes simples) sem quebrar se algo
+// mudar: o que não vier, fica null e a coluna sai em branco.
+export function extrairCategoria(j: any): string | null {
+  if (!j) return null;
+
+  const nomes: string[] = [];
+  const add = (v: any) => {
+    if (typeof v === "string" && v.trim()) {
+      const n = v.trim();
+      if (!nomes.includes(n)) nomes.push(n);
+    }
+  };
+
+  // [{ nome }] | ["A", "B"]
+  if (Array.isArray(j.categorias)) {
+    for (const c of j.categorias) {
+      if (typeof c === "string") add(c);
+      else if (c && typeof c === "object") add(c.nome || c.nome_categoria || c.name);
+    }
+  }
+
+  // categoria: "X" | { nome: "X" }
+  add(j.categoria);
+  if (j.categoria && typeof j.categoria === "object") {
+    add(j.categoria.nome || j.categoria.nome_categoria || j.categoria.name);
+  }
+  add(j.nome_categoria);
+  add(j.categorias_nome);
+
+  // rateio (direto ou dentro do evento)
+  const rateios = Array.isArray(j.rateio)
+    ? j.rateio
+    : Array.isArray(j.evento?.rateio)
+      ? j.evento.rateio
+      : [];
+  for (const r of rateios) {
+    if (r && typeof r === "object") add(r.nome_categoria || r.nome);
+  }
+
+  return nomes.length ? nomes.join(" / ") : null;
+}
+
 async function buscarDetalheFormaPagamento(
   empresa: string,
   endpoint: string,
@@ -807,6 +855,7 @@ async function buscarV2Interna(
     conta_id?: string;
     descricao?: string | null;
     terceiro?: string | null;
+    categoria?: string | null;
   }[] = [];
   let pagina = 1;
   let tentativasReauth = 0;
@@ -856,6 +905,7 @@ async function buscarV2Interna(
           conta_id: i.conta_financeira_id || i.conta_id || undefined,
           descricao: extrairDescricao(i),
           terceiro: extrairTerceiro(i),
+          categoria: extrairCategoria(i),
         });
       }
     }
@@ -872,6 +922,7 @@ async function buscarV2Interna(
       conta_id: b.conta_id,
       descricao: b.descricao ?? null,
       terceiro: b.terceiro ?? null,
+      categoria: b.categoria ?? null,
     }));
     if (teveErroGeral) {
       log("warn", `buscarV2 finalizou com erros para ${empresa} (pagar). Dados não cacheados.`);
@@ -897,6 +948,7 @@ async function buscarV2Interna(
     conta_id?: string;
     descricao?: string | null;
     terceiro?: string | null;
+    categoria?: string | null;
   }[] = new Array(brutos.length);
   let idx = 0;
   let boletos = 0;
@@ -940,6 +992,7 @@ async function buscarV2Interna(
         conta_id: b.conta_id,
         descricao: b.descricao ?? null,
         terceiro: b.terceiro ?? null,
+        categoria: b.categoria ?? null,
       };
     }
   }
@@ -1084,6 +1137,7 @@ async function processarPagasResposta(
       conta_id: i.conta_financeira_id || i.conta_id || undefined,
       descricao: extrairDescricao(i),
       terceiro: extrairTerceiro(i),
+      categoria: extrairCategoria(i),
     });
   }
 

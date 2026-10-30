@@ -121,32 +121,34 @@ export async function exportarXlsx(rel: RelatorioListas) {
   for (const item of ROTULOS) {
     const lista = ordenarTitulos(rel[item.chave]);
     const aoa: (string | number)[][] = [
-      ["Data", "Descrição", item.rotuloTerceiro, "Empresa", "Método", "Valor (R$)"],
+      ["Data", "Descrição", item.rotuloTerceiro, "Categoria", "Empresa", "Método", "Valor (R$)"],
     ];
     for (const t of lista) {
       aoa.push([
         formatarDataBR(t.data),
         tituloDaLinha(t),
         subtituloDaLinha(t),
+        t.categoria || "",
         t.empresa || "",
         t.metodo || "",
         Number(t.valor) || 0,
       ]);
     }
-    aoa.push(["", "TOTAL", "", "", "", lista.reduce((s, t) => s + (Number(t.valor) || 0), 0)]);
+    aoa.push(["", "TOTAL", "", "", "", "", lista.reduce((s, t) => s + (Number(t.valor) || 0), 0)]);
 
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     ws["!cols"] = [
       { wch: 12 },
-      { wch: 48 },
-      { wch: 30 },
+      { wch: 44 },
+      { wch: 28 },
+      { wch: 26 },
       { wch: 22 },
       { wch: 16 },
       { wch: 16 },
     ];
     // Formata a coluna de valor como moeda
     for (let i = 1; i < aoa.length; i++) {
-      const addr = XLSX.utils.encode_cell({ r: i, c: 5 });
+      const addr = XLSX.utils.encode_cell({ r: i, c: 6 });
       if (ws[addr]) ws[addr].z = 'R$ #,##0.00';
     }
     XLSX.utils.book_append_sheet(wb, ws, item.titulo);
@@ -287,16 +289,17 @@ export async function exportarPdf(rel: RelatorioListas) {
 
     autoTable(doc, {
       startY: y,
-      head: [["Data", "Descrição", item.rotuloTerceiro, "Empresa", "Método", "Valor (R$)"]],
+      head: [["Data", "Descrição", item.rotuloTerceiro, "Categoria", "Empresa", "Método", "Valor (R$)"]],
       body: lista.map((t) => [
         formatarDataBR(t.data),
         tituloDaLinha(t),
         subtituloDaLinha(t),
+        t.categoria || "",
         t.empresa || "",
         t.metodo || "",
         formatarValor(t.valor),
       ]),
-      foot: [["", "TOTAL", "", "", "", formatarValor(total)]],
+      foot: [["", "TOTAL", "", "", "", "", formatarValor(total)]],
       theme: "grid",
       styles: { fontSize: 8, cellPadding: 2, overflow: "linebreak" },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
@@ -304,12 +307,13 @@ export async function exportarPdf(rel: RelatorioListas) {
       // Larguras automaticas com teto de quebra do texto (evita estourar a pagina).
       // "maxWidth" existe no runtime do jspdf-autotable, mas nao nos tipos da v5.
       columnStyles: {
-        0: { maxWidth: 20 },
-        1: { maxWidth: 78 },
-        2: { maxWidth: 52 },
-        3: { maxWidth: 42 },
-        4: { maxWidth: 24 },
-        5: { maxWidth: 30, halign: "right" },
+        0: { maxWidth: 18 },
+        1: { maxWidth: 54 },
+        2: { maxWidth: 40 },
+        3: { maxWidth: 30 },
+        4: { maxWidth: 34 },
+        5: { maxWidth: 22 },
+        6: { maxWidth: 28, halign: "right" },
       } as any,
       margin: { top: 30, bottom: 16, left: margem, right: margem },
     });
