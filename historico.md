@@ -63,6 +63,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 | Commit | Descricao | Data |
 |--------|-----------|------|
 | `80deeec` | feat: coluna Categoria nas listas (A Receber, A Pagar, Pagos) e nos relatorios PDF/XLSX | 30/10/2026 |
+| `PENDENTE` | feat: faturamento detalhado por cliente (remetente) em cada dia nos relatorios PDF/XLSX | 30/10/2026 |
 | `6f541fe` | feat: faixa de 4 cards de totais no topo do PDF exportado (Faturamento, A Receber, A Pagar, Pagos) | 30/10/2026 |
 | `5045077` | feat: rotulo da coluna de terceiro na exportacao — "Cliente" em A Receber e "Fornecedor" em A Pagar e Pagos (antes "Contraparte") | 30/10/2026 |
 | `b4f8f3a` | feat: inclui o Faturamento (total e por dia) na exportacao em PDF e XLSX | 30/10/2026 |
@@ -145,6 +146,14 @@ APENAS na visao "Todas as Empresas". Remetente sem regra cai em "OUTROS" (entra 
 (uma linha por dia do periodo, inclusive dias sem aba — zero). Esse detalhamento alimenta o
 card, a seção "Faturamento" do PDF (faixa verde, antes de "A Receber") e a aba "Faturamento"
 do XLSX (aba "Resumo" tambem ganhou a linha Faturamento).
+
+**Detalhe por cliente (remetente) em cada dia:** o cache da aba agora guarda o total POR
+REMETENTE (nao por empresa); o filtro de empresa e aplicado depois, na montagem do periodo
+(`EMPRESA_POR_REMETENTE` por remetente normalizado, sem regra = OUTROS). Assim cada dia de
+`porDia` leva `clientes: [{ nome, total }]` — nome exibido e o remetente SEM o "(CIDADE - UF)".
+Nos relatorios (PDF e XLSX), antes do total do dia aparece uma linha por cliente; se o dia
+nao tiver lancamentos, sai uma linha unica sem cliente. Ordenados por valor crescente, depois
+nome (mesma regra das listas). A tela nao mudou: o card continua mostrando apenas o total.
 
 ---
 
