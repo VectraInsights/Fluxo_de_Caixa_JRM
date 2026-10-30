@@ -287,13 +287,16 @@ export async function exportarPdf(rel: RelatorioListas) {
 
   let y = yCard + alturaCard + 10;
 
+  // ---------------------------------------------------------------------
+  // Paginação determinística do relatório:
+  //  - "Faturamento" SEMPRE começa na MESMA página do cabeçalho/cards
+  //    (nunca abrimos página antes dele);
+  //  - cada seção seguinte ("A Receber", "A Pagar", "Pagos") começa numa
+  //    PÁGINA NOVA, imediatamente após o fim do conteúdo da anterior.
+  // ---------------------------------------------------------------------
+
   // Seção Faturamento (planilha de cargas), antes das listas de títulos
   if (fat.porDia.length > 0) {
-    if (altura - margem - y < 45) {
-      doc.addPage();
-      y = 24;
-    }
-
     doc.setFillColor(22, 163, 74);
     doc.rect(margem, y - 4.5, largura - margem * 2, 8, "F");
     doc.setTextColor(255);
@@ -347,6 +350,9 @@ export async function exportarPdf(rel: RelatorioListas) {
       margin: { top: 30, bottom: 16, left: margem, right: margem },
     });
 
+    // Posição final da tabela do Faturamento (o autoTable já pagina sozinho
+    // quando o conteúdo não cabe). A quebra de página vem logo abaixo, na
+    // entrada da próxima seção.
     y = ((doc as any).lastAutoTable?.finalY ?? y + 30) + 14;
   }
 
@@ -354,11 +360,10 @@ export async function exportarPdf(rel: RelatorioListas) {
     const lista = ordenarTitulosRelatorio(rel[item.chave]);
     const total = lista.reduce((s, t) => s + (Number(t.valor) || 0), 0);
 
-    // Sem espaco para o titulo + algumas linhas: quebra a pagina
-    if (altura - margem - y < 45) {
-      doc.addPage();
-      y = 24;
-    }
+    // Cada seção de títulos começa em uma PÁGINA NOVA, imediatamente após o
+    // fim da seção anterior (A Receber -> A Pagar -> Pagos).
+    doc.addPage();
+    y = 24;
 
     // Faixa colorida do titulo da secao
     doc.setFillColor(...item.cor);
