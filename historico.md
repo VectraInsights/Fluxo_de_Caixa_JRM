@@ -62,6 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `PENDENTE` | feat: paginacao fixa no PDF exportado — Faturamento junto do cabecalho/cards e cada secao seguinte (A Receber, A Pagar, Pagos) em pagina nova | 30/10/2026 |
 | `80deeec` | feat: coluna Categoria nas listas (A Receber, A Pagar, Pagos) e nos relatorios PDF/XLSX | 30/10/2026 |
 | `f89df8c` | feat: relatorios PDF/XLSX listam A Receber, A Pagar e Pagos em ordem alfabetica de Cliente/Fornecedor (tela continua cronologica) | 30/10/2026 |
 | `6fe81a5` | feat: faturamento detalhado por cliente (remetente) em cada dia nos relatorios PDF/XLSX | 30/10/2026 |
@@ -202,6 +203,42 @@ Regras do `ordenarTitulosRelatorio`:
 
 A função de total dos cards do PDF (`reduce`) continua usando a lista original — ordem
 irrelevante para a soma.
+
+---
+
+## 3.4 Paginacao do PDF exportado (secoes em paginas fixas)
+
+Regra pedida e aplicada em `exportarPdf` (`src/lib/exportar.ts`):
+
+| Secao | Pagina |
+|-------|--------|
+| **Faturamento** | **sempre na MESMA pagina do cabecalho e dos 4 cards de totais** (nunca abre pagina nova antes dela) |
+| **A Receber** | pagina nova, imediatamente apos a ultima pagina do Faturamento |
+| **A Pagar** | pagina nova, imediatamente apos a ultima pagina do A Receber |
+| **Pagos** | pagina nova, imediatamente apos a ultima pagina do A Pagar |
+
+Como o `autoTable` pagina sozinho quando a tabela nao cabe, "ultima pagina da secao"
+pode ser varias paginas adiante: a proxima secao sempre comeca na pagina seguinte
+ao ultimo pedaco de conteudo da secao anterior (nunca sobra pagina vazia no fim,
+porque a quebra acontece **antes** de cada secao, nao depois).
+
+O que mudou no codigo:
+
+- O guard antigo `if (altura - margem - y < 45) { doc.addPage(); y = 24; }` (que
+  quebrava a pagina **antes** da secao, quando nao havia espaco) foi **removido** —
+  ele era a causa de o Faturamento as vezes comecar em pagina nova.
+- Agora cada secao de titulos faz `doc.addPage()` no inicio e recomeca em `y = 24`
+  (topo da pagina, com a faixa colorida do titulo logo abaixo).
+- O Faturamento nao faz nenhuma quebra: ele sai logo abaixo dos cards, na pagina 1.
+
+Validacao local (script temporario, nao vai para o repo): PDF gerado com 3 cenarios
+(conteudo curto, conteudo longo com tabelas quebrando em varias paginas e cenario
+sem faturamento). Resultado: Faturamento na pagina 1 (y=58), A Receber na pagina 2
+(y=25), A Pagar na pagina 3 (y=25), Pagos na pagina 4 (y=25); no cenario longo,
+Faturamento ocupa as paginas 1..8, A Receber comeca na 9, A Pagar na 15 e Pagos na 20.
+Nenhum texto abaixo da margem inferior (so o rodape com a numeracao de paginas).
+
+O XLSX **nao** muda: paginacao so faz sentido em PDF.
 
 ---
 
