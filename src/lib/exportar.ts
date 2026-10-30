@@ -21,10 +21,17 @@ export type RelatorioListas = {
   faturamento: FaturamentoExport;
 };
 
-const ROTULOS: { chave: "receber" | "pagar" | "pagos"; titulo: string; cor: [number, number, number] }[] = [
-  { chave: "receber", titulo: "A Receber", cor: [22, 163, 74] },
-  { chave: "pagar", titulo: "A Pagar", cor: [220, 38, 38] },
-  { chave: "pagos", titulo: "Pagos", cor: [220, 38, 38] },
+const ROTULOS: {
+  chave: "receber" | "pagar" | "pagos";
+  titulo: string;
+  cor: [number, number, number];
+  // Rotulo da coluna de terceiro: quem paga/recebe em "A Receber" e quem
+  // recebe/paga nas demais listas.
+  rotuloTerceiro: string;
+}[] = [
+  { chave: "receber", titulo: "A Receber", cor: [22, 163, 74], rotuloTerceiro: "Cliente" },
+  { chave: "pagar", titulo: "A Pagar", cor: [220, 38, 38], rotuloTerceiro: "Fornecedor" },
+  { chave: "pagos", titulo: "Pagos", cor: [220, 38, 38], rotuloTerceiro: "Fornecedor" },
 ];
 
 function formatarDataBR(iso: string): string {
@@ -114,7 +121,7 @@ export async function exportarXlsx(rel: RelatorioListas) {
   for (const item of ROTULOS) {
     const lista = ordenarTitulos(rel[item.chave]);
     const aoa: (string | number)[][] = [
-      ["Data", "Descrição", "Contraparte", "Empresa", "Método", "Valor (R$)"],
+      ["Data", "Descrição", item.rotuloTerceiro, "Empresa", "Método", "Valor (R$)"],
     ];
     for (const t of lista) {
       aoa.push([
@@ -235,7 +242,7 @@ export async function exportarPdf(rel: RelatorioListas) {
 
     autoTable(doc, {
       startY: y,
-      head: [["Data", "Descrição", "Contraparte", "Empresa", "Método", "Valor (R$)"]],
+      head: [["Data", "Descrição", item.rotuloTerceiro, "Empresa", "Método", "Valor (R$)"]],
       body: lista.map((t) => [
         formatarDataBR(t.data),
         tituloDaLinha(t),
