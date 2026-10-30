@@ -62,6 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `PENDENTE` | feat: XLSX exportado ganha visual profissional (cores, cabecalho escuro, zebrado, totais em destaque, painel congelado, autofiltro e cor de aba) | 30/10/2026 |
 | `78bb301` | feat: paginacao fixa no PDF exportado — Faturamento junto do cabecalho/cards e cada secao seguinte (A Receber, A Pagar, Pagos) em pagina nova | 30/10/2026 |
 | `80deeec` | feat: coluna Categoria nas listas (A Receber, A Pagar, Pagos) e nos relatorios PDF/XLSX | 30/10/2026 |
 | `f89df8c` | feat: relatorios PDF/XLSX listam A Receber, A Pagar e Pagos em ordem alfabetica de Cliente/Fornecedor (tela continua cronologica) | 30/10/2026 |
@@ -239,6 +240,36 @@ Faturamento ocupa as paginas 1..8, A Receber comeca na 9, A Pagar na 15 e Pagos 
 Nenhum texto abaixo da margem inferior (so o rodape com a numeracao de paginas).
 
 O XLSX **nao** muda: paginacao so faz sentido em PDF.
+
+---
+
+## 3.5 Visual do XLSX exportado (planilha formatada)
+
+A exportacao de planilha foi reescrita para sair "bonita" no Excel / Google Sheets.
+
+**Dependencias:** `xlsx-js-style` (fork do SheetJS que grava estilo de celula — o `xlsx`
+original, na versao Community, ignora cores, bordas e alinhamento na escrita) e `fflate`
+(remonta o zip do `.xlsx` para injetar painel congelado, cor de aba e esconder as linhas
+de grade — recursos que o SheetJS nao grava). O pacote `xlsx` foi removido do
+`package.json` (nao era usado em mais nenhum lugar).
+
+**Visual por aba:**
+
+| Aba | Visual |
+|-----|--------|
+| **Resumo** | titulo + periodo; 4 linhas com o nome da relacao pintado na cor (verde/vermelho, igual aos cards do PDF), total em moeda, quantidade de titulos e rodape "Gerado em ..." |
+| **Faturamento** | titulo na cor verde, uma linha por cliente, linha "Total do dia" em negrito com fundo claro, linha TOTAL com borda dupla |
+| **A Receber / A Pagar / Pagos** | titulo na cor da relacao, cabecalho escuro com texto branco, zebrado no corpo, quebra de linha em Descricao e Categoria, linha TOTAL em negrito |
+
+**Em todas as abas:** cabecalho congelado (4 linhas: titulo, periodo, separador e
+cabecalho da tabela), autofiltro, larguras de coluna calibradas, linhas de grade
+escondidas e cor na aba da planilha (verde para Faturamento/A Receber, vermelho para
+A Pagar/Pagos).
+
+**Formatos de numero:** moeda `"R$" #,##0.00` (negativo em vermelho) e inteiro `#,##0`.
+
+**Nenhuma regra de negocio mudou:** mesmas abas, mesma ordem alfabetica por
+Cliente/Fornecedor, mesmos totais — so o visual.
 
 ---
 
