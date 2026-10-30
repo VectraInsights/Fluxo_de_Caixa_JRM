@@ -59,12 +59,50 @@ function subtituloDaLinha(t: LinhaExport): string {
   return t.descricao && t.terceiro ? t.terceiro : "";
 }
 
-// Ordenacao usada na tela e na exportacao:
+// Ordenacao usada na tela (cronologica):
 // 1) data (crescente / cronologica)
 // 2) valor (crescente)
 // 3) descricao (alfabetica) e empresa (alfabetica) — desempate deterministico
 export function ordenarTitulos(lista: LinhaExport[]): LinhaExport[] {
   return [...(lista || [])].sort((a, b) => {
+    const da = a.data || "";
+    const db = b.data || "";
+    if (da !== db) return da.localeCompare(db);
+
+    const va = Math.abs(Number(a.valor) || 0);
+    const vb = Math.abs(Number(b.valor) || 0);
+    if (va !== vb) return va - vb;
+
+    const desc = tituloDaLinha(a).localeCompare(tituloDaLinha(b), "pt-BR");
+    if (desc !== 0) return desc;
+
+    return (a.empresa || "").localeCompare(b.empresa || "", "pt-BR");
+  });
+}
+
+// Normaliza nome para comparacao alfabetica (sem acento, minusculas).
+function chaveNome(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+// Ordenacao dos RELATORIOS (PDF/XLSX): primeiro por Cliente/Fornecedor em ordem
+// alfabetica; dentro do mesmo terceiro, data crescente e depois valor crescente.
+// Titulos sem terceiro vao para o fim. A tela NAO usa esta funcao (mantem a
+// cronologica ordenarTitulos).
+export function ordenarTitulosRelatorio(lista: LinhaExport[]): LinhaExport[] {
+  return [...(lista || [])].sort((a, b) => {
+    const ta = chaveNome(a.terceiro || "");
+    const tb = chaveNome(b.terceiro || "");
+    if (ta !== tb) {
+      if (!ta) return 1; // sem terceiro, por ultimo
+      if (!tb) return -1;
+      return ta.localeCompare(tb, "pt-BR");
+    }
+
     const da = a.data || "";
     const db = b.data || "";
     if (da !== db) return da.localeCompare(db);
@@ -96,7 +134,7 @@ export async function exportarXlsx(rel: RelatorioListas) {
   const fat = rel.faturamento ?? { total: 0, porDia: [] };
   resumo.push(["Faturamento", fat.total, fat.porDia.filter((d) => d.total !== 0).length]);
   for (const item of ROTULOS) {
-    const lista = ordenarTitulos(rel[item.chave]);
+    const lista = ordenarTitulosRelatorio(rel[item.chave]);
     const total = lista.reduce((s, t) => s + (Number(t.valor) || 0), 0);
     resumo.push([item.titulo, total, lista.length]);
   }
@@ -136,7 +174,7 @@ export async function exportarXlsx(rel: RelatorioListas) {
 
   // Uma aba por lista
   for (const item of ROTULOS) {
-    const lista = ordenarTitulos(rel[item.chave]);
+    const lista = ordenarTitulosRelatorio(rel[item.chave]);
     const aoa: (string | number)[][] = [
       ["Data", "Descrição", item.rotuloTerceiro, "Categoria", "Empresa", "Método", "Valor (R$)"],
     ];
@@ -313,7 +351,7 @@ export async function exportarPdf(rel: RelatorioListas) {
   }
 
   for (const item of ROTULOS) {
-    const lista = ordenarTitulos(rel[item.chave]);
+    const lista = ordenarTitulosRelatorio(rel[item.chave]);
     const total = lista.reduce((s, t) => s + (Number(t.valor) || 0), 0);
 
     // Sem espaco para o titulo + algumas linhas: quebra a pagina
