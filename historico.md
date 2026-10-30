@@ -62,6 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `PENDENTE` | feat: coluna Categoria nas listas (A Receber, A Pagar, Pagos) e nos relatorios PDF/XLSX | 30/10/2026 |
 | `6f541fe` | feat: faixa de 4 cards de totais no topo do PDF exportado (Faturamento, A Receber, A Pagar, Pagos) | 30/10/2026 |
 | `5045077` | feat: rotulo da coluna de terceiro na exportacao — "Cliente" em A Receber e "Fornecedor" em A Pagar e Pagos (antes "Contraparte") | 30/10/2026 |
 | `b4f8f3a` | feat: inclui o Faturamento (total e por dia) na exportacao em PDF e XLSX | 30/10/2026 |
@@ -144,6 +145,30 @@ APENAS na visao "Todas as Empresas". Remetente sem regra cai em "OUTROS" (entra 
 (uma linha por dia do periodo, inclusive dias sem aba — zero). Esse detalhamento alimenta o
 card, a seção "Faturamento" do PDF (faixa verde, antes de "A Receber") e a aba "Faturamento"
 do XLSX (aba "Resumo" tambem ganhou a linha Faturamento).
+
+---
+
+## 3.2 Categoria financeira (Conta Azul)
+
+**Fonte:** campo `categorias` dos titulos, vindo da propria API da Conta Azul (sem relacao
+com a planilha de cargas).
+
+Os dois formatos que a API usa dependem do endpoint:
+
+| Lista | Endpoint | De onde vem a categoria |
+|-------|----------|-------------------------|
+| A Receber | `GET /v1/financeiro/eventos-financeiros/contas-a-receber/buscar` | `itens[].categorias[].nome` |
+| A Pagar | `GET /v1/financeiro/eventos-financeiros/contas-a-pagar/buscar` | `itens[].categorias[].nome` |
+| Pagos | `GET /v1/financeiro/contas-a-pagar` (status ACQUITTED / PAGO) | `itens[].evento.rateio[].nome_categoria` |
+
+**`extrairCategoria()`** (em `contaazul.server.ts`) cobre as duas estruturas e variantes
+(`categoria`, `nome_categoria`, `rateio` na raiz), unindo varias categorias com `" / "`.
+O que nao vier vira `null` e a coluna sai **em branco** — nunca derruba a lista.
+
+**Passagem ate o relatorio:** `ItemLancamento.categoria` → `TituloDetalhe.categoria`
+(`contaazul.functions.ts`) → coluna "Categoria" do **PDF** e do **XLSX**, sempre entre
+*Cliente/Fornecedor* e *Empresa*. Nas listas da tela a coluna **nao** foi adicionada
+(pedido: apenas nos relatorios).
 
 ---
 
