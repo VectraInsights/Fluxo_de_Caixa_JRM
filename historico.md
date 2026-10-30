@@ -62,6 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `PENDENTE` | feat: rotulo da coluna de terceiro na exportacao — "Cliente" em A Receber e "Fornecedor" em A Pagar e Pagos (antes "Contraparte") | 30/10/2026 |
 | `b4f8f3a` | feat: inclui o Faturamento (total e por dia) na exportacao em PDF e XLSX | 30/10/2026 |
 | `a35f678` | feat: listas do rodape sempre em ordem crescente (data, valor, descricao); exportacao das listas para PDF e XLSX | 30/10/2026 |
 | `ab47b8d` | fix: encurta o grafico de projecao (420px -> 300px) e reduz paddings para o card caber inteiro na tela sem rolagem | 30/10/2026 |
