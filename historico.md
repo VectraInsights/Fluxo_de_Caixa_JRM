@@ -62,7 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
-| `PENDENTE` | feat: relatorios voltam a ter os 4 cards e ganham o valor "Resultado" (A Receber − A Pagar) no PDF e na aba Resumo do XLSX | 30/10/2026 |
+| `8ca4056` | feat: relatorios voltam a ter os 4 cards e ganham o valor "Resultado" (A Receber − A Pagar) no PDF e na aba Resumo do XLSX | 30/10/2026 |
 | `5cd6da6` | feat: resumo dos relatorios (cards do PDF e aba Resumo do XLSX) passa a trazer apenas A Receber e A Pagar | 30/10/2026 |
 | `ab8af7f` | feat: XLSX exportado ganha visual profissional (cores, cabecalho escuro, zebrado, totais em destaque, painel congelado, autofiltro e cor de aba) | 30/10/2026 |
 | `78bb301` | feat: paginacao fixa no PDF exportado — Faturamento junto do cabecalho/cards e cada secao seguinte (A Receber, A Pagar, Pagos) em pagina nova | 30/10/2026 |
