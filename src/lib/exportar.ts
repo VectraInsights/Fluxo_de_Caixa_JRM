@@ -125,61 +125,344 @@ function nomeDoArquivo(rel: RelatorioListas): string {
 
 // ------------------------------- XLSX -------------------------------
 
-export async function exportarXlsx(rel: RelatorioListas) {
-  const XLSX = await import("xlsx");
+// Paleta do relatório (mesma ideia do PDF: cabeçalho escuro, zebrado
+// discreto no corpo e a cor da relação nos destaques)
+const XLSX_CORES = {
+  titulo: "FF0F172A",
+  subtitulo: "FF64748B",
+  cabecalho: "FF1E293B",
+  branco: "FFFFFFFF",
+  zebra: "FFF8FAFC",
+  borda: "FFE2E8F0",
+  total: "FFE2E8F0",
+  totalDia: "FFF1F5F9",
+  verde: "FF16A34A",
+};
+
+const XLSX_MOEDA = '"R$" #,##0.00;[Red]-"R$" #,##0.00';
+const XLSX_INTEIRO = "#,##0";
+
+type CelulaXlsx = string | number;
+
+type LinhaXlsx = {
+  valores: CelulaXlsx[];
+  // "acento": a 1ª célula ganha o fundo na cor da relação (visual dos cards do PDF)
+  // "total-dia": linha de total do dia (fundo claro + negrito)
+  tipo?: "normal" | "total-dia" | "acento";
+  cor?: string;
+};
+
+type TabelaXlsx = {
+  titulo: string;
+  subtitulo: string;
+  corTitulo?: string;
+  cabecalho: string[];
+  linhas: LinhaXlsx[];
+  total?: CelulaXlsx[];
+  larguras: number[];
+  alinhamentos: ("left" | "center" | "right")[];
+  colunasQuebra?: number[];
+  colunaMoeda?: number;
+  colunaInteiro?: number;
+  autofiltro?: boolean;
+};
+
+function xlsxHex(cor: [number, number, number]): string {
+  return "FF" + cor.map((n) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+function xlsxBorda(cor = XLSX_CORES.borda, estilo: "thin" | "medium" | "double" = "thin") {
+  const lado = { style: estilo, color: { rgb: cor } };
+  return { top: lado, bottom: lado, left: lado, right: lado };
+}
+
+function xlsxEstiloCabecalho() {
+  return {
+    font: { name: "Calibri", sz: 11, bold: true, color: { rgb: XLSX_CORES.branco } },
+    fill: { fgColor: { rgb: XLSX_CORES.cabecalho } },
+    alignment: { horizontal: "center", vertical: "center", wrapText: true },
+    border: xlsxBorda(),
+  };
+}
+
+function xlsxEstiloCorpo(alinhamento: "left" | "center" | "right", zebra: boolean, quebrar = false) {
+  return {
+    font: { name: "Calibri", sz: 10 },
+    alignment: { horizontal: alinhamento, vertical: "center", wrapText: quebrar },
+    border: xlsxBorda(),
+    ...(zebra ? { fill: { fgColor: { rgb: XLSX_CORES.zebra } } } : {}),
+  };
+}
+
+// Monta uma aba formatada: título + subtítulo + cabeçalho + corpo + total.
+function montarTabelaXlsx(XLSX: any, t: TabelaXlsx) {
+  const nCol = t.cabecalho.length;
+  const aoa: CelulaXlsx[][] = [];
+  aoa.push([t.titulo, ...Array(nCol - 1).fill("")]);
+  aoa.push([t.subtitulo, ...Array(nCol - 1).fill("")]);
+  aoa.push(Array(nCol).fill(""));
+  aoa.push([...t.cabecalho]);
+  for (const l of t.linhas) aoa.push([...l.valores]);
+  const fimCorpo = aoa.length; // 1-based: última linha do corpo
+  if (t.total) aoa.push([...t.total]);
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+  const definir = (r: number, c: number, estilo: any) => {
+    const endereco = XLSX.utils.encode_cell({ r, c });
+    const celula = ws[endereco] ?? (ws[endereco] = { t: "s", v: "" });
+    celula.s = estilo;
+  };
+
+  // Título (linha 1) e subtítulo (linha 2)
+  for (let c = 0; c < nCol; c++) {
+    definir(0, c, {
+      font: { name: "Calibri", sz: 15, bold: true, color: { rgb: t.corTitulo ?? XLSX_CORES.titulo } },
+      alignment: { horizontal: "left", vertical: "center" },
+    });
+    definir(1, c, {
+      font: { name: "Calibri", sz: 10, italic: true, color: { rgb: XLSX_CORES.subtitulo } },
+      alignment: { horizontal: "left", vertical: "center" },
+    });
+  }
+
+  // Cabeçalho da tabela (linha 4)
+  for (let c = 0; c < nCol; c++) definir(3, c, xlsxEstiloCabecalho());
+
+  // Corpo
+  t.linhas.forEach((linha, i) => {
+    const r = 4 + i;
+    const zebra = i % 2 === 1;
+    for (let c = 0; c < nCol; c++) {
+      const alinhamento = t.alinhamentos[c] ?? "left";
+      const quebra = (t.colunasQuebra ?? []).includes(c);
+      let estilo: any;
+      if (linha.tipo === "acento") {
+        estilo =
+          c === 0
+            ? {
+                font: { name: "Calibri", sz: 11, bold: true, color: { rgb: XLSX_CORES.branco } },
+                fill: { fgColor: { rgb: linha.cor ?? XLSX_CORES.cabecalho } },
+                alignment: { horizontal: "left", vertical: "center" },
+                border: xlsxBorda(),
+              }
+            : {
+                font: { name: "Calibri", sz: 10, bold: true },
+                fill: { fgColor: { rgb: XLSX_CORES.zebra } },
+                alignment: { horizontal: alinhamento, vertical: "center" },
+                border: xlsxBorda(),
+              };
+      } else if (linha.tipo === "total-dia") {
+        estilo = {
+          font: { name: "Calibri", sz: 10, bold: true, color: { rgb: XLSX_CORES.titulo } },
+          fill: { fgColor: { rgb: XLSX_CORES.totalDia } },
+          alignment: { horizontal: alinhamento, vertical: "center" },
+          border: xlsxBorda(),
+        };
+      } else {
+        estilo = xlsxEstiloCorpo(alinhamento, zebra, quebra);
+      }
+      if (t.colunaMoeda === c) {
+        estilo = { ...estilo, numFmt: XLSX_MOEDA, alignment: { horizontal: "right", vertical: "center" } };
+      }
+      if (t.colunaInteiro === c) {
+        estilo = { ...estilo, numFmt: XLSX_INTEIRO, alignment: { horizontal: "center", vertical: "center" } };
+      }
+      definir(r, c, estilo);
+    }
+  });
+
+  // Linha de total
+  if (t.total) {
+    const r = 4 + t.linhas.length;
+    for (let c = 0; c < nCol; c++) {
+      const estilo: any = {
+        font: { name: "Calibri", sz: 11, bold: true, color: { rgb: XLSX_CORES.titulo } },
+        fill: { fgColor: { rgb: XLSX_CORES.total } },
+        alignment: { horizontal: c === 0 ? "left" : "right", vertical: "center" },
+        border: { ...xlsxBorda(), top: { style: "double", color: { rgb: XLSX_CORES.cabecalho } } },
+      };
+      if (t.colunaMoeda === c) estilo.numFmt = XLSX_MOEDA;
+      if (t.colunaInteiro === c) estilo.numFmt = XLSX_INTEIRO;
+      definir(r, c, estilo);
+    }
+  }
+
+  // Larguras, alturas, merges e autofiltro
+  ws["!cols"] = t.larguras.map((wch) => ({ wch }));
+  ws["!rows"] = [{ hpt: 24 }, { hpt: 16 }, { hpt: 6 }, { hpt: 30 }];
+  ws["!merges"] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: nCol - 1 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: nCol - 1 } },
+  ];
+  if (t.autofiltro && t.linhas.length > 0) {
+    ws["!autofilter"] = { ref: `A4:${XLSX.utils.encode_col(nCol - 1)}${fimCorpo}` };
+  }
+
+  return ws;
+}
+
+// Ajustes que o SheetJS não grava sozinho: painel congelado, linhas de grade
+// escondidas e cor da aba. Feito remontando o zip do .xlsx.
+async function finalizarXlsx(
+  buf: ArrayBuffer,
+  abas: { nome: string; linhasCongeladas: number; cor?: string }[],
+): Promise<Uint8Array<ArrayBuffer>> {
+  const fflate: any = await import("fflate");
+  const arquivos: Record<string, Uint8Array> = fflate.unzipSync(new Uint8Array(buf));
+
+  // Mapa: nome da aba -> caminho do XML da worksheet
+  const mapa = new Map<string, string>();
+  try {
+    const wbXml = fflate.strFromU8(arquivos["xl/workbook.xml"]);
+    const relsXml = fflate.strFromU8(arquivos["xl/_rels/workbook.xml.rels"]);
+    const rels = new Map<string, string>();
+    for (const m of relsXml.matchAll(/<Relationship\b[^>]*?Id="([^"]+)"[^>]*?Target="([^"]+)"/g)) {
+      rels.set(m[1], m[2]);
+    }
+    for (const m of wbXml.matchAll(/<sheet\b[^>]*?name="([^"]+)"[^>]*?r:id="([^"]+)"[^>]*?\/?>/g)) {
+      const alvo = rels.get(m[2]);
+      if (!alvo) continue;
+      const caminho = alvo.startsWith("/") ? alvo.slice(1) : `xl/${alvo.replace(/^\.\//, "")}`;
+      mapa.set(m[1], caminho);
+    }
+  } catch {
+    // sem mapa: cai para a ordem posicional das abas
+  }
+
+  abas.forEach((aba, indice) => {
+    const caminho = mapa.get(aba.nome) ?? `xl/worksheets/sheet${indice + 1}.xml`;
+    const original = arquivos[caminho];
+    if (!original) return;
+    let xml = fflate.strFromU8(original);
+
+    const congelar = aba.linhasCongeladas;
+    const linhaTopo = congelar + 1;
+    const painel =
+      `<pane ySplit="${congelar}" topLeftCell="A${linhaTopo}" activePane="bottomLeft" state="frozen"/>` +
+      `<selection pane="bottomLeft" activeCell="A${linhaTopo}" sqref="A${linhaTopo}"/>`;
+
+    if (/<sheetView\b[^>]*?\/>/.test(xml)) {
+      xml = xml.replace(/<sheetView\b([^>]*?)\/>/, `<sheetView$1 showGridLines="0">${painel}</sheetView>`);
+    } else {
+      xml = xml.replace(/(<sheetView\b[^>]*>)/, `$1${painel}`);
+    }
+
+    if (aba.cor && !/<sheetPr[\s>]/.test(xml)) {
+      xml = xml.replace(/(<worksheet\b[^>]*>)/, `$1<sheetPr><tabColor rgb="${aba.cor}"/></sheetPr>`);
+    }
+
+    arquivos[caminho] = fflate.strToU8(xml);
+  });
+
+  // Rezip com [Content_Types].xml na primeira posição (exigência de alguns leitores OPC)
+  const saida: Record<string, Uint8Array> = {};
+  const ct = arquivos["[Content_Types].xml"];
+  if (ct) saida["[Content_Types].xml"] = ct;
+  for (const [nome, dados] of Object.entries(arquivos)) {
+    if (nome !== "[Content_Types].xml") saida[nome] = dados;
+  }
+  const zip = fflate.zipSync(saida, { level: 6 }) as Uint8Array;
+  // Copia para um buffer próprio (o Blob do navegador exige ArrayBuffer, não SharedArrayBuffer)
+  const copia = new Uint8Array(zip.length);
+  copia.set(zip);
+  return copia;
+}
+
+// Gera o .xlsx (estilizado) e devolve os bytes.
+export async function construirXlsx(rel: RelatorioListas): Promise<Uint8Array<ArrayBuffer>> {
+  const mod: any = await import("xlsx-js-style");
+  const XLSX: any = mod.default ?? mod;
   const wb = XLSX.utils.book_new();
 
-  // Aba de resumo com os totais (Faturamento primeiro, na mesma ordem dos cards)
-  const resumo: (string | number)[][] = [["Relação", "Total (R$)", "Qtd. títulos"]];
   const fat = rel.faturamento ?? { total: 0, porDia: [] };
-  resumo.push(["Faturamento", fat.total, fat.porDia.filter((d) => d.total !== 0).length]);
+  const periodo = `Período: ${formatarDataBR(rel.dataInicio)} a ${formatarDataBR(rel.dataFim)}    |    Empresa: ${
+    rel.empresa === "todas" ? "Todas as Empresas" : rel.empresa
+  }`;
+
+  // ---------------- Aba Resumo (visual dos cards do PDF) ----------------
+  const resumoLinhas: LinhaXlsx[] = [
+    {
+      valores: ["Faturamento", fat.total, fat.porDia.filter((d) => d.total !== 0).length],
+      tipo: "acento",
+      cor: XLSX_CORES.verde,
+    },
+  ];
   for (const item of ROTULOS) {
     const lista = ordenarTitulosRelatorio(rel[item.chave]);
     const total = lista.reduce((s, t) => s + (Number(t.valor) || 0), 0);
-    resumo.push([item.titulo, total, lista.length]);
+    resumoLinhas.push({
+      valores: [item.titulo, total, lista.length],
+      tipo: "acento",
+      cor: xlsxHex(item.cor),
+    });
   }
-  const wsResumo = XLSX.utils.aoa_to_sheet(resumo);
-  wsResumo["!cols"] = [{ wch: 18 }, { wch: 18 }, { wch: 14 }];
-  for (let i = 1; i < resumo.length; i++) {
-    const addr = XLSX.utils.encode_cell({ r: i, c: 1 });
-    if (wsResumo[addr]) wsResumo[addr].z = 'R$ #,##0.00';
-  }
+
+  const wsResumo = montarTabelaXlsx(XLSX, {
+    titulo: "Fluxo de Caixa — Resumo",
+    subtitulo: periodo,
+    cabecalho: ["Relação", "Total (R$)", "Qtd. títulos"],
+    linhas: resumoLinhas,
+    larguras: [22, 20, 14],
+    alinhamentos: ["left", "right", "center"],
+    colunaMoeda: 1,
+    colunaInteiro: 2,
+  });
+
+  // Rodapé com a data/hora de geração
+  const linhaGerado = 4 + resumoLinhas.length + 1;
+  const enderecoGerado = XLSX.utils.encode_cell({ r: linhaGerado - 1, c: 0 });
+  wsResumo[enderecoGerado] = {
+    v: `Gerado em ${new Date().toLocaleString("pt-BR")}`,
+    t: "s",
+    s: { font: { name: "Calibri", sz: 9, italic: true, color: { rgb: XLSX_CORES.subtitulo } } },
+  };
+  wsResumo["!merges"].push({ s: { r: linhaGerado - 1, c: 0 }, e: { r: linhaGerado - 1, c: 2 } });
+  wsResumo["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: linhaGerado - 1, c: 2 } });
   XLSX.utils.book_append_sheet(wb, wsResumo, "Resumo");
 
-  // Aba de faturamento: uma linha por cliente (remetente) em cada dia,
-  // seguida do total do dia; no fim, o TOTAL do periodo.
-  {
-    const aoa: (string | number)[][] = [["Data", "Cliente", "Faturamento (R$)"]];
-    for (const d of fat.porDia) {
-      const clientes = d.clientes ?? [];
-      if (clientes.length === 0) {
-        aoa.push([formatarDataBR(d.data), "", Number(d.total) || 0]);
-        continue;
-      }
-      for (const c of clientes) {
-        aoa.push([formatarDataBR(d.data), c.nome, Number(c.total) || 0]);
-      }
-      aoa.push([formatarDataBR(d.data), "Total do dia", Number(d.total) || 0]);
+  // ---------------- Aba Faturamento ----------------
+  const linhasFat: LinhaXlsx[] = [];
+  for (const d of fat.porDia) {
+    const clientes = d.clientes ?? [];
+    if (clientes.length === 0) {
+      linhasFat.push({ valores: [formatarDataBR(d.data), "", Number(d.total) || 0] });
+      continue;
     }
-    aoa.push(["", "TOTAL", fat.total]);
-
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws["!cols"] = [{ wch: 14 }, { wch: 34 }, { wch: 20 }];
-    for (let i = 1; i < aoa.length; i++) {
-      const addr = XLSX.utils.encode_cell({ r: i, c: 2 });
-      if (ws[addr]) ws[addr].z = 'R$ #,##0.00';
+    for (const c of clientes) {
+      linhasFat.push({ valores: [formatarDataBR(d.data), c.nome, Number(c.total) || 0] });
     }
-    XLSX.utils.book_append_sheet(wb, ws, "Faturamento");
+    linhasFat.push({
+      valores: [formatarDataBR(d.data), "Total do dia", Number(d.total) || 0],
+      tipo: "total-dia",
+    });
   }
 
-  // Uma aba por lista
+  const wsFat = montarTabelaXlsx(XLSX, {
+    titulo: "Faturamento",
+    subtitulo: periodo,
+    corTitulo: XLSX_CORES.verde,
+    cabecalho: ["Data", "Cliente", "Faturamento (R$)"],
+    linhas: linhasFat,
+    total: ["", "TOTAL", fat.total],
+    larguras: [14, 42, 20],
+    alinhamentos: ["center", "left", "right"],
+    colunaMoeda: 2,
+    autofiltro: true,
+  });
+  XLSX.utils.book_append_sheet(wb, wsFat, "Faturamento");
+
+  // ---------------- Abas das listas ----------------
+  const abas: { nome: string; linhasCongeladas: number; cor?: string }[] = [
+    { nome: "Resumo", linhasCongeladas: 4, cor: XLSX_CORES.cabecalho },
+    { nome: "Faturamento", linhasCongeladas: 4, cor: XLSX_CORES.verde },
+  ];
+
   for (const item of ROTULOS) {
     const lista = ordenarTitulosRelatorio(rel[item.chave]);
-    const aoa: (string | number)[][] = [
-      ["Data", "Descrição", item.rotuloTerceiro, "Categoria", "Empresa", "Método", "Valor (R$)"],
-    ];
-    for (const t of lista) {
-      aoa.push([
+    const total = lista.reduce((s, t) => s + (Number(t.valor) || 0), 0);
+    const linhas: LinhaXlsx[] = lista.map((t) => ({
+      valores: [
         formatarDataBR(t.data),
         tituloDaLinha(t),
         subtituloDaLinha(t),
@@ -187,29 +470,53 @@ export async function exportarXlsx(rel: RelatorioListas) {
         t.empresa || "",
         t.metodo || "",
         Number(t.valor) || 0,
-      ]);
-    }
-    aoa.push(["", "TOTAL", "", "", "", "", lista.reduce((s, t) => s + (Number(t.valor) || 0), 0)]);
+      ],
+    }));
 
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws["!cols"] = [
-      { wch: 12 },
-      { wch: 44 },
-      { wch: 28 },
-      { wch: 26 },
-      { wch: 22 },
-      { wch: 16 },
-      { wch: 16 },
-    ];
-    // Formata a coluna de valor como moeda
-    for (let i = 1; i < aoa.length; i++) {
-      const addr = XLSX.utils.encode_cell({ r: i, c: 6 });
-      if (ws[addr]) ws[addr].z = 'R$ #,##0.00';
-    }
+    const ws = montarTabelaXlsx(XLSX, {
+      titulo: item.titulo,
+      subtitulo: periodo,
+      corTitulo: xlsxHex(item.cor),
+      cabecalho: ["Data", "Descrição", item.rotuloTerceiro, "Categoria", "Empresa", "Método", "Valor (R$)"],
+      linhas,
+      total: ["", "TOTAL", "", "", "", "", total],
+      larguras: [12, 46, 30, 26, 22, 16, 18],
+      alinhamentos: ["center", "left", "left", "left", "left", "center", "right"],
+      colunasQuebra: [1, 3],
+      colunaMoeda: 6,
+      autofiltro: true,
+    });
     XLSX.utils.book_append_sheet(wb, ws, item.titulo);
+    abas.push({ nome: item.titulo, linhasCongeladas: 4, cor: xlsxHex(item.cor) });
   }
 
-  XLSX.writeFile(wb, `${nomeDoArquivo(rel)}.xlsx`);
+  const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+  return finalizarXlsx(buf, abas);
+}
+
+export async function exportarXlsx(rel: RelatorioListas) {
+  const bytes = await construirXlsx(rel);
+  const nome = `${nomeDoArquivo(rel)}.xlsx`;
+
+  if (typeof document !== "undefined") {
+    const blob = new Blob([bytes], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = nome;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    return;
+  }
+
+  // Fora do navegador (ex.: testes locais): grava o arquivo no disco
+  const fs: any = await import(/* @vite-ignore */ "node:fs");
+  const escrever = fs.writeFileSync ?? fs.default?.writeFileSync;
+  escrever(nome, bytes);
 }
 
 // ------------------------------- PDF -------------------------------
