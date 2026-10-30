@@ -62,6 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `PENDENTE` | feat: titulo do PDF so "Fluxo de Caixa" e card do Resultado no topo a direita (verde/vermelho conforme o sinal) | 30/10/2026 |
 | `8ca4056` | feat: relatorios voltam a ter os 4 cards e ganham o valor "Resultado" (A Receber − A Pagar) no PDF e na aba Resumo do XLSX | 30/10/2026 |
 | `5cd6da6` | feat: resumo dos relatorios (cards do PDF e aba Resumo do XLSX) passa a trazer apenas A Receber e A Pagar | 30/10/2026 |
 | `ab8af7f` | feat: XLSX exportado ganha visual profissional (cores, cabecalho escuro, zebrado, totais em destaque, painel congelado, autofiltro e cor de aba) | 30/10/2026 |
@@ -288,14 +289,16 @@ Faturamento e Pagos **nao entram** no calculo.
 
 | Parte | Onde aparece |
 |-------|--------------|
-| PDF | 5º card do topo (verde se >= 0, vermelho se < 0) e a linha de cabecalho `Resultado = A Receber − A Pagar` |
-| XLSX | aba "Resumo", 5ª linha (verde/vermelho conforme o sinal) + nota explicativa abaixo da tabela |
+| PDF | card no **topo a direita, na mesma linha do titulo**, com o rotulo "Resultado (A receber - A pagar)" (verde se >= 0, vermelho se < 0) |
+| XLSX | aba "Resumo", 5ª linha "Resultado (A receber - A pagar)" (verde/vermelho conforme o sinal) + nota explicativa abaixo da tabela |
 
-Os **4 cards** (Faturamento, A Receber, A Pagar, Pagos) continuam como estavam, e as
-4 secoes do relatorio seguem intactas (com a paginação da secao 3.4).
+O **titulo do PDF** passou a ser so **"Fluxo de Caixa"** (antes era "Fluxo de Caixa —
+Faturamento, A Receber, A Pagar e Pagos"). Os **4 cards** (Faturamento, A Receber,
+A Pagar, Pagos) continuam na linha de baixo, e as 4 secoes do relatorio seguem
+intactas (com a paginação da secao 3.4).
 
 > **Nota:** o commit `5cd6da6` tinha tirado Faturamento e Pagos do resumo; o
-> `PENDENTE` (abaixo) volta os 4 cards e acrescenta o card/linha "Resultado".
+> `8ca4056` volta os 4 cards e acrescenta o card/linha "Resultado".
 
 Implementacao: `calcularResultado(rel)` em `exportar.ts` (soma de `rel.receber` menos
 soma de `rel.pagar`).
