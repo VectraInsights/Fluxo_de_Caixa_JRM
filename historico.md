@@ -63,6 +63,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 | Commit | Descricao | Data |
 |--------|-----------|------|
 | `80deeec` | feat: coluna Categoria nas listas (A Receber, A Pagar, Pagos) e nos relatorios PDF/XLSX | 30/10/2026 |
+| `PENDENTE` | feat: relatorios PDF/XLSX listam A Receber, A Pagar e Pagos em ordem alfabetica de Cliente/Fornecedor (tela continua cronologica) | 30/10/2026 |
 | `6fe81a5` | feat: faturamento detalhado por cliente (remetente) em cada dia nos relatorios PDF/XLSX | 30/10/2026 |
 | `6f541fe` | feat: faixa de 4 cards de totais no topo do PDF exportado (Faturamento, A Receber, A Pagar, Pagos) | 30/10/2026 |
 | `5045077` | feat: rotulo da coluna de terceiro na exportacao — "Cliente" em A Receber e "Fornecedor" em A Pagar e Pagos (antes "Contraparte") | 30/10/2026 |
@@ -178,6 +179,29 @@ O que nao vier vira `null` e a coluna sai **em branco** — nunca derruba a list
 (`contaazul.functions.ts`) → coluna "Categoria" do **PDF** e do **XLSX**, sempre entre
 *Cliente/Fornecedor* e *Empresa*. Nas listas da tela a coluna **nao** foi adicionada
 (pedido: apenas nos relatorios).
+
+---
+
+## 3.3 Ordenacao das listas nos relatorios (alfabetica por Cliente/Fornecedor)
+
+Vale **apenas para os relatorios** (PDF e XLSX); a tela continua cronologica.
+
+Duas funcoes em `exportar.ts`:
+
+| Funcao | Onde | Ordem |
+|--------|------|-------|
+| `ordenarTitulos` | tela (rodape) | data → valor → descricao → empresa |
+| `ordenarTitulosRelatorio` | PDF e XLSX (as 3 listas) | **Cliente/Fornecedor (alfabetico)** → data → valor → descricao → empresa |
+
+Regras do `ordenarTitulosRelatorio`:
+
+- Comparacao **sem acento e sem maiusculas** (ÁLVARO = alvaro; emtex antigo ordena junto).
+- Titulos **sem Cliente/Fornecedor vao para o fim** da lista.
+- Dentro do mesmo terceiro: **data crescente** e, no mesmo dia, **valor crescente**.
+- Desempates finais (descricao → empresa) mantidos para ordem deterministica.
+
+A função de total dos cards do PDF (`reduce`) continua usando a lista original — ordem
+irrelevante para a soma.
 
 ---
 
