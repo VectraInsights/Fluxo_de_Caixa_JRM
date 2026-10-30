@@ -40,6 +40,11 @@ const ROTULOS: {
   { chave: "pagos", titulo: "Pagos", cor: [220, 38, 38], rotuloTerceiro: "Fornecedor" },
 ];
 
+// Relacoes que entram no RESUMO dos relatorios (cards do topo do PDF e aba
+// "Resumo" do XLSX): apenas "A Receber" e "A Pagar". Faturamento e Pagos
+// continuam exportados nas suas secoes, mas nao entram nos totais do resumo.
+const ROTULOS_RESUMO = ROTULOS.filter((item) => item.chave === "receber" || item.chave === "pagar");
+
 function formatarDataBR(iso: string): string {
   if (!iso) return "";
   const p = iso.slice(0, 10).split("-");
@@ -381,14 +386,10 @@ export async function construirXlsx(rel: RelatorioListas): Promise<Uint8Array<Ar
   }`;
 
   // ---------------- Aba Resumo (visual dos cards do PDF) ----------------
-  const resumoLinhas: LinhaXlsx[] = [
-    {
-      valores: ["Faturamento", fat.total, fat.porDia.filter((d) => d.total !== 0).length],
-      tipo: "acento",
-      cor: XLSX_CORES.verde,
-    },
-  ];
-  for (const item of ROTULOS) {
+  // Resumo do relatorio: somente "A Receber" e "A Pagar" (Faturamento e Pagos
+  // continuam exportados nas abas proprias, mas nao entram nos totais).
+  const resumoLinhas: LinhaXlsx[] = [];
+  for (const item of ROTULOS_RESUMO) {
     const lista = ordenarTitulosRelatorio(rel[item.chave]);
     const total = lista.reduce((s, t) => s + (Number(t.valor) || 0), 0);
     resumoLinhas.push({
@@ -546,16 +547,17 @@ export async function exportarPdf(rel: RelatorioListas) {
   );
   doc.setTextColor(0);
 
-  // ---- Cards de totais no topo (mesma ordem das secoes do relatorio) ----
+  // ---- Cards de totais no topo ----
+  // Resumo do relatorio: somente "A Receber" e "A Pagar" (Faturamento e
+  // Pagos continuam nas suas secoes, mas nao entram nos cards de topo).
   const fat = rel.faturamento ?? { total: 0, porDia: [] };
-  const cards: { rotulo: string; valor: number; cor: [number, number, number] }[] = [
-    { rotulo: "Faturamento", valor: fat.total, cor: [22, 163, 74] },
-    ...ROTULOS.map((item) => ({
+  const cards: { rotulo: string; valor: number; cor: [number, number, number] }[] = ROTULOS_RESUMO.map(
+    (item) => ({
       rotulo: item.titulo,
       valor: ordenarTitulos(rel[item.chave]).reduce((s, t) => s + (Number(t.valor) || 0), 0),
       cor: item.cor,
-    })),
-  ];
+    }),
+  );
 
   const alturaCard = 17;
   const gapCard = 4;
