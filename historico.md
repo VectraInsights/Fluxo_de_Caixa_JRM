@@ -62,6 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `PENDENTE` | feat: relatorios voltam a ter os 4 cards e ganham o valor "Resultado" (A Receber − A Pagar) no PDF e na aba Resumo do XLSX | 30/10/2026 |
 | `5cd6da6` | feat: resumo dos relatorios (cards do PDF e aba Resumo do XLSX) passa a trazer apenas A Receber e A Pagar | 30/10/2026 |
 | `ab8af7f` | feat: XLSX exportado ganha visual profissional (cores, cabecalho escuro, zebrado, totais em destaque, painel congelado, autofiltro e cor de aba) | 30/10/2026 |
 | `78bb301` | feat: paginacao fixa no PDF exportado — Faturamento junto do cabecalho/cards e cada secao seguinte (A Receber, A Pagar, Pagos) em pagina nova | 30/10/2026 |
@@ -274,25 +275,30 @@ Cliente/Fornecedor, mesmos totais — so o visual.
 
 ---
 
-## 3.6 Resumo dos relatorios so com A Receber e A Pagar
+## 3.6 Resultado dos relatorios (A Receber − A Pagar)
 
-O **resumo** dos relatorios (os cards de totais no topo do PDF e a aba "Resumo" do
-XLSX) mostra **apenas "A Receber" e "A Pagar"**.
+O relatorio ganha um valor de **Resultado**, calculado **apenas com "A Receber" e
+"A Pagar"**:
 
-| Parte | Antes | Agora |
-|-------|-------|-------|
-| Cards do topo do PDF | 4 cards (Faturamento, A Receber, A Pagar, Pagos) | **2 cards** (A Receber, A Pagar) |
-| Aba "Resumo" do XLSX | 4 linhas (Faturamento, A Receber, A Pagar, Pagos) | **2 linhas** (A Receber, A Pagar) |
+```
+Resultado = total de A Receber − total de A Pagar
+```
 
-**O que NAO mudou:** as 4 secoes continuam no relatorio, com todos os dados e os
-totais proprios de cada uma — a secao "Faturamento" (com o detalhamento por cliente
-por dia), "A Receber", "A Pagar" e "Pagos" sao exportadas exatamente como antes, e as
-abas "Faturamento", "A Receber", "A Pagar" e "Pagos" continuam no XLSX. A paginação do
-PDF (secao 3.4) tambem segue igual: Faturamento na pagina 1 com o cabecalho, cada
-secao seguinte em pagina nova.
+Faturamento e Pagos **nao entram** no calculo.
 
-Implementacao: `ROTULOS_RESUMO` em `exportar.ts` filtra as relacoes que entram no
-resumo (`receber` e `pagar`); as secoes continuam usando a lista completa `ROTULOS`.
+| Parte | Onde aparece |
+|-------|--------------|
+| PDF | 5º card do topo (verde se >= 0, vermelho se < 0) e a linha de cabecalho `Resultado = A Receber − A Pagar` |
+| XLSX | aba "Resumo", 5ª linha (verde/vermelho conforme o sinal) + nota explicativa abaixo da tabela |
+
+Os **4 cards** (Faturamento, A Receber, A Pagar, Pagos) continuam como estavam, e as
+4 secoes do relatorio seguem intactas (com a paginação da secao 3.4).
+
+> **Nota:** o commit `5cd6da6` tinha tirado Faturamento e Pagos do resumo; o
+> `PENDENTE` (abaixo) volta os 4 cards e acrescenta o card/linha "Resultado".
+
+Implementacao: `calcularResultado(rel)` em `exportar.ts` (soma de `rel.receber` menos
+soma de `rel.pagar`).
 
 ---
 
