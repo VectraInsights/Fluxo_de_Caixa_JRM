@@ -409,7 +409,7 @@ export async function construirXlsx(rel: RelatorioListas): Promise<Uint8Array<Ar
     });
   }
   resumoLinhas.push({
-    valores: ["Resultado", resultado, ""],
+    valores: ["Resultado (A receber - A pagar)", resultado, ""],
     tipo: "acento",
     cor: resultado >= 0 ? XLSX_CORES.verde : XLSX_CORES.vermelho,
   });
@@ -419,7 +419,7 @@ export async function construirXlsx(rel: RelatorioListas): Promise<Uint8Array<Ar
     subtitulo: periodo,
     cabecalho: ["Relação", "Total (R$)", "Qtd. títulos"],
     linhas: resumoLinhas,
-    larguras: [22, 20, 14],
+    larguras: [32, 20, 14],
     alinhamentos: ["left", "right", "center"],
     colunaMoeda: 1,
     colunaInteiro: 2,
@@ -558,24 +558,57 @@ export async function exportarPdf(rel: RelatorioListas) {
   // Cabecalho
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
-  doc.text("Fluxo de Caixa — Faturamento, A Receber, A Pagar e Pagos", margem, 16);
+  doc.text("Fluxo de Caixa", margem, 15);
+
+  // ---- Card do Resultado no topo a direita, na MESMA linha do titulo ----
+  // Resultado = A Receber - A Pagar (Faturamento e Pagos nao entram).
+  // Verde quando >= 0, vermelho quando < 0.
+  const resultado = calcularResultado(rel);
+  const corResultado: [number, number, number] = resultado >= 0 ? [22, 163, 74] : [220, 38, 38];
+  const rotuloResultado = "Resultado (A receber - A pagar)";
+  const valorResultado = formatarValor(resultado);
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.5);
+  const larguraRotuloResultado = doc.getTextWidth(rotuloResultado);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  const larguraValorResultado = doc.getTextWidth(valorResultado);
+  const larguraCardResultado = Math.max(larguraRotuloResultado, larguraValorResultado) + 8;
+
+  const xCardResultado = largura - margem - larguraCardResultado;
+  const yCardResultado = 7;
+  const alturaCardResultado = 14;
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(...corResultado);
+  doc.setLineWidth(0.6);
+  doc.rect(xCardResultado, yCardResultado, larguraCardResultado, alturaCardResultado, "FD");
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.5);
+  doc.setTextColor(110);
+  doc.text(rotuloResultado, xCardResultado + 3, yCardResultado + 5);
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.setTextColor(30);
+  doc.text(valorResultado, xCardResultado + 3, yCardResultado + 12.5);
+
+  // Periodo / empresa (abaixo do titulo e do card do Resultado)
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
   doc.setTextColor(100);
   doc.text(
     `Período: ${formatarDataBR(rel.dataInicio)} a ${formatarDataBR(rel.dataFim)}    |    Empresa: ${
       rel.empresa === "todas" ? "Todas as Empresas" : rel.empresa
-    }    |    Resultado = A Receber − A Pagar`,
+    }`,
     margem,
-    23,
+    28,
   );
   doc.setTextColor(0);
 
-  // ---- Cards de totais no topo ----
-  // Sao 4 cards (Faturamento, A Receber, A Pagar, Pagos) + o card "Resultado",
-  // que considera apenas A Receber e A Pagar.
+  // ---- Cards de totais na linha de baixo (Faturamento, A Receber, A Pagar, Pagos) ----
   const fat = rel.faturamento ?? { total: 0, porDia: [] };
-  const resultado = calcularResultado(rel);
   const cards: { rotulo: string; valor: number; cor: [number, number, number] }[] = [
     { rotulo: "Faturamento", valor: fat.total, cor: [22, 163, 74] },
     ...ROTULOS.map((item) => ({
@@ -583,17 +616,12 @@ export async function exportarPdf(rel: RelatorioListas) {
       valor: ordenarTitulos(rel[item.chave]).reduce((s, t) => s + (Number(t.valor) || 0), 0),
       cor: item.cor,
     })),
-    {
-      rotulo: "Resultado",
-      valor: resultado,
-      cor: resultado >= 0 ? ([22, 163, 74] as [number, number, number]) : ([220, 38, 38] as [number, number, number]),
-    },
   ];
 
   const alturaCard = 17;
   const gapCard = 4;
   const larguraCard = (largura - margem * 2 - gapCard * (cards.length - 1)) / cards.length;
-  const yCard = 30;
+  const yCard = 34;
   let xCard = margem;
   for (const c of cards) {
     // Fundo claro com moldura na cor da relacao
