@@ -62,7 +62,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
-| `PENDENTE` | fix: encurta o grafico de projecao (420px -> 300px) e reduz paddings para o card caber inteiro na tela sem rolagem | 30/10/2026 |
+| `ab47b8d` | fix: encurta o grafico de projecao (420px -> 300px) e reduz paddings para o card caber inteiro na tela sem rolagem | 30/10/2026 |
 | `4a71ff5` | fix: remove texto "Sem pagamentos no periodo" do card Contas Pagas quando o valor e zero | 29/10/2026 |
 | `2b85d8d` | feat: opção "Mês atual" no intervalo de projeção, com setas de navegação por mês | 29/10/2026 |
 | `c641e7f` | fix: remove cards Saldo Atual e Saldo Previsto; unifica os cards na ordem Faturamento, Entradas, Saídas, Pagos | 29/10/2026 |
