@@ -457,6 +457,7 @@ function Dashboard() {
         receber: consolidado.receber.titulos,
         pagar: consolidado.pagar.titulos,
         pagos: consolidado.pagos.titulos,
+        faturamento: faturamento ?? { total: 0, porDia: [] },
       };
       if (formato === "pdf") await exportarPdf(relatorio);
       else await exportarXlsx(relatorio);

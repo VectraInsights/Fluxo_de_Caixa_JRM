@@ -59,14 +59,18 @@ export const getFaturamento = createServerFn({ method: "GET" })
       })
       .parse(d),
   )
-  .handler(async ({ data }): Promise<{ total: number }> => {
-    try {
-      return await buscarFaturamentoPlanilha(data.data_inicio, data.data_fim, data.empresa);
-    } catch (e) {
-      log("warn", `faturamento planilha: ${(e as Error).message}`);
-      return { total: 0 };
-    }
-  });
+  .handler(
+    async ({
+      data,
+    }): Promise<{ total: number; porDia: { data: string; total: number }[] }> => {
+      try {
+        return await buscarFaturamentoPlanilha(data.data_inicio, data.data_fim, data.empresa);
+      } catch (e) {
+        log("warn", `faturamento planilha: ${(e as Error).message}`);
+        return { total: 0, porDia: [] };
+      }
+    },
+  );
 
 // Troca o code OAuth (que volta para a raiz) por access/refresh token e salva no Supabase.
 // O parâmetro "empresa" vem do state e garante que atualizamos o registro correto.

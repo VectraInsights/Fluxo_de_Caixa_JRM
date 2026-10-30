@@ -180,7 +180,7 @@ export async function buscarFaturamentoPlanilha(
   dataInicio: string,
   dataFim: string,
   empresa: string,
-): Promise<{ total: number }> {
+): Promise<{ total: number; porDia: { data: string; total: number }[] }> {
   const filtro = filtroDaEmpresa(empresa);
 
   const dias: string[] = [];
@@ -204,12 +204,20 @@ export async function buscarFaturamentoPlanilha(
   }
   await Promise.all(Array.from({ length: Math.min(CONCORRENCIA, dias.length) }, worker));
 
+  // Detalhamento por dia (para o relatorio/exportacao) + total do periodo
+  const porDia: { data: string; total: number }[] = [];
   let total = 0;
-  for (const porEmpresa of totaisPorDia) {
-    if (!porEmpresa) continue;
-    for (const [chave, valor] of Object.entries(porEmpresa)) {
-      if (filtro === null || chave === filtro) total += valor;
+  for (let i = 0; i < dias.length; i++) {
+    const porEmpresa = totaisPorDia[i];
+    let dia = 0;
+    if (porEmpresa) {
+      for (const [chave, valor] of Object.entries(porEmpresa)) {
+        if (filtro === null || chave === filtro) dia += valor;
+      }
     }
+    dia = Math.round(dia * 100) / 100;
+    total += dia;
+    porDia.push({ data: dias[i], total: dia });
   }
-  return { total: Math.round(total * 100) / 100 };
+  return { total: Math.round(total * 100) / 100, porDia };
 }

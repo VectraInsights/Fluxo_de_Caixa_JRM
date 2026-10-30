@@ -6,6 +6,11 @@ import type { TituloDetalhe } from "./contaazul.functions";
 
 export type LinhaExport = TituloDetalhe & { empresa?: string };
 
+export type FaturamentoExport = {
+  total: number;
+  porDia: { data: string; total: number }[];
+};
+
 export type RelatorioListas = {
   empresa: string;
   dataInicio: string;
@@ -13,6 +18,7 @@ export type RelatorioListas = {
   receber: LinhaExport[];
   pagar: LinhaExport[];
   pagos: LinhaExport[];
+  faturamento: FaturamentoExport;
 };
 
 const ROTULOS: { chave: "receber" | "pagar" | "pagos"; titulo: string; cor: [number, number, number] }[] = [
@@ -72,8 +78,10 @@ export async function exportarXlsx(rel: RelatorioListas) {
   const XLSX = await import("xlsx");
   const wb = XLSX.utils.book_new();
 
-  // Aba de resumo com os totais
+  // Aba de resumo com os totais (Faturamento primeiro, na mesma ordem dos cards)
   const resumo: (string | number)[][] = [["Relação", "Total (R$)", "Qtd. títulos"]];
+  const fat = rel.faturamento ?? { total: 0, porDia: [] };
+  resumo.push(["Faturamento", fat.total, fat.porDia.filter((d) => d.total !== 0).length]);
   for (const item of ROTULOS) {
     const lista = ordenarTitulos(rel[item.chave]);
     const total = lista.reduce((s, t) => s + (Number(t.valor) || 0), 0);
@@ -86,6 +94,21 @@ export async function exportarXlsx(rel: RelatorioListas) {
     if (wsResumo[addr]) wsResumo[addr].z = 'R$ #,##0.00';
   }
   XLSX.utils.book_append_sheet(wb, wsResumo, "Resumo");
+
+  // Aba de faturamento por dia (uma linha por dia do periodo)
+  {
+    const aoa: (string | number)[][] = [["Data", "Faturamento (R$)"]];
+    for (const d of fat.porDia) aoa.push([formatarDataBR(d.data), Number(d.total) || 0]);
+    aoa.push(["TOTAL", fat.total]);
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = [{ wch: 14 }, { wch: 20 }];
+    for (let i = 1; i < aoa.length; i++) {
+      const addr = XLSX.utils.encode_cell({ r: i, c: 1 });
+      if (ws[addr]) ws[addr].z = 'R$ #,##0.00';
+    }
+    XLSX.utils.book_append_sheet(wb, ws, "Faturamento");
+  }
 
   // Uma aba por lista
   for (const item of ROTULOS) {
@@ -139,7 +162,7 @@ export async function exportarPdf(rel: RelatorioListas) {
   // Cabecalho
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
-  doc.text("Fluxo de Caixa — A Receber, A Pagar e Pagos", margem, 16);
+  doc.text("Fluxo de Caixa — Faturamento, A Receber, A Pagar e Pagos", margem, 16);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
   doc.setTextColor(100);
@@ -153,6 +176,42 @@ export async function exportarPdf(rel: RelatorioListas) {
   doc.setTextColor(0);
 
   let y = 32;
+
+  // Seção Faturamento (planilha de cargas), antes das listas de títulos
+  const fat = rel.faturamento ?? { total: 0, porDia: [] };
+  if (fat.porDia.length > 0) {
+    if (altura - margem - y < 45) {
+      doc.addPage();
+      y = 24;
+    }
+
+    doc.setFillColor(22, 163, 74);
+    doc.rect(margem, y - 4.5, largura - margem * 2, 8, "F");
+    doc.setTextColor(255);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.text(`Faturamento — ${formatarValor(fat.total)}`, margem + 4, y + 1);
+    doc.setTextColor(0);
+    y += 8;
+
+    autoTable(doc, {
+      startY: y,
+      head: [["Data", "Faturamento (R$)"]],
+      body: fat.porDia.map((d) => [formatarDataBR(d.data), formatarValor(d.total)]),
+      foot: [["TOTAL", formatarValor(fat.total)]],
+      theme: "grid",
+      styles: { fontSize: 8, cellPadding: 2, overflow: "linebreak" },
+      headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
+      footStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: "bold" },
+      columnStyles: {
+        0: { maxWidth: 24 },
+        1: { maxWidth: 30, halign: "right" },
+      } as any,
+      margin: { top: 30, bottom: 16, left: margem, right: margem },
+    });
+
+    y = ((doc as any).lastAutoTable?.finalY ?? y + 30) + 14;
+  }
 
   for (const item of ROTULOS) {
     const lista = ordenarTitulos(rel[item.chave]);
