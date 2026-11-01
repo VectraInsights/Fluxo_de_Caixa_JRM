@@ -39,6 +39,8 @@ import {
   getEmpresaBreakdown,
   getFaturamento,
   finalizarAutorizacao,
+  listarPlanilhasMes,
+  registrarPlanilhaMes,
   type TituloDetalhe,
 } from "@/lib/contaazul.functions";
 import { ordenarTitulos, exportarXlsx, exportarPdf } from "@/lib/exportar";
@@ -109,6 +111,14 @@ function shiftMeses(iso: string, meses: number): string {
 
 // Traduz os erros mais comuns do OAuth da Conta Azul para uma mensagem
 // acionável, em vez de mostrar o JSON cru que a API retorna.
+// "2026-10" -> "out/2026" (rotulo curto de mes, usado no seletor de planilhas).
+function rotuloMes(mes: string): string {
+  const [ano, mm] = mes.split("-");
+  const NOMES = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+  const i = Number(mm) - 1;
+  return `${NOMES[i] ?? mm}/${ano}`;
+}
+
 function explicarErroOAuth(detalhe: string, httpStatus?: number): string {
   const bruto = detalhe || "";
   let d = bruto;
@@ -217,7 +227,18 @@ function Dashboard() {
   const getEmpresaBreakdownFn = useServerFn(getEmpresaBreakdown);
   const getFaturamentoFn = useServerFn(getFaturamento);
   const finalizarAutorizacaoFn = useServerFn(finalizarAutorizacao);
+  const listarPlanilhasFn = useServerFn(listarPlanilhasMes);
+  const registrarPlanilhaFn = useServerFn(registrarPlanilhaMes);
   const queryClient = useQueryClient();
+
+  // Cadastro da planilha de faturamento do mes (uma planilha nova por mes).
+  const [mesPlanilha, setMesPlanilha] = useState<string>(() => {
+    const h = new Date();
+    return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [urlPlanilha, setUrlPlanilha] = useState("");
+  const [salvandoPlanilha, setSalvandoPlanilha] = useState(false);
+  const [msgPlanilha, setMsgPlanilha] = useState<{ tipo: "ok" | "erro"; texto: string } | null>(null);
 
   // Detecta o retorno do OAuth (code + state na URL) e troca por token.
   // O Conta Azul redireciona para a RAIZ com ?code=...&state=... .
@@ -318,6 +339,45 @@ function Dashboard() {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+
+  // Registro das planilhas de faturamento por mes (jan/2026 a dez/2030).
+  const { data: planilhasMes = [], refetch: refetchPlanilhas } = useQuery({
+    queryKey: ["planilhas-mes"],
+    queryFn: () => listarPlanilhasFn(),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnMount: true,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+
+  // Ao trocar o mes no seletor, preenche a URL ja cadastrada (se houver).
+  useEffect(() => {
+    const row = planilhasMes.find((p) => p.mes === mesPlanilha);
+    setUrlPlanilha(row?.url ?? "");
+  }, [mesPlanilha, planilhasMes]);
+
+  // Registra a URL da planilha do mes selecionado no Supabase.
+  async function salvarPlanilha() {
+    const url = urlPlanilha.trim();
+    if (!url) return;
+    setSalvandoPlanilha(true);
+    setMsgPlanilha(null);
+    try {
+      const r = await registrarPlanilhaFn({ data: { mes: mesPlanilha, url } });
+      if (r.status === "sucesso") {
+        setMsgPlanilha({ tipo: "ok", texto: `Planilha de ${rotuloMes(mesPlanilha)} registrada.` });
+        await refetchPlanilhas();
+        refetchFaturamento(); // o faturamento do periodo pode ter passado a existir
+      } else {
+        setMsgPlanilha({ tipo: "erro", texto: r.mensagem });
+      }
+    } catch (e) {
+      setMsgPlanilha({ tipo: "erro", texto: String((e as Error)?.message || e) });
+    } finally {
+      setSalvandoPlanilha(false);
+    }
+  }
 
   async function recarregarTudo() {
     // 1. Limpa o cache no servidor
@@ -627,6 +687,57 @@ function Dashboard() {
             })
           )}
         </div>
+
+        <SectionLabel className="mt-8">Planilhas de Faturamento</SectionLabel>
+        <div className="space-y-2">
+          <Label>Mês da planilha</Label>
+          <Select value={mesPlanilha} onChange={(e) => setMesPlanilha(e.target.value)}>
+            {planilhasMes.length === 0 ? (
+              <option value={mesPlanilha}>{rotuloMes(mesPlanilha)}</option>
+            ) : (
+              planilhasMes.map((p) => (
+                <option key={p.mes} value={p.mes}>
+                  {rotuloMes(p.mes)} {p.cadastrada ? "✓" : "— pendente"}
+                </option>
+              ))
+            )}
+          </Select>
+
+          <Label>URL da planilha do mês</Label>
+          <Input
+            placeholder="https://docs.google.com/spreadsheets/d/..."
+            value={urlPlanilha}
+            onChange={(e) => setUrlPlanilha(e.target.value)}
+          />
+          <button
+            onClick={salvarPlanilha}
+            disabled={salvandoPlanilha || !urlPlanilha.trim()}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-brand/40 bg-brand/10 px-3 py-2 text-xs font-semibold hover:bg-brand/20 transition-colors disabled:opacity-60"
+          >
+            {salvandoPlanilha ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <FileSpreadsheet className="h-3.5 w-3.5" />
+            )}
+            {planilhasMes.find((p) => p.mes === mesPlanilha)?.cadastrada
+              ? "Atualizar planilha do mês"
+              : "Registrar planilha do mês"}
+          </button>
+          {msgPlanilha && (
+            <p
+              className={`text-[11px] ${
+                msgPlanilha.tipo === "ok" ? "text-success" : "text-destructive"
+              }`}
+            >
+              {msgPlanilha.texto}
+            </p>
+          )}
+          <p className="text-[10px] text-muted-foreground leading-relaxed">
+            Ao criar a planilha nova no Google Drive, copie a URL e registre aqui. Ela precisa
+            estar compartilhada como <span className="text-foreground/70">"qualquer pessoa com o
+            link"</span> (leitor) para o painel conseguir ler.
+          </p>
+        </div>
       </aside>
 
       {/* Sidebar toggle */}
@@ -822,6 +933,20 @@ function Dashboard() {
                   )}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Aviso: meses do periodo sem planilha de faturamento cadastrada */}
+          {(faturamento?.meses_sem_planilha?.length ?? 0) > 0 && (
+            <div className="mb-4 flex items-start gap-2 rounded-xl border border-border bg-card/60 p-3 text-xs text-muted-foreground">
+              <FileSpreadsheet className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
+              <span>
+                Sem planilha cadastrada para{" "}
+                <span className="font-medium text-foreground">
+                  {faturamento!.meses_sem_planilha.map(rotuloMes).join(", ")}
+                </span>
+                . Cadastre o link da planilha do mês na lateral (seção Planilhas de Faturamento).
+              </span>
             </div>
           )}
 

@@ -53,6 +53,8 @@ export const limparCache = createServerFn({ method: "POST" }).handler(async () =
 // Faturamento do periodo (planilha de cargas no Google Sheets — aba do dia, coluna VALOR).
 // Direcionado pelo REMETENTE: cada carga pertence a empresa dona do remetente.
 // "todas" soma tudo (inclui Alvarenga, que nao existe no dropdown).
+// meses_sem_planilha indica meses do periodo ainda sem planilha cadastrada
+// (cada mes tem a sua planilha; o cadastro e feito pela sidebar).
 export const getFaturamento = createServerFn({ method: "GET" })
   .validator((d) =>
     z
@@ -69,15 +71,70 @@ export const getFaturamento = createServerFn({ method: "GET" })
     }): Promise<{
       total: number;
       porDia: { data: string; total: number; clientes: { nome: string; total: number }[] }[];
+      meses_sem_planilha: string[];
     }> => {
       try {
         return await buscarFaturamentoPlanilha(data.data_inicio, data.data_fim, data.empresa);
       } catch (e) {
         log("warn", `faturamento planilha: ${(e as Error).message}`);
-        return { total: 0, porDia: [] };
+        return { total: 0, porDia: [], meses_sem_planilha: [] };
       }
     },
   );
+
+// ------------------- Planilhas de faturamento (mes -> Google Sheets) -------------------
+// Lista o registro mes -> planilha (faixa pre-preenchida: jan/2026 a dez/2030).
+// Meses sem planilha aparecem como "pendentes".
+export const listarPlanilhasMes = createServerFn({ method: "GET" }).handler(async () => {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from("planilhas_mes")
+    .select("mes,id_planilha,url")
+    .order("mes");
+  if (error) throw new Error(error.message);
+  return (data || []).map((r: any) => ({
+    mes: r.mes as string,
+    cadastrada: !!r.id_planilha,
+    url: (r.url as string) || null,
+  }));
+});
+
+// Registra (ou atualiza) a planilha de faturamento de um mes.
+// Extrai o ID do trecho /spreadsheets/d/ID/ da URL colada (serve a URL de
+// edicao ou a de visualizacao).
+export const registrarPlanilhaMes = createServerFn({ method: "POST" })
+  .validator((d) =>
+    z
+      .object({
+        mes: z.string().regex(/^\d{4}-\d{2}$/, "mes deve estar no formato YYYY-MM"),
+        url: z.string(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const m = data.url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]{10,})/);
+    if (!m) {
+      return {
+        status: "erro" as const,
+        mensagem: "URL invalida: esperado link do Google Sheets (contem /spreadsheets/d/...)",
+      };
+    }
+    const id = m[1];
+    const sb = getSupabase();
+    const { error } = await sb.from("planilhas_mes").upsert(
+      {
+        mes: data.mes,
+        id_planilha: id,
+        url: data.url,
+        atualizado_em: new Date().toISOString(),
+      },
+      { onConflict: "mes" },
+    );
+    if (error) return { status: "erro" as const, mensagem: error.message };
+    limparCachePlanilha();
+    log("info", `planilha registrada: ${data.mes} -> ${id}`);
+    return { status: "sucesso" as const, mes: data.mes, id_planilha: id };
+  });
 
 // Troca o code OAuth (que volta para a raiz) por access/refresh token e salva no Supabase.
 // O parâmetro "empresa" vem do state e garante que atualizamos o registro correto.

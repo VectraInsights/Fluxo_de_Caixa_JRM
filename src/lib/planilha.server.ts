@@ -1,5 +1,8 @@
 // ------------------- Faturamento (planilha de cargas no Google Sheets) -------------------
-// A planilha tem UMA ABA POR DIA, com o nome igual ao numero do dia ("01".."31").
+// Cada MES tem a sua planilha (um endereco/novo ID por mes). O mapeamento
+// mes -> id da planilha fica na tabela Supabase "planilhas_mes" e e cadastrado
+// pela sidebar do dashboard (colar a URL da planilha do mes). A planilha tem
+// UMA ABA POR DIA, com o nome igual ao numero do dia ("01".."31").
 // Buscamos a aba do dia pelo endpoint gviz (export CSV por nome de aba) e somamos
 // a coluna F (VALOR), com parser estrito pt-BR (mimetiza o SUM do Sheets: valores
 // em formato invalido, como "21,999.10", nao contam).
@@ -9,24 +12,56 @@
 // A ORTHOCRIN pertence a ALVARENGA, que NAO existe no dropdown: ela entra apenas
 // quando a visao e "todas".
 
-const ID_PLANILHA = "173ertIvql5v6l_9v6HJAQkdeL66CA4RSKo5IZrGkFhM";
+import { getSupabase, log } from "./contaazul.server";
 
-function urlAba(diaNome: string) {
-  return `https://docs.google.com/spreadsheets/d/${ID_PLANILHA}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(diaNome)}`;
+function urlAba(idPlanilha: string, diaNome: string) {
+  return `https://docs.google.com/spreadsheets/d/${idPlanilha}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(diaNome)}`;
 }
 
 // Cache por aba/dia (evita refazer fetch a cada render)
 // Guarda o total POR REMETENTE (cliente); o total por empresa e derivado na hora,
 // assim conseguimos mostrar o detalhamento por cliente dentro de cada dia.
+// A chave inclui o id da planilha: se a planilha do mes for trocada, nao serve
+// resultado antigo.
 const TTL_CACHE_MS = 5 * 60 * 1000;
 const cacheDias = new Map<string, { porRemetente: Record<string, number>; em: number }>();
+
+// Cache do mapeamento mes -> id da planilha (evita uma consulta ao Supabase
+// por dia consultado; TTL curto para refletir cadastro/atualizacao rapido).
+const cachePlanilhasMes = new Map<string, { id: string | null; em: number }>();
 
 // nome normalizado -> nome como aparece na planilha (sem a cidade), para exibir
 const nomeExibicao = new Map<string, string>();
 
 export function limparCachePlanilha() {
   cacheDias.clear();
+  cachePlanilhasMes.clear();
   nomeExibicao.clear();
+}
+
+// Id da planilha do mes ("2026-10") no Supabase. null = mes ainda nao
+// cadastrado (faturamento do mes fica zerado, com aviso no dashboard).
+async function idPlanilhaDoMes(mes: string): Promise<string | null> {
+  const cacheado = cachePlanilhasMes.get(mes);
+  if (cacheado && Date.now() - cacheado.em < TTL_CACHE_MS) return cacheado.id;
+  let id: string | null = null;
+  try {
+    const sb = getSupabase();
+    const { data, error } = await sb
+      .from("planilhas_mes")
+      .select("id_planilha")
+      .eq("mes", mes)
+      .limit(1);
+    if (error) {
+      log("warn", `planilha do mes ${mes}: ${error.message}`);
+    } else if (data && data.length) {
+      id = data[0].id_planilha ?? null;
+    }
+  } catch (e) {
+    log("warn", `planilha do mes ${mes}: ${(e as Error).message}`);
+  }
+  cachePlanilhasMes.set(mes, { id, em: Date.now() });
+  return id;
 }
 
 // ------------------- Regras de direcionamento (remetente -> empresa) -------------------
@@ -148,17 +183,22 @@ function nomeSemCidade(bruto: string): string {
 // Aba do dia -> totais POR REMETENTE (chave normalizada; o dono da empresa e
 // derivado depois, quando filtramos por empresa no periodo).
 // Na aba de dia: coluna B (indice 1) = REMETENTE, coluna F (indice 5) = VALOR.
-// Retorna vazio se a aba nao existir (o gviz cai na primeira aba do
-// arquivo nesse caso; detectamos pelo cabecalho, que nas abas de dia comeca
-// com a data "dd.mm.aaaa").
-async function buscarAbaDoDia(dataIso: string): Promise<Record<string, number>> {
-  const cacheado = cacheDias.get(dataIso);
+// Retorna null quando o MES da data nao tem planilha cadastrada (o chamador
+// reporta "mes sem planilha"); retorna vazio quando a planilha existe mas nao
+// tem dados naquele dia.
+async function buscarAbaDoDia(dataIso: string): Promise<Record<string, number> | null> {
+  const mes = dataIso.slice(0, 7);
+  const idPlanilha = await idPlanilhaDoMes(mes);
+  if (!idPlanilha) return null;
+
+  const chaveCache = `${idPlanilha}:${dataIso}`;
+  const cacheado = cacheDias.get(chaveCache);
   if (cacheado && Date.now() - cacheado.em < TTL_CACHE_MS) return cacheado.porRemetente;
 
   const [, mm, dd] = dataIso.split("-");
   const dataPt = `${dd}.${mm}.${dataIso.slice(0, 4)}`;
 
-  const res = await fetch(urlAba(dd), { signal: AbortSignal.timeout(15_000) });
+  const res = await fetch(urlAba(idPlanilha, dd), { signal: AbortSignal.timeout(15_000) });
   if (!res.ok) {
     throw new Error(`Planilha de faturamento indisponivel (status ${res.status})`);
   }
@@ -168,7 +208,7 @@ async function buscarAbaDoDia(dataIso: string): Promise<Record<string, number>> 
   const cabecalho = (linhas[0]?.[0] ?? "").trim();
   if (!cabecalho.startsWith(dataPt)) {
     const vazio: Record<string, number> = {};
-    cacheDias.set(dataIso, { porRemetente: vazio, em: Date.now() });
+    cacheDias.set(chaveCache, { porRemetente: vazio, em: Date.now() });
     return vazio;
   }
 
@@ -189,13 +229,15 @@ async function buscarAbaDoDia(dataIso: string): Promise<Record<string, number>> 
   for (const [chave, valor] of Object.entries(bruto)) {
     porRemetente[chave] = Math.round(valor * 100) / 100;
   }
-  cacheDias.set(dataIso, { porRemetente, em: Date.now() });
+  cacheDias.set(chaveCache, { porRemetente, em: Date.now() });
   return porRemetente;
 }
 
 // Faturamento do periodo para a empresa selecionada ("todas" = tudo, inclui ALVARENGA).
 // porDia traz o detalhamento por CLIENTE (remetente) dentro de cada dia, ja
 // filtrado pela empresa selecionada e ordenado por valor crescente.
+// meses_sem_planilha lista (YYYY-MM) os meses do periodo que ainda nao tem
+// planilha cadastrada — o dashboard exibe aviso em vez de mostrar 0 "as cegas".
 export async function buscarFaturamentoPlanilha(
   dataInicio: string,
   dataFim: string,
@@ -203,6 +245,7 @@ export async function buscarFaturamentoPlanilha(
 ): Promise<{
   total: number;
   porDia: { data: string; total: number; clientes: { nome: string; total: number }[] }[];
+  meses_sem_planilha: string[];
 }> {
   const filtro = filtroDaEmpresa(empresa);
 
@@ -216,7 +259,7 @@ export async function buscarFaturamentoPlanilha(
 
   // Busca as abas com concistencia limitada (no modo "Mês atual" sao ~31 abas)
   const CONCORRENCIA = 5;
-  const totaisPorDia: Record<string, number>[] = new Array(dias.length);
+  const totaisPorDia: (Record<string, number> | null)[] = new Array(dias.length);
   let idx = 0;
   async function worker() {
     while (true) {
@@ -229,12 +272,16 @@ export async function buscarFaturamentoPlanilha(
 
   // Detalhamento por dia e por cliente + total do periodo
   const porDia: { data: string; total: number; clientes: { nome: string; total: number }[] }[] = [];
+  const mesesSemPlanilha = new Set<string>();
   let total = 0;
   for (let i = 0; i < dias.length; i++) {
     const porRemetente = totaisPorDia[i];
     const clientes: { nome: string; total: number }[] = [];
     let dia = 0;
-    if (porRemetente) {
+    if (porRemetente === null) {
+      // Mes sem planilha cadastrada: registra para o aviso no dashboard.
+      mesesSemPlanilha.add(dias[i].slice(0, 7));
+    } else {
       for (const [remetente, valor] of Object.entries(porRemetente)) {
         const dono = EMPRESA_POR_REMETENTE[remetente] ?? "OUTROS";
         if (filtro !== null && dono !== filtro) continue;
@@ -248,5 +295,9 @@ export async function buscarFaturamentoPlanilha(
     clientes.sort((a, b) => a.total - b.total || a.nome.localeCompare(b.nome));
     porDia.push({ data: dias[i], total: dia, clientes });
   }
-  return { total: Math.round(total * 100) / 100, porDia };
+  return {
+    total: Math.round(total * 100) / 100,
+    porDia,
+    meses_sem_planilha: [...mesesSemPlanilha].sort(),
+  };
 }
