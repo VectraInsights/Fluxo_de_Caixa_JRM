@@ -361,6 +361,16 @@ function Dashboard() {
     refetchOnReconnect: false,
   });
 
+  // Meses oferecidos no seletor do painel de confirmacao: a faixa completa
+  // jan/2026 a dez/2030 (usa o registro do Supabase quando disponivel).
+  const mesesDisponiveis = planilhasMes.length
+    ? planilhasMes.map((p) => p.mes)
+    : Array.from({ length: 60 }, (_, i) => {
+        const ano = 2026 + Math.floor(i / 12);
+        const mes = (i % 12) + 1;
+        return `${ano}-${String(mes).padStart(2, "0")}`;
+      });
+
   // Ao trocar o mes visado, preenche a URL ja cadastrada (se houver) e
   // descarta qualquer registro pendente de confirmacao.
   useEffect(() => {
@@ -760,11 +770,21 @@ function Dashboard() {
                 ) : (
                   "Não consegui ler o nome da planilha."
                 )}
-                <br />
-                Registrar em{" "}
-                <span className="font-semibold text-foreground">{rotuloMes(pendente.mes)}</span>
-                {!pendente.detectado && " (mês visado)"}?
+                {pendente.detectado
+                  ? " — mês sugerido pelo nome; troque se precisar."
+                  : " — escolha o mês abaixo."}
               </p>
+              <Select
+                value={pendente.mes}
+                onChange={(e) => setPendente({ ...pendente, mes: e.target.value })}
+              >
+                {mesesDisponiveis.map((m) => (
+                  <option key={m} value={m}>
+                    {rotuloMes(m)}
+                    {planilhasMes.find((p) => p.mes === m)?.cadastrada ? " ✓" : ""}
+                  </option>
+                ))}
+              </Select>
               <div className="flex gap-2">
                 <button
                   onClick={confirmarRegistro}
