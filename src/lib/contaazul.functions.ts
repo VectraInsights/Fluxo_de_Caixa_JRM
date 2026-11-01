@@ -18,7 +18,7 @@ import {
   gravarLogEvento,
   cronSecret,
 } from "./contaazul.server";
-import { buscarFaturamentoPlanilha, limparCachePlanilha } from "./planilha.server";
+import { buscarFaturamentoPlanilha, limparCachePlanilha, lerTituloPlanilha, mesDoTitulo } from "./planilha.server";
 
 export const listarEmpresas = createServerFn({ method: "GET" }).handler(async () => {
   const sb = getSupabase();
@@ -134,6 +134,24 @@ export const registrarPlanilhaMes = createServerFn({ method: "POST" })
     limparCachePlanilha();
     log("info", `planilha registrada: ${data.mes} -> ${id}`);
     return { status: "sucesso" as const, mes: data.mes, id_planilha: id };
+  });
+
+// Le o NOME da planilha e deduz o mes/ano a partir dele (ex.: "10.26 OUTUBRO -
+// ADF" -> 2026-10). Fluxo de cadastro: colar URL -> sistema pergunta o mes ->
+// usuario confirma -> registra.
+export const detectarMesPlanilha = createServerFn({ method: "POST" })
+  .validator((d) => z.object({ url: z.string() }).parse(d))
+  .handler(async ({ data }) => {
+    const m = data.url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]{10,})/);
+    if (!m) {
+      return {
+        status: "erro" as const,
+        mensagem: "URL invalida: esperado link do Google Sheets (contem /spreadsheets/d/...)",
+      };
+    }
+    const titulo = await lerTituloPlanilha(m[1]);
+    const mes = titulo ? mesDoTitulo(titulo) : null;
+    return { status: "sucesso" as const, titulo, mes };
   });
 
 // Troca o code OAuth (que volta para a raiz) por access/refresh token e salva no Supabase.

@@ -12,7 +12,7 @@
 // A ORTHOCRIN pertence a ALVARENGA, que NAO existe no dropdown: ela entra apenas
 // quando a visao e "todas".
 
-import { getSupabase, log } from "./contaazul.server";
+import { getSupabase, log, removerAcentos } from "./contaazul.server";
 
 function urlAba(idPlanilha: string, diaNome: string) {
   return `https://docs.google.com/spreadsheets/d/${idPlanilha}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(diaNome)}`;
@@ -300,4 +300,88 @@ export async function buscarFaturamentoPlanilha(
     porDia,
     meses_sem_planilha: [...mesesSemPlanilha].sort(),
   };
+}
+
+// ------------------- Leitura do nome (titulo) da planilha -------------------
+// Dois metodos, em ordem: (1) cabecalho Content-Disposition do export CSV —
+// leve, nao baixa o conteudo; (2) tag <title> da pagina /edit. Ambos exigem
+// que a planilha esteja compartilhada como "qualquer pessoa com o link".
+export async function lerTituloPlanilha(idPlanilha: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://docs.google.com/spreadsheets/d/${idPlanilha}/export?format=csv`,
+      { method: "HEAD", signal: AbortSignal.timeout(15_000), redirect: "follow" },
+    );
+    const disp = res.headers.get("content-disposition") || "";
+    const estrela = disp.match(/filename\*=UTF-8''([^;]+)/i);
+    const simples = disp.match(/filename="?([^";]+)"?/i);
+    const bruto = estrela ? estrela[1] : simples ? simples[1] : null;
+    if (bruto) {
+      const nome = decodeURIComponent(bruto).replace(/\.csv$/i, "").trim();
+      if (nome) return nome;
+    }
+  } catch {
+    // tenta o proximo metodo
+  }
+  try {
+    const res = await fetch(`https://docs.google.com/spreadsheets/d/${idPlanilha}/edit`, {
+      signal: AbortSignal.timeout(15_000),
+      redirect: "follow",
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const m = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      if (m) {
+        const nome = m[1].replace(/\s*-\s*Google\s+(Planilhas|Sheets|Drive)\s*$/i, "").trim();
+        if (nome) return nome;
+      }
+    }
+  } catch {
+    // sem titulo
+  }
+  return null;
+}
+
+// ------------------- Deducao de mes/ano a partir do nome -------------------
+const MESES_POR_NOME: Record<string, number> = {
+  janeiro: 1, fevereiro: 2, marco: 3, abril: 4, maio: 5, junho: 6,
+  julho: 7, agosto: 8, setembro: 9, outubro: 10, novembro: 11, dezembro: 12,
+  jan: 1, fev: 2, mar: 3, abr: 4, mai: 5, jun: 6,
+  jul: 7, ago: 8, set: 9, out: 10, nov: 11, dez: 12,
+};
+const RE_NOME_MES =
+  /\b(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro|jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)\b/;
+
+// Deduz "YYYY-MM" a partir do nome da planilha. Formatos aceitos:
+// "10.26 OUTUBRO - ADF" (MM.AA + nome), "Novembro 2026", "faturamento 2026-11",
+// "11/2026", "26.11" etc. null = nao conseguiu deduzir (o chamador usa o mes
+// visado como fallback, sempre com confirmacao do usuario).
+export function mesDoTitulo(titulo: string): string | null {
+  if (!titulo) return null;
+  const t = removerAcentos(titulo).toLowerCase();
+
+  // 1) Contem nome de mes: pega o mes dele e procura o ano (4 digitos, ou
+  //    dois digitos plausiveis — ex.: "10.26" -> 26 = 2026).
+  const mNome = t.match(RE_NOME_MES);
+  if (mNome) {
+    const mes = MESES_POR_NOME[mNome[1]];
+    const ano4 = t.match(/\b(20\d{2})\b/);
+    if (ano4) return `${ano4[1]}-${String(mes).padStart(2, "0")}`;
+    const candidatos = [...t.matchAll(/\b(\d{2})\b/g)]
+      .map((m) => Number(m[1]))
+      .filter((n) => n >= 15 && n <= 99);
+    if (candidatos.length) return `20${candidatos[0]}-${String(mes).padStart(2, "0")}`;
+    return null; // tem mes, mas nao achou ano
+  }
+
+  // 2) Sem nome de mes: formatos numericos puros.
+  const anoMes = t.match(/\b(20\d{2})[-/.](0?[1-9]|1[0-2])\b/); // 2026-11
+  if (anoMes) return `${anoMes[1]}-${String(anoMes[2]).padStart(2, "0")}`;
+  const mesAno4 = t.match(/\b(0?[1-9]|1[0-2])[-/.](20\d{2})\b/); // 11-2026
+  if (mesAno4) return `${mesAno4[2]}-${String(mesAno4[1]).padStart(2, "0")}`;
+  const mesAno2 = t.match(/\b(0?[1-9]|1[0-2])[.\-](\d{2})\b/); // 10.26 -> MM.AA
+  if (mesAno2) return `20${mesAno2[2]}-${String(mesAno2[1]).padStart(2, "0")}`;
+  const ano2Mes = t.match(/\b(\d{2})[.\-](0?[1-9]|1[0-2])\b/); // 26.10 -> AA.MM
+  if (ano2Mes) return `20${ano2Mes[1]}-${String(ano2Mes[2]).padStart(2, "0")}`;
+  return null;
 }

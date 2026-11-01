@@ -41,6 +41,7 @@ import {
   finalizarAutorizacao,
   listarPlanilhasMes,
   registrarPlanilhaMes,
+  detectarMesPlanilha,
   type TituloDetalhe,
 } from "@/lib/contaazul.functions";
 import { ordenarTitulos, exportarXlsx, exportarPdf } from "@/lib/exportar";
@@ -229,13 +230,22 @@ function Dashboard() {
   const finalizarAutorizacaoFn = useServerFn(finalizarAutorizacao);
   const listarPlanilhasFn = useServerFn(listarPlanilhasMes);
   const registrarPlanilhaFn = useServerFn(registrarPlanilhaMes);
+  const detectarMesFn = useServerFn(detectarMesPlanilha);
   const queryClient = useQueryClient();
 
-  // Cadastro da planilha de faturamento: registra a planilha do MES VISADO no
-  // painel (mes de dataInicio). Uma planilha nova por mes.
+  // Cadastro da planilha de faturamento: colar URL -> sistema le o nome da
+  // planilha e deduz o mes/ano -> usuario confirma -> registra.
   const [urlPlanilha, setUrlPlanilha] = useState("");
   const [salvandoPlanilha, setSalvandoPlanilha] = useState(false);
   const [msgPlanilha, setMsgPlanilha] = useState<{ tipo: "ok" | "erro"; texto: string } | null>(null);
+  // Registro aguardando confirmacao do usuario (o mes pode ter vindo do nome
+  // da planilha ou do mes visado, quando o nome nao indica o mes).
+  const [pendente, setPendente] = useState<{
+    url: string;
+    mes: string;
+    titulo: string | null;
+    detectado: boolean;
+  } | null>(null);
 
   // Detecta o retorno do OAuth (code + state na URL) e troca por token.
   // O Conta Azul redireciona para a RAIZ com ?code=...&state=... .
@@ -351,23 +361,47 @@ function Dashboard() {
     refetchOnReconnect: false,
   });
 
-  // Ao trocar o mes visado, preenche a URL ja cadastrada (se houver).
+  // Ao trocar o mes visado, preenche a URL ja cadastrada (se houver) e
+  // descarta qualquer registro pendente de confirmacao.
   useEffect(() => {
     const row = planilhasMes.find((p) => p.mes === mesVisao);
     setUrlPlanilha(row?.url ?? "");
     setMsgPlanilha(null);
+    setPendente(null);
   }, [mesVisao, planilhasMes]);
 
-  // Registra a URL da planilha do mes visado no Supabase.
-  async function salvarPlanilha() {
+  // Passo 1: le o nome da planilha e propoe o mes (aguarda confirmacao).
+  async function detectarPlanilha() {
     const url = urlPlanilha.trim();
     if (!url) return;
     setSalvandoPlanilha(true);
     setMsgPlanilha(null);
+    setPendente(null);
     try {
-      const r = await registrarPlanilhaFn({ data: { mes: mesVisao, url } });
+      const r = await detectarMesFn({ data: { url } });
+      if (r.status === "erro") {
+        setMsgPlanilha({ tipo: "erro", texto: r.mensagem });
+        return;
+      }
+      const mes = r.mes ?? mesVisao;
+      setPendente({ url, mes, titulo: r.titulo, detectado: !!r.mes });
+    } catch (e) {
+      setMsgPlanilha({ tipo: "erro", texto: String((e as Error)?.message || e) });
+    } finally {
+      setSalvandoPlanilha(false);
+    }
+  }
+
+  // Passo 2: confirmacao do usuario — registra a planilha no mes proposto.
+  async function confirmarRegistro() {
+    if (!pendente) return;
+    setSalvandoPlanilha(true);
+    setMsgPlanilha(null);
+    try {
+      const r = await registrarPlanilhaFn({ data: { mes: pendente.mes, url: pendente.url } });
       if (r.status === "sucesso") {
-        setMsgPlanilha({ tipo: "ok", texto: `Planilha de ${rotuloMes(mesVisao)} registrada.` });
+        setMsgPlanilha({ tipo: "ok", texto: `Planilha de ${rotuloMes(pendente.mes)} registrada.` });
+        setPendente(null);
         await refetchPlanilhas();
         refetchFaturamento(); // o faturamento do periodo pode ter passado a existir
       } else {
@@ -691,14 +725,17 @@ function Dashboard() {
 
         <SectionLabel className="mt-8">Planilhas de Faturamento</SectionLabel>
         <div className="space-y-2">
-          <Label>URL da planilha de {rotuloMes(mesVisao)}</Label>
+          <Label>URL da planilha</Label>
           <Input
             placeholder="https://docs.google.com/spreadsheets/d/..."
             value={urlPlanilha}
-            onChange={(e) => setUrlPlanilha(e.target.value)}
+            onChange={(e) => {
+              setUrlPlanilha(e.target.value);
+              setPendente(null);
+            }}
           />
           <button
-            onClick={salvarPlanilha}
+            onClick={detectarPlanilha}
             disabled={salvandoPlanilha || !urlPlanilha.trim()}
             title="A planilha precisa estar compartilhada como 'qualquer pessoa com o link' (leitor)"
             className="flex w-full items-center justify-center gap-2 rounded-xl border border-brand/40 bg-brand/10 px-3 py-2 text-xs font-semibold hover:bg-brand/20 transition-colors disabled:opacity-60"
@@ -708,10 +745,45 @@ function Dashboard() {
             ) : (
               <FileSpreadsheet className="h-3.5 w-3.5" />
             )}
-            {planilhasMes.find((p) => p.mes === mesVisao)?.cadastrada
-              ? "Atualizar planilha do mês"
-              : "Registrar planilha do mês"}
+            Registrar planilha do mês
           </button>
+
+          {/* Confirmacao do mes antes de registrar (deduzido do nome da planilha) */}
+          {pendente && (
+            <div className="space-y-2 rounded-xl border border-border bg-card/50 p-2.5">
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                {pendente.titulo ? (
+                  <>
+                    Nome:{" "}
+                    <span className="font-medium text-foreground">"{pendente.titulo}"</span>
+                  </>
+                ) : (
+                  "Não consegui ler o nome da planilha."
+                )}
+                <br />
+                Registrar em{" "}
+                <span className="font-semibold text-foreground">{rotuloMes(pendente.mes)}</span>
+                {!pendente.detectado && " (mês visado)"}?
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={confirmarRegistro}
+                  disabled={salvandoPlanilha}
+                  className="flex-1 rounded-xl border border-brand/40 bg-brand/10 px-3 py-1.5 text-xs font-semibold hover:bg-brand/20 transition-colors disabled:opacity-60"
+                >
+                  {salvandoPlanilha ? "Registrando..." : `Registrar em ${rotuloMes(pendente.mes)}`}
+                </button>
+                <button
+                  onClick={() => setPendente(null)}
+                  disabled={salvandoPlanilha}
+                  className="rounded-xl border border-border px-3 py-1.5 text-xs font-semibold hover:bg-card/60 transition-colors disabled:opacity-60"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          )}
+
           {msgPlanilha && (
             <p
               className={`text-[11px] ${
