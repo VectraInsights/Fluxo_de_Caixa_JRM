@@ -472,6 +472,66 @@ export async function obterToken(empresa: string): Promise<string | null> {
   return renovarToken(empresa);
 }
 
+// ------------------- Renovacao em lote (cron) -------------------
+// Renova o access_token de todas as empresas cujo token esta prestes a
+// expirar (ou sem registro de validade). Idempotente: rodar duas vezes ou
+// perder uma execucao nao causa problema (o lock distribuido evita renovacoes
+// concorrentes e o refresh ja e no-op para tokens ainda validos).
+// Usado pelo cron nativo da Vercel (GET /api/cron/renovar-tokens) e pela
+// server function renovarTodosTokens (chamada manual/externa).
+export async function executarRenovacaoEmLote(): Promise<{
+  total: number;
+  renovados: number;
+  falhados: number;
+  detalhes: Array<{ empresa: string; acao: string }>;
+}> {
+  const sb = getSupabase();
+  const { data: empresas } = await sb
+    .from("tokens")
+    .select("empresa,refresh_token,expires_at,status")
+    .order("empresa");
+
+  const resultados = await Promise.all(
+    (empresas || []).map(async (emp: any) => {
+      const empresa = emp.empresa as string;
+      // Pula empresas que nao tem refresh_token (nao podem renovar sozinhas)
+      if (!emp.refresh_token) {
+        return { empresa, acao: "sem_refresh_token" };
+      }
+
+      // Se expira em mais de 10 min, nao precisa renovar agora
+      if (emp.expires_at) {
+        const expiraEm = new Date(emp.expires_at).getTime();
+        const agora = Date.now();
+        if (expiraEm - agora > 10 * 60 * 1000) {
+          return { empresa, acao: "valido" };
+        }
+      }
+
+      const token = await renovarToken(empresa);
+      return {
+        empresa,
+        acao: token ? "renovado" : "falhou",
+      };
+    }),
+  );
+
+  const renovados = resultados.filter((r) => r.acao === "renovado").length;
+  const falhados = resultados.filter((r) => r.acao === "falhou").length;
+
+  log(
+    "info",
+    `renovacao em lote: ${empresas?.length ?? 0} empresas, ${renovados} renovados, ${falhados} falharam`,
+  );
+
+  return {
+    total: empresas?.length ?? 0,
+    renovados,
+    falhados,
+    detalhes: resultados,
+  };
+}
+
 const BANCOS_PERMITIDOS = [
   "ITAU",
   "BRADESCO",

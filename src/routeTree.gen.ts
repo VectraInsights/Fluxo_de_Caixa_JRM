@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiAutorizarRouteImport } from './routes/api/autorizar'
 import { Route as ApiCallbackRouteImport } from './routes/api/callback'
 import { Route as ApiDebugPagasRouteImport } from './routes/api/debug-pagas'
+import { Route as ApiCronRenovarTokensRouteImport } from './routes/api/cron/renovar-tokens'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -34,18 +35,25 @@ const ApiDebugPagasRoute = ApiDebugPagasRouteImport.update({
   path: '/api/debug-pagas',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiCronRenovarTokensRoute = ApiCronRenovarTokensRouteImport.update({
+  id: '/api/cron/renovar-tokens',
+  path: '/api/cron/renovar-tokens',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
   '/api/debug-pagas': typeof ApiDebugPagasRoute
+  '/api/cron/renovar-tokens': typeof ApiCronRenovarTokensRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
   '/api/debug-pagas': typeof ApiDebugPagasRoute
+  '/api/cron/renovar-tokens': typeof ApiCronRenovarTokensRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -53,13 +61,30 @@ export interface FileRoutesById {
   '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
   '/api/debug-pagas': typeof ApiDebugPagasRoute
+  '/api/cron/renovar-tokens': typeof ApiCronRenovarTokensRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/autorizar' | '/api/callback' | '/api/debug-pagas'
+  fullPaths:
+    | '/'
+    | '/api/autorizar'
+    | '/api/callback'
+    | '/api/debug-pagas'
+    | '/api/cron/renovar-tokens'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/autorizar' | '/api/callback' | '/api/debug-pagas'
-  id: '__root__' | '/' | '/api/autorizar' | '/api/callback' | '/api/debug-pagas'
+  to:
+    | '/'
+    | '/api/autorizar'
+    | '/api/callback'
+    | '/api/debug-pagas'
+    | '/api/cron/renovar-tokens'
+  id:
+    | '__root__'
+    | '/'
+    | '/api/autorizar'
+    | '/api/callback'
+    | '/api/debug-pagas'
+    | '/api/cron/renovar-tokens'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -67,6 +92,7 @@ export interface RootRouteChildren {
   ApiAutorizarRoute: typeof ApiAutorizarRoute
   ApiCallbackRoute: typeof ApiCallbackRoute
   ApiDebugPagasRoute: typeof ApiDebugPagasRoute
+  ApiCronRenovarTokensRoute: typeof ApiCronRenovarTokensRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -99,6 +125,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiDebugPagasRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/cron/renovar-tokens': {
+      id: '/api/cron/renovar-tokens'
+      path: '/api/cron/renovar-tokens'
+      fullPath: '/api/cron/renovar-tokens'
+      preLoaderRoute: typeof ApiCronRenovarTokensRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -107,6 +140,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAutorizarRoute: ApiAutorizarRoute,
   ApiCallbackRoute: ApiCallbackRoute,
   ApiDebugPagasRoute: ApiDebugPagasRoute,
+  ApiCronRenovarTokensRoute: ApiCronRenovarTokensRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

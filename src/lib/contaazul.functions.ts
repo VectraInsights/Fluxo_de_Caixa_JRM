@@ -5,7 +5,7 @@ import {
   pedirToken,
   log,
   obterToken,
-  renovarToken,
+  executarRenovacaoEmLote,
   buscarSaldos,
   buscarV2,
   buscarPagas,
@@ -167,10 +167,9 @@ export const finalizarAutorizacao = createServerFn({ method: "POST" })
     return { status: "sucesso" as const, empresa: nome };
   });
 
-// Endpoint cron: renova tokens de todas as empresas.
-// Deve ser chamado por serviço externo (cron-job.org / GitHub Actions) a cada
-// 30 min, enviando header X-Cron-Secret com o mesmo valor de CRON_SECRET da
-// Vercel. Nao usar o cron nativo do Vercel no plano Hobby (limite baixo).
+// Endpoint cron (chamada manual/externa): renova tokens de todas as empresas.
+// O cron nativo da Vercel usa a rota GET /api/cron/renovar-tokens; esta server
+// function fica como alternativa para chamadas externas (ex.: cron-job.org).
 export const renovarTodosTokens = createServerFn({ method: "POST" })
   .validator((d) =>
     z
@@ -185,52 +184,8 @@ export const renovarTodosTokens = createServerFn({ method: "POST" })
       return { status: "erro" as const, mensagem: "Cron secret invalido" };
     }
 
-    const sb = getSupabase();
-    const { data: empresas } = await sb
-      .from("tokens")
-      .select("empresa,refresh_token,expires_at,status")
-      .order("empresa");
-
-    const resultados = await Promise.all(
-      (empresas || []).map(async (emp: any) => {
-        const empresa = emp.empresa as string;
-        // Pula empresas que nao tem refresh_token (nao podem renovar sozinhas)
-        if (!emp.refresh_token) {
-          return { empresa, acao: "sem_refresh_token" };
-        }
-
-        // Se expira em mais de 10 min, nao precisa renovar agora
-        if (emp.expires_at) {
-          const expiraEm = new Date(emp.expires_at).getTime();
-          const agora = Date.now();
-          if (expiraEm - agora > 10 * 60 * 1000) {
-            return { empresa, acao: "valido" };
-          }
-        }
-
-        const token = await renovarToken(empresa);
-        return {
-          empresa,
-          acao: token ? "renovado" : "falhou",
-        };
-      }),
-    );
-
-    const renovados = resultados.filter((r) => r.acao === "renovado").length;
-    const falhados = resultados.filter((r) => r.acao === "falhou").length;
-
-    log(
-      "info",
-      `cron renovacao: ${empresas?.length ?? 0} empresas, ${renovados} renovados, ${falhados} falharam`,
-    );
-
-    return {
-      status: "sucesso" as const,
-      total: empresas?.length ?? 0,
-      renovados,
-      falhados,
-      detalhes: resultados,
-    };
+    const resultado = await executarRenovacaoEmLote();
+    return { status: "sucesso" as const, ...resultado };
   });
 
 export const inspecionarRecebimentos = createServerFn({ method: "GET" })
