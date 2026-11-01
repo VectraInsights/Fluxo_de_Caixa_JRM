@@ -70,6 +70,44 @@ export async function enviarAlertaSlack(
   }
 }
 
+// Envia uma mensagem de TESTE para o Slack e reporta o resultado HTTP.
+// Chamado pelo endpoint GET /api/cron/renovar-tokens?teste=slack para validar
+// a configuracao SLACK_WEBHOOK_URL ponta a ponta (env var -> app -> webhook).
+export async function testarSlack(): Promise<{
+  ok: boolean;
+  status: number | null;
+  detalhe: string;
+}> {
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+  if (!webhookUrl) {
+    return {
+      ok: false,
+      status: null,
+      detalhe:
+        "SLACK_WEBHOOK_URL nao configurada na Vercel (verificar escopo Production e redeploy)",
+    };
+  }
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: "✅ Teste do Fluxo de Caixa JRM: alertas do Slack configurados com sucesso.",
+      }),
+    });
+    const corpo = (await res.text()).slice(0, 100);
+    log("info", `teste slack: status ${res.status}`);
+    return {
+      ok: res.ok,
+      status: res.status,
+      detalhe: res.ok ? "mensagem enviada" : corpo,
+    };
+  } catch (e) {
+    log("warn", `teste slack: ${(e as Error).message}`);
+    return { ok: false, status: null, detalhe: (e as Error).message };
+  }
+}
+
 // ------------------- Log de eventos persistente (Supabase) -------------------
 export async function gravarLogEvento({
   empresa,
