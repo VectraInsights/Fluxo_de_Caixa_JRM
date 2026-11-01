@@ -8,6 +8,7 @@ import {
   renovarToken,
   buscarSaldos,
   buscarV2,
+  buscarPagas,
   removerAcentos,
   getLogs,
   limparLogs,
@@ -17,6 +18,7 @@ import {
   gravarLogEvento,
   cronSecret,
 } from "./contaazul.server";
+import { buscarFaturamentoPlanilha, limparCachePlanilha } from "./planilha.server";
 
 export const listarEmpresas = createServerFn({ method: "GET" }).handler(async () => {
   const sb = getSupabase();
@@ -44,8 +46,38 @@ export const limparServerLogs = createServerFn({ method: "POST" }).handler(async
 
 export const limparCache = createServerFn({ method: "POST" }).handler(async () => {
   limparCacheDetalhes();
+  limparCachePlanilha();
   return { ok: true };
 });
+
+// Faturamento do periodo (planilha de cargas no Google Sheets — aba do dia, coluna VALOR).
+// Direcionado pelo REMETENTE: cada carga pertence a empresa dona do remetente.
+// "todas" soma tudo (inclui Alvarenga, que nao existe no dropdown).
+export const getFaturamento = createServerFn({ method: "GET" })
+  .validator((d) =>
+    z
+      .object({
+        empresa: z.string(),
+        data_inicio: z.string(),
+        data_fim: z.string(),
+      })
+      .parse(d),
+  )
+  .handler(
+    async ({
+      data,
+    }): Promise<{
+      total: number;
+      porDia: { data: string; total: number; clientes: { nome: string; total: number }[] }[];
+    }> => {
+      try {
+        return await buscarFaturamentoPlanilha(data.data_inicio, data.data_fim, data.empresa);
+      } catch (e) {
+        log("warn", `faturamento planilha: ${(e as Error).message}`);
+        return { total: 0, porDia: [] };
+      }
+    },
+  );
 
 // Troca o code OAuth (que volta para a raiz) por access/refresh token e salva no Supabase.
 // O parâmetro "empresa" vem do state e garante que atualizamos o registro correto.
@@ -227,6 +259,7 @@ export type DashboardData = {
     total_rec: number;
     total_desp: number;
     total_rec_boleto: number;
+    total_pagas: number;
     saldo_final: number;
   };
   avisos: string[];
@@ -277,9 +310,9 @@ export const getDashboard = createServerFn({ method: "GET" })
             `${emp}: sem token válido — reconecte a empresa na Conta Azul.`,
           );
           empresasComProblema.add(emp);
-          return { empresa: emp, bancos: [], rec: [], desp: [] };
+          return { empresa: emp, bancos: [], rec: [], desp: [], pagas: [] };
         }
-        const [sal, rec, desp] = await Promise.all([
+        const [sal, rec, desp, pagas] = await Promise.all([
           buscarSaldos(emp, token),
           buscarV2(
             emp,
@@ -293,6 +326,7 @@ export const getDashboard = createServerFn({ method: "GET" })
             data.data_inicio,
             data.data_fim,
           ),
+          buscarPagas(emp, data.data_inicio, data.data_fim),
         ]);
         const contasComFalha = sal.todas.filter((c) => c.erro);
         if (!sal.ok) {
@@ -313,7 +347,15 @@ export const getDashboard = createServerFn({ method: "GET" })
           avisos.push(`${emp}: falha ao buscar contas a pagar.`);
           empresasComProblema.add(emp);
         }
-        return { empresa: emp, bancos: sal.lista, rec: rec.dados, desp: desp.dados };
+        // Nota: falha em buscarPagas NAO vira aviso/erro de sincronizacao —
+        // e um card complementar; o token ruim ja e detectado por rec/desp.
+        return {
+          empresa: emp,
+          bancos: sal.lista,
+          rec: rec.dados,
+          desp: desp.dados,
+          pagas: pagas.dados,
+        };
       }),
     );
 
@@ -358,6 +400,12 @@ export const getDashboard = createServerFn({ method: "GET" })
       for (const i of r.desp) despPorDia[i.data] = (despPorDia[i.data] || 0) + i.valor;
     }
 
+    // Total de contas EFETIVAMENTE pagas no periodo (baixa registrada na Conta Azul)
+    let totalPagas = 0;
+    for (const r of resultados) {
+      for (const i of r.pagas) totalPagas += i.valor;
+    }
+
     const receitas: number[] = [];
     const receitas_boleto: number[] = [];
     const despesas: number[] = [];
@@ -393,6 +441,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         total_rec: Math.round(total_rec * 100) / 100,
         total_desp: Math.round(total_desp * 100) / 100,
         total_rec_boleto: Math.round(total_rec_boleto * 100) / 100,
+        total_pagas: Math.round(totalPagas * 100) / 100,
         saldo_final: saldo.length ? saldo[saldo.length - 1] : Math.round(totalBanco * 100) / 100,
       },
       avisos,
@@ -408,12 +457,14 @@ export type TituloDetalhe = {
   metodo: string | null;
   descricao: string | null;
   terceiro: string | null; // cliente (receber) ou fornecedor (pagar)
+  categoria: string | null; // categoria financeira da Conta Azul
 };
 
 export type EmpresaBreakdown = {
   empresa: string;
   receber: { total: number; titulos: TituloDetalhe[] };
   pagar: { total: number; titulos: TituloDetalhe[] };
+  pagos: { total: number; titulos: TituloDetalhe[] };
 };
 
 export const getEmpresaBreakdown = createServerFn({ method: "GET" })
@@ -437,6 +488,7 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
           metodo: i.metodo ?? null,
           descricao: i.descricao ?? null,
           terceiro: i.terceiro ?? null,
+          categoria: i.categoria ?? null,
         }))
         .sort((a, b) => a.data.localeCompare(b.data));
       const total = titulos.reduce((a, b) => a + b.valor, 0);
@@ -448,13 +500,24 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
       empresas.map(async (emp): Promise<EmpresaBreakdown> => {
         const token = await obterToken(emp);
         if (!token) {
-          return { empresa: emp, receber: { total: 0, titulos: [] }, pagar: { total: 0, titulos: [] } };
+          return {
+            empresa: emp,
+            receber: { total: 0, titulos: [] },
+            pagar: { total: 0, titulos: [] },
+            pagos: { total: 0, titulos: [] },
+          };
         }
-        const [rec, desp] = await Promise.all([
+        const [rec, desp, pagas] = await Promise.all([
           buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar", data.data_inicio, data.data_fim),
           buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar", data.data_inicio, data.data_fim),
+          buscarPagas(emp, data.data_inicio, data.data_fim),
         ]);
-        return { empresa: emp, receber: montar(rec.dados), pagar: montar(desp.dados) };
+        return {
+          empresa: emp,
+          receber: montar(rec.dados),
+          pagar: montar(desp.dados),
+          pagos: montar(pagas.dados),
+        };
       }),
     );
   });

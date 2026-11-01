@@ -208,6 +208,7 @@ export type ItemLancamento = {
   conta_id?: string;
   descricao?: string | null;
   terceiro?: string | null;
+  categoria?: string | null;
 };
 
 type EntradaCache<T> = { promessa: Promise<T>; exp: number };
@@ -747,6 +748,53 @@ function extrairDescricao(j: any): string | null {
   return null;
 }
 
+// Extrai a(s) categoria(s) financeira(s) do título.
+// Os endpoints "eventos-financeiros/.../buscar" (receber e pagar) devolvem
+// `itens.categorias = [{ id, nome }]`. Já o endpoint de parcelas
+// ("/v1/financeiro/contas-a-pagar", usado nas PAGAS) traz a categoria dentro do
+// rateio do evento: `evento.rateio = [{ id_categoria, nome_categoria }]`.
+// Então cobrimos as duas estruturas (e variantes simples) sem quebrar se algo
+// mudar: o que não vier, fica null e a coluna sai em branco.
+export function extrairCategoria(j: any): string | null {
+  if (!j) return null;
+
+  const nomes: string[] = [];
+  const add = (v: any) => {
+    if (typeof v === "string" && v.trim()) {
+      const n = v.trim();
+      if (!nomes.includes(n)) nomes.push(n);
+    }
+  };
+
+  // [{ nome }] | ["A", "B"]
+  if (Array.isArray(j.categorias)) {
+    for (const c of j.categorias) {
+      if (typeof c === "string") add(c);
+      else if (c && typeof c === "object") add(c.nome || c.nome_categoria || c.name);
+    }
+  }
+
+  // categoria: "X" | { nome: "X" }
+  add(j.categoria);
+  if (j.categoria && typeof j.categoria === "object") {
+    add(j.categoria.nome || j.categoria.nome_categoria || j.categoria.name);
+  }
+  add(j.nome_categoria);
+  add(j.categorias_nome);
+
+  // rateio (direto ou dentro do evento)
+  const rateios = Array.isArray(j.rateio)
+    ? j.rateio
+    : Array.isArray(j.evento?.rateio)
+      ? j.evento.rateio
+      : [];
+  for (const r of rateios) {
+    if (r && typeof r === "object") add(r.nome_categoria || r.nome);
+  }
+
+  return nomes.length ? nomes.join(" / ") : null;
+}
+
 async function buscarDetalheFormaPagamento(
   empresa: string,
   endpoint: string,
@@ -808,13 +856,14 @@ async function buscarViaCobrancas(
 ): Promise<{ metodo: string | null; erro?: boolean }> {
   try {
     const url = `https://api-v2.contaazul.com/v1/cobranca/buscar?recebimento_id=${recebimentoId}`;
-    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+    // Busca secundaria (metodo): poucas tentativas para nao atrasar o dashboard
+    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
     
     if (res.status === 401) {
       const novo = await renovarToken(empresa);
       if (!novo) return { metodo: null, erro: true };
       tokenRef.token = novo;
-      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1);
     }
     
     if (!res.ok) {
@@ -850,13 +899,14 @@ async function buscarParcelaDetalhesPorId(
   for (const url of urls) {
     let tentativasReauth = 0;
     try {
-      let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+      // Busca secundaria (metodo): poucas tentativas para nao atrasar o dashboard
+      let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
       if (res.status === 401 && tentativasReauth < 1) {
         const novo = await renovarToken(empresa);
         if (!novo) return { metodo: null, erro: true };
         tokenRef.token = novo;
         tentativasReauth++;
-        res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+        res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1);
       }
 
       if (!res.ok) {
@@ -906,7 +956,9 @@ async function buscarMetodoPorListaReceber(
       pagina: String(pagina),
     });
     const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-receber?${params}`;
-    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+    // Busca secundaria (classificacao de metodo): poucas tentativas para nao
+    // atrasar o dashboard em dias com muitos titulos.
+    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
 
     if (res.status === 401 && tentativasReauth < 1) {
       const novo = await renovarToken(empresa);
@@ -916,7 +968,7 @@ async function buscarMetodoPorListaReceber(
       }
       tokenRef.token = novo;
       tentativasReauth++;
-      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1);
     }
     if (!res.ok) {
       log("warn", `buscarMetodoPorListaReceber ${empresa} pg=${pagina} status=${res.status}`);
@@ -982,6 +1034,9 @@ async function buscarV2Interna(
   const tokenRef = { token: tokenInicial };
 
   let teveErroGeral = false;
+  // Falha em buscas SECUNDARIAS (metodo/forma de pagamento): os titulos ja foram
+  // obtidos, entao nao deve acender a bolinha vermelha de sincronizacao.
+  let falhaDetalhe = false;
   const brutos: {
     id: string;
     data: string;
@@ -990,6 +1045,7 @@ async function buscarV2Interna(
     conta_id?: string;
     descricao?: string | null;
     terceiro?: string | null;
+    categoria?: string | null;
   }[] = [];
   let pagina = 1;
   let tentativasReauth = 0;
@@ -1039,6 +1095,7 @@ async function buscarV2Interna(
           conta_id: i.conta_financeira_id || i.conta_id || undefined,
           descricao: extrairDescricao(i),
           terceiro: extrairTerceiro(i),
+          categoria: extrairCategoria(i),
         });
       }
     }
@@ -1055,6 +1112,7 @@ async function buscarV2Interna(
       conta_id: b.conta_id,
       descricao: b.descricao ?? null,
       terceiro: b.terceiro ?? null,
+      categoria: b.categoria ?? null,
     }));
     if (teveErroGeral) {
       log("warn", `buscarV2 finalizou com erros para ${empresa} (pagar). Dados não cacheados.`);
@@ -1065,7 +1123,9 @@ async function buscarV2Interna(
   // Para contas a receber, primeiro tenta buscar métodos via lista de contas-a-receber
   const { mapa: metodoPorId, erro: erroMetodosLista } = await buscarMetodoPorListaReceber(empresa, dataInicio, dataFim, tokenRef);
   if (erroMetodosLista) {
-    teveErroGeral = true;
+    // Falha ao classificar metodo NAO e falha de sincronizacao: os titulos em si
+    // ja foram trazidos. Vira apenas log (evita bolinha vermelha falsa).
+    falhaDetalhe = true;
   }
   log("info", `buscarV2 ${empresa} encontrou ${metodoPorId.size} itens com metodo via lista (erro=${erroMetodosLista})`);
 
@@ -1078,6 +1138,7 @@ async function buscarV2Interna(
     conta_id?: string;
     descricao?: string | null;
     terceiro?: string | null;
+    categoria?: string | null;
   }[] = new Array(brutos.length);
   let idx = 0;
   let boletos = 0;
@@ -1099,7 +1160,9 @@ async function buscarV2Interna(
         const resDet = await buscarDetalheFormaPagamento(empresa, endpoint, b.id, tokenRef);
         metodo = resDet.metodo;
         if (resDet.erro) {
-          teveErroGeral = true;
+          // Erro ao buscar APENAS o metodo de pagamento: o titulo ja esta aqui.
+          // Nao marca a consulta como falha (evita erro falso de sincronizacao).
+          falhaDetalhe = true;
         }
       } else {
         log("info", `${empresa} item ${String(b.id).slice(0, 8)} data=${b.data} valor=${b.valor} classificado de lista como: ${metodo}`);
@@ -1119,6 +1182,7 @@ async function buscarV2Interna(
         conta_id: b.conta_id,
         descricao: b.descricao ?? null,
         terceiro: b.terceiro ?? null,
+        categoria: b.categoria ?? null,
       };
     }
   }
@@ -1128,10 +1192,151 @@ async function buscarV2Interna(
     `${empresa} a_receber=${brutos.length} com_metodo=${comMetodo} boletos=${boletos}`,
   );
 
+  if (falhaDetalhe) {
+    log(
+      "warn",
+      `${empresa}: falha ao classificar forma de pagamento de parte dos titulos (dados completos, apenas metodo incompleto) — nao afeta a sincronizacao`,
+    );
+  }
   if (teveErroGeral) {
     log("warn", `buscarV2 finalizou com erros para ${empresa} (receber). Dados não cacheados.`);
   }
   return { dados: resultado, ok: !teveErroGeral };
+}
+
+// ------------------- Contas efetivamente pagas (baixadas) -------------------
+// Busca titulos de contas a pagar quitados no periodo, com o filtro
+// data_pagamento_de/_ate e status ACQUITTED (documentacao oficial Conta Azul).
+// Diferente do buscarV2 (que traz titulos EM_ABERTO pelo vencimento), aqui o que
+// interessa e a DATA REAL do pagamento.
+
+// Extrai a data de pagamento/baixa de um titulo (varias estruturas possiveis)
+function extrairDataPagamento(i: any): string | null {
+  const candidatos = [
+    i?.data_pagamento,
+    i?.data_baixa,
+    i?.baixas?.[0]?.data_pagamento,
+    i?.baixas?.[0]?.data,
+    i?.parcelas?.[0]?.data_pagamento,
+    i?.parcelas?.[0]?.data_baixa,
+  ];
+  for (const c of candidatos) {
+    if (typeof c === "string" && c.trim()) return c.slice(0, 10);
+  }
+  return null;
+}
+
+export async function buscarPagas(
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
+  const cacheKey = `pagas:${empresa}:${dataInicio}:${dataFim}`;
+  const r = await lerOuCriar(
+    listCache,
+    cacheKey,
+    LIST_TTL_MS,
+    () => buscarPagasInterna(empresa, dataInicio, dataFim),
+    (x) => x.ok,
+  );
+  return { dados: r.dados, ok: r.ok };
+}
+
+async function buscarPagasInterna(
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
+  const tokenInicial = await obterToken(empresa);
+  if (!tokenInicial) {
+    log("warn", `buscarPagas sem token: ${empresa}`);
+    return { dados: [], ok: false };
+  }
+  const tokenRef = { token: tokenInicial };
+
+  // Janela de vencimento de 12 meses: a API exige data_vencimento_de/_ate mesmo
+  // quando o filtro real e por data de pagamento (orientacao oficial Conta Azul).
+  const vencInicio = new Date(dataInicio + "T00:00:00Z");
+  vencInicio.setUTCDate(vencInicio.getUTCDate() - 365);
+  const vencFim = new Date(dataFim + "T00:00:00Z");
+  vencFim.setUTCDate(vencFim.getUTCDate() + 30);
+  const venc = {
+    data_vencimento_de: vencInicio.toISOString().slice(0, 10),
+    data_vencimento_ate: vencFim.toISOString().slice(0, 10),
+  };
+
+  // Status oficial para contas baixadas e ACQUITTED (documentacao Conta Azul);
+  // PAGO fica como fallback para contas que usem o valor antigo.
+  const statusTentativas = ["ACQUITTED", "PAGO"];
+  for (const status of statusTentativas) {
+    const params = new URLSearchParams({
+      ...venc,
+      data_pagamento_de: dataInicio,
+      data_pagamento_ate: dataFim,
+      status,
+      tamanho_pagina: "100",
+      pagina: "1",
+    });
+    const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar?${params}`;
+    const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
+
+    if (res.status === 401) {
+      const novo = await renovarToken(empresa);
+      if (novo) {
+        const res2 = await fetchComRetry(url, { headers: { Authorization: `Bearer ${novo}` } }, 1);
+        const r = await processarPagasResposta(res2, empresa, dataInicio, dataFim, status);
+        if (r.ok) return r;
+        continue;
+      }
+    }
+    const r = await processarPagasResposta(res, empresa, dataInicio, dataFim, status);
+    if (r.ok) return r;
+  }
+  return { dados: [], ok: false };
+}
+
+async function processarPagasResposta(
+  res: Response,
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+  status: string,
+): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
+  if (!res.ok) {
+    log("warn", `buscarPagas ${empresa} status=${res.status} (filtro status=${status})`);
+    return { dados: [], ok: false };
+  }
+  const j: any = await res.json();
+  const itens: any[] = j.itens || (Array.isArray(j) ? j : []);
+
+  const brutos: ItemLancamento[] = [];
+  for (const i of itens) {
+    const pago = (i.pago as number) || 0;
+    const total = (i.total as number) || 0;
+    const valor = pago > 0 ? pago : total;
+    if (!i.id || valor <= 0) continue;
+    const data =
+      extrairDataPagamento(i) ||
+      (i.data_pagamento ? String(i.data_pagamento).slice(0, 10) : null) ||
+      (i.data_vencimento ? String(i.data_vencimento).slice(0, 10) : null);
+    if (!data) continue;
+    brutos.push({
+      data,
+      valor,
+      metodo: null,
+      conta_id: i.conta_financeira_id || i.conta_id || undefined,
+      descricao: extrairDescricao(i),
+      terceiro: extrairTerceiro(i),
+      categoria: extrairCategoria(i),
+    });
+  }
+
+  const total = brutos.reduce((a, b) => a + b.valor, 0);
+  log(
+    "info",
+    `buscarPagas ${empresa}: ${brutos.length} titulos pagos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)})`,
+  );
+  return { dados: brutos, ok: true };
 }
 
 // Inspeciona o detalhe de N itens — usado pelo painel de debug pra ver o JSON cru.

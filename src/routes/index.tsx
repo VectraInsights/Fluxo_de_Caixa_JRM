@@ -19,7 +19,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
-  Wallet,
   TrendingUp,
   TrendingDown,
   RefreshCw,
@@ -29,15 +28,20 @@ import {
   Barcode,
   Link2,
   CheckCircle2,
+  Banknote,
+  FileText,
+  FileSpreadsheet,
 } from "lucide-react";
 import {
   listarEmpresas,
   getDashboard,
   limparCache,
   getEmpresaBreakdown,
+  getFaturamento,
   finalizarAutorizacao,
   type TituloDetalhe,
 } from "@/lib/contaazul.functions";
+import { ordenarTitulos, exportarXlsx, exportarPdf } from "@/lib/exportar";
 import { useQueryClient } from "@tanstack/react-query";
 // using public SVG logo
 const logo = "/jrmicon.png";
@@ -77,6 +81,28 @@ function todayLocalISO(offsetDays = 0) {
 function shiftDays(iso: string, dias: number): string {
   const d = new Date(iso + "T00:00:00");
   d.setDate(d.getDate() + dias);
+  const tz = d.getTimezoneOffset();
+  return new Date(d.getTime() - tz * 60000).toISOString().slice(0, 10);
+}
+
+// Primeiro dia do mes da data informada (YYYY-MM-DD)
+function primeiroDiaDoMes(iso: string): string {
+  return `${iso.slice(0, 7)}-01`;
+}
+
+// Ultimo dia do mes da data informada (YYYY-MM-DD)
+function ultimoDiaDoMes(iso: string): string {
+  const d = new Date(iso + "T00:00:00");
+  const ultimo = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  const tz = ultimo.getTimezoneOffset();
+  return new Date(ultimo.getTime() - tz * 60000).toISOString().slice(0, 10);
+}
+
+// Soma/subtrai meses (mantem o dia 1 para nao "pular" mes)
+function shiftMeses(iso: string, meses: number): string {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(1);
+  d.setMonth(d.getMonth() + meses);
   const tz = d.getTimezoneOffset();
   return new Date(d.getTime() - tz * 60000).toISOString().slice(0, 10);
 }
@@ -140,6 +166,10 @@ function Dashboard() {
   >("ocioso");
   const [oauthMsg, setOauthMsg] = useState("");
 
+  // Estado da exportação das listas (PDF / XLSX)
+  const [exportando, setExportando] = useState<null | "pdf" | "xlsx">(null);
+  const [erroExportacao, setErroExportacao] = useState<string | null>(null);
+
     useEffect(() => {
     const saved = localStorage.getItem("theme");
     if (saved === "light") setTheme("light");
@@ -154,8 +184,19 @@ function Dashboard() {
 
   useEffect(() => {
     if (intervalo === "personalizado") return;
+    const hoje = todayLocalISO(0);
+    if (intervalo === "mes") {
+      // Mês atual: do dia 1 até o último dia do mês corrente
+      const inicio = primeiroDiaDoMes(hoje);
+      const fim = ultimoDiaDoMes(hoje);
+      setDataInicio(inicio);
+      setDataFim(fim);
+      setPendingInicio(inicio);
+      setPendingFim(fim);
+      return;
+    }
     const dias = parseInt(intervalo);
-    const inicio = todayLocalISO(0);
+    const inicio = hoje;
     const fim = todayLocalISO(dias);
     setDataInicio(inicio);
     setDataFim(fim);
@@ -174,6 +215,7 @@ function Dashboard() {
   const getDashboardFn = useServerFn(getDashboard);
   const limparCacheFn = useServerFn(limparCache);
   const getEmpresaBreakdownFn = useServerFn(getEmpresaBreakdown);
+  const getFaturamentoFn = useServerFn(getFaturamento);
   const finalizarAutorizacaoFn = useServerFn(finalizarAutorizacao);
   const queryClient = useQueryClient();
 
@@ -227,7 +269,7 @@ function Dashboard() {
     queryFn: () => listarEmpresasFn(),
     staleTime: Infinity,
     gcTime: Infinity,
-    refetchOnMount: false,
+    refetchOnMount: true,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
@@ -246,7 +288,7 @@ function Dashboard() {
     staleTime: Infinity,
     gcTime: Infinity,
     placeholderData: keepPreviousData,
-    refetchOnMount: false,
+    refetchOnMount: true,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
@@ -259,7 +301,20 @@ function Dashboard() {
     staleTime: Infinity,
     gcTime: Infinity,
     placeholderData: keepPreviousData,
-    refetchOnMount: false,
+    refetchOnMount: true,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+
+  // Faturamento do periodo (planilha de cargas — aba do dia, direcionado por remetente).
+  const { data: faturamento, isFetching: isFaturamentoFetching, refetch: refetchFaturamento } = useQuery({
+    queryKey: ["faturamento", empresa, dataInicio, dataFim],
+    queryFn: () =>
+      getFaturamentoFn({ data: { empresa, data_inicio: dataInicio, data_fim: dataFim } }),
+    enabled: !!dataInicio && !!dataFim,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnMount: true,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
@@ -278,14 +333,26 @@ function Dashboard() {
       refetch();
     }
     
-    // 4. Refresca a lista de empresas
+    // 4. Refresca a lista de empresas e o faturamento (planilha)
     refetchEmpresas();
+    refetchFaturamento();
   }
 
-  // Setas de navegação quando o filtro está em um único dia (ex.: "Hoje")
+  // Setas de navegação: quando o filtro está em um único dia (ex.: "Hoje") navegam
+  // por dia; quando está em "Mês atual", navegam de mês para mês.
   const diaUnico = dataInicio === dataFim;
+  const intervaloMes = intervalo === "mes";
 
   function navegarDia(delta: number) {
+    if (intervaloMes) {
+      const novoInicio = shiftMeses(dataInicio, delta);
+      const novoFim = ultimoDiaDoMes(novoInicio);
+      setDataInicio(novoInicio);
+      setDataFim(novoFim);
+      setPendingInicio(novoInicio);
+      setPendingFim(novoFim);
+      return;
+    }
     const novo = shiftDays(dataInicio, delta);
     setDataInicio(novo);
     setDataFim(novo);
@@ -340,14 +407,12 @@ function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, mostrarTodos, bancosPermitidos.join("|")]);
 
-  const saldoAtual = bancosFiltrados.reduce((acc, b) => acc + b.saldo, 0);
   const totalSaldoBancos = bancosFiltrados.reduce((sum, b) => sum + Math.max(b.saldo, 0), 0);
   const totalRec = data?.resumo.total_rec || 0;
   const totalRecBoleto = data?.resumo.total_rec_boleto || 0;
   const totalRecOutros = Math.max(0, totalRec - totalRecBoleto);
   const totalDesp = Math.abs(data?.resumo.total_desp || 0);
-  const saldoPrevisto = saldoAtual + totalRec - totalDesp;
-  const positivo = saldoPrevisto >= saldoAtual;
+  const totalPagas = Math.abs(data?.resumo.total_pagas || 0);
 
   const chartData = useMemo(() => {
     if (!data) return [];
@@ -365,17 +430,44 @@ function Dashboard() {
     const round = (n: number) => Math.round(n * 100) / 100;
     const receber: (TituloDetalhe & { empresa: string })[] = [];
     const pagar: (TituloDetalhe & { empresa: string })[] = [];
+    const pagos: (TituloDetalhe & { empresa: string })[] = [];
     for (const eb of breakdown) {
       for (const t of eb.receber.titulos) receber.push({ ...t, empresa: eb.empresa });
       for (const t of eb.pagar.titulos) pagar.push({ ...t, empresa: eb.empresa });
+      for (const t of eb.pagos?.titulos ?? []) pagos.push({ ...t, empresa: eb.empresa });
     }
-    receber.sort((a, b) => a.data.localeCompare(b.data));
-    pagar.sort((a, b) => a.data.localeCompare(b.data));
+    // Ordenacao cronologica (data), depois por valor e por descricao (alfabetica)
     return {
-      receber: { total: round(receber.reduce((a, b) => a + b.valor, 0)), titulos: receber },
-      pagar: { total: round(pagar.reduce((a, b) => a + b.valor, 0)), titulos: pagar },
+      receber: { total: round(receber.reduce((a, b) => a + b.valor, 0)), titulos: ordenarTitulos(receber) },
+      pagar: { total: round(pagar.reduce((a, b) => a + b.valor, 0)), titulos: ordenarTitulos(pagar) },
+      pagos: { total: round(pagos.reduce((a, b) => a + b.valor, 0)), titulos: ordenarTitulos(pagos) },
     };
   }, [breakdown]);
+
+  // Exporta as tres listas (A Receber, A Pagar, Pagos) para PDF ou XLSX
+  async function exportar(formato: "pdf" | "xlsx") {
+    if (!consolidado || exportando) return;
+    setExportando(formato);
+    setErroExportacao(null);
+    try {
+      const relatorio = {
+        empresa,
+        dataInicio,
+        dataFim,
+        receber: consolidado.receber.titulos,
+        pagar: consolidado.pagar.titulos,
+        pagos: consolidado.pagos.titulos,
+        faturamento: faturamento ?? { total: 0, porDia: [] },
+      };
+      if (formato === "pdf") await exportarPdf(relatorio);
+      else await exportarXlsx(relatorio);
+    } catch (e) {
+      console.error("Falha ao exportar listas:", e);
+      setErroExportacao("Não foi possível gerar o arquivo. Tente novamente.");
+    } finally {
+      setExportando(null);
+    }
+  }
 
 
 
@@ -490,6 +582,7 @@ function Dashboard() {
           <option value="7">Próximos 7 dias</option>
           <option value="15">Próximos 15 dias</option>
           <option value="30">Próximos 30 dias</option>
+          <option value="mes">Mês atual</option>
           <option value="personalizado">Personalizado</option>
         </Select>
 
@@ -552,20 +645,20 @@ function Dashboard() {
           sidebarOpen ? "ml-[280px]" : "ml-0"
         }`}
       >
-        <div className="mx-auto max-w-[1400px] p-6 lg:p-10">
+        <div className="mx-auto max-w-[1400px] p-6 lg:p-6">
           {/* Header */}
-          <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
+          <div className="flex items-start justify-between mb-4 gap-4 flex-wrap">
             <div className="pl-12 lg:pl-0">
               <h1 className="font-display text-3xl lg:text-4xl font-bold tracking-tight">
                 Fluxo de Caixa
               </h1>
               <p className="text-sm text-muted-foreground mt-1 flex items-center gap-2">
-                {diaUnico && (
+                {(diaUnico || intervaloMes) && (
                   <button
                     onClick={() => navegarDia(-1)}
                     className="rounded-full border border-border bg-card/60 backdrop-blur p-1.5 text-foreground/70 hover:text-foreground hover:border-brand/40 transition-all"
-                    title="Dia anterior"
-                    aria-label="Dia anterior"
+                    title={intervaloMes ? "Mês anterior" : "Dia anterior"}
+                    aria-label={intervaloMes ? "Mês anterior" : "Dia anterior"}
                   >
                     <ChevronLeft className="h-3.5 w-3.5" />
                   </button>
@@ -574,12 +667,12 @@ function Dashboard() {
                   Projeção de {dataInicio.split("-").reverse().join("/")} até{" "}
                   {dataFim.split("-").reverse().join("/")}
                 </span>
-                {diaUnico && (
+                {(diaUnico || intervaloMes) && (
                   <button
                     onClick={() => navegarDia(1)}
                     className="rounded-full border border-border bg-card/60 backdrop-blur p-1.5 text-foreground/70 hover:text-foreground hover:border-brand/40 transition-all"
-                    title="Próximo dia"
-                    aria-label="Próximo dia"
+                    title={intervaloMes ? "Próximo mês" : "Próximo dia"}
+                    aria-label={intervaloMes ? "Próximo mês" : "Próximo dia"}
                   >
                     <ChevronRight className="h-3.5 w-3.5" />
                   </button>
@@ -732,88 +825,51 @@ function Dashboard() {
             </div>
           )}
 
-          {/* KPI cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
-            {!data && isFetching ? (
-              Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
+          {/* KPI cards: Faturamento, Entradas, Saídas, Pagos */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
+            {faturamento === undefined && isFaturamentoFetching ? (
+              <SkeletonCard />
             ) : (
-              <>
-                <KpiCard
-                  label="Saldo Atual"
-                  valor={saldoAtual}
-                  icon={<Wallet className="h-5 w-5" />}
-                  gradient="from-brand/30 via-brand/10 to-transparent"
-                  accent="text-brand"
-                />
-                <KpiCard
-                  label="Entradas Previstas"
-                  valor={totalRec}
-                  icon={<TrendingUp className="h-5 w-5" />}
-                  gradient="from-success/30 via-success/10 to-transparent"
-                  accent="text-success"
-                />
-                <KpiCard
-                  label="Saídas Previstas"
-                  valor={-totalDesp}
-                  icon={<TrendingDown className="h-5 w-5" />}
-                  gradient="from-destructive/30 via-destructive/10 to-transparent"
-                  accent="text-destructive"
-                />
-                <KpiCard
-                  label="Saldo Previsto"
-                  valor={saldoPrevisto}
-                  icon={
-                    positivo ? (
-                      <ArrowUpRight className="h-5 w-5" />
-                    ) : (
-                      <ArrowDownRight className="h-5 w-5" />
-                    )
-                  }
-                  gradient={
-                    positivo
-                      ? "from-success/30 via-success/10 to-transparent"
-                      : "from-destructive/30 via-destructive/10 to-transparent"
-                  }
-                  accent={positivo ? "text-success" : "text-destructive"}
-                />
-              </>
+              <KpiCard
+                label="Faturamento"
+                valor={faturamento?.total ?? 0}
+                icon={<Banknote className="h-5 w-5" />}
+                gradient="from-success/30 via-success/10 to-transparent"
+                accent="text-success"
+              />
             )}
-          </div>
-
-          {/* Breakdown de recebimentos por meio de pagamento */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
             {!data && isFetching ? (
-              <>
-                <SkeletonCard />
-                <SkeletonCard />
-              </>
+              <SkeletonCard />
             ) : (
-              <>
-                <KpiCard
-                  label="A Receber via Boleto"
-                  valor={totalRecBoleto}
-                  icon={<Barcode className="h-5 w-5" />}
-                  gradient="from-brand-2/30 via-brand-2/10 to-transparent"
-                  accent="text-brand-2"
-                  sub={
-                    totalRec > 0
-                      ? `${((totalRecBoleto / totalRec) * 100).toFixed(1)}% do total a receber`
-                      : "Sem recebimentos no período"
-                  }
-                />
-                <KpiCard
-                  label="A Receber - Outros Meios"
-                  valor={totalRecOutros}
-                  icon={<TrendingUp className="h-5 w-5" />}
-                  gradient="from-success/30 via-success/10 to-transparent"
-                  accent="text-success"
-                  sub={
-                    totalRec > 0
-                      ? `${((totalRecOutros / totalRec) * 100).toFixed(1)}% do total a receber`
-                      : "Sem recebimentos no período"
-                  }
-                />
-              </>
+              <KpiCard
+                label="Entradas Previstas"
+                valor={totalRec}
+                icon={<TrendingUp className="h-5 w-5" />}
+                gradient="from-success/30 via-success/10 to-transparent"
+                accent="text-success"
+              />
+            )}
+            {!data && isFetching ? (
+              <SkeletonCard />
+            ) : (
+              <KpiCard
+                label="Saídas Previstas"
+                valor={-totalDesp}
+                icon={<TrendingDown className="h-5 w-5" />}
+                gradient="from-destructive/30 via-destructive/10 to-transparent"
+                accent="text-destructive"
+              />
+            )}
+            {!data && isFetching ? (
+              <SkeletonCard />
+            ) : (
+              <KpiCard
+                label="Contas Pagas"
+                valor={-totalPagas}
+                icon={<TrendingDown className="h-5 w-5" />}
+                gradient="from-destructive/30 via-destructive/10 to-transparent"
+                accent="text-destructive"
+              />
             )}
           </div>
 
@@ -822,10 +878,10 @@ function Dashboard() {
 
 
           {/* Chart */}
-          <div className="relative rounded-2xl border border-border bg-card/60 backdrop-blur-xl p-6 shadow-xl overflow-hidden">
+          <div className="relative rounded-2xl border border-border bg-card/60 backdrop-blur-xl p-5 shadow-xl overflow-hidden">
             <div className="absolute inset-0 bg-gradient-to-br from-brand/5 via-transparent to-brand-2/5 pointer-events-none" />
             <div className="relative">
-              <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+              <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
                 <div>
                   <h2 className="font-display text-lg font-semibold">Projeção Diária</h2>
                   <p className="text-xs text-muted-foreground mt-0.5">
@@ -839,7 +895,7 @@ function Dashboard() {
                 </div>
               </div>
 
-              <div className="h-[420px]">
+              <div className="h-[300px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <ComposedChart data={chartData} stackOffset="sign" margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
                     <defs>
@@ -891,28 +947,62 @@ function Dashboard() {
             </div>
           </div>
 
-          {/* Detalhamento consolidado: a receber / a pagar de todas as empresas */}
+          {/* Detalhamento consolidado: a receber / a pagar / pagos de todas as empresas */}
           <div className="mt-6 rounded-2xl border border-border bg-card/60 backdrop-blur-xl p-6 shadow-xl">
-            <div className="mb-5">
-              <h2 className="font-display text-lg font-semibold">A Receber e A Pagar</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {empresa === "todas"
-                  ? "Todas as empresas consolidadas no período selecionado"
-                  : `Empresa selecionada: ${empresa}`}
-              </p>
+            <div className="mb-5 flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <h2 className="font-display text-lg font-semibold">A Receber, A Pagar e Pagos</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {empresa === "todas"
+                    ? "Todas as empresas consolidadas no período selecionado"
+                    : `Empresa selecionada: ${empresa}`}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {erroExportacao && (
+                  <span className="text-[11px] text-destructive">{erroExportacao}</span>
+                )}
+                <button
+                  onClick={() => exportar("pdf")}
+                  disabled={!consolidado || exportando !== null}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background/60 px-3 py-1.5 text-xs font-medium text-foreground/80 hover:text-foreground hover:border-brand/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Exportar as listas em PDF"
+                >
+                  {exportando === "pdf" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <FileText className="h-3.5 w-3.5" />
+                  )}
+                  PDF
+                </button>
+                <button
+                  onClick={() => exportar("xlsx")}
+                  disabled={!consolidado || exportando !== null}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background/60 px-3 py-1.5 text-xs font-medium text-foreground/80 hover:text-foreground hover:border-brand/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Exportar as listas em Excel (XLSX)"
+                >
+                  {exportando === "xlsx" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <FileSpreadsheet className="h-3.5 w-3.5" />
+                  )}
+                  XLSX
+                </button>
+              </div>
             </div>
 
             {!breakdown ? (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                <SkeletonCard />
                 <SkeletonCard />
                 <SkeletonCard />
               </div>
             ) : consolidado ? (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-success">
-                      A Receber — Consolidado
+                      A Receber
                     </span>
                     <span className="text-sm font-bold tabular-nums text-success">
                       {fmt(consolidado.receber.total)}
@@ -923,13 +1013,24 @@ function Dashboard() {
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-destructive">
-                      A Pagar — Consolidado
+                      A Pagar
                     </span>
                     <span className="text-sm font-bold tabular-nums text-destructive">
                       {fmt(consolidado.pagar.total)}
                     </span>
                   </div>
                   <TitulosLista itens={consolidado.pagar.titulos} accent="text-destructive" />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-destructive">
+                      Pagos
+                    </span>
+                    <span className="text-sm font-bold tabular-nums text-destructive">
+                      {fmt(consolidado.pagos.total)}
+                    </span>
+                  </div>
+                  <TitulosLista itens={consolidado.pagos.titulos} accent="text-destructive" />
                 </div>
               </div>
             ) : (
