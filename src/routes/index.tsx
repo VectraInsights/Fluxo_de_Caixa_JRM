@@ -785,13 +785,49 @@ function Dashboard() {
                   </option>
                 ))}
               </Select>
+
+              {/* Aviso: o mes escolhido ja tem planilha salva — substituir? */}
+              {(() => {
+                const existente = planilhasMes.find(
+                  (p) => p.mes === pendente.mes && p.cadastrada,
+                );
+                if (!existente) return null;
+                const mesmaUrl =
+                  (existente.url ?? "").trim() === pendente.url.trim();
+                return (
+                  <p className="rounded-lg border border-warning/40 bg-warning/10 p-2 text-[11px] leading-relaxed text-foreground/90">
+                    ⚠️ {mesmaUrl ? (
+                      <>
+                        Esta planilha <b>já está registrada</b> em{" "}
+                        <b>{rotuloMes(pendente.mes)}</b>. Confirmar re-registra
+                        (atualiza) os dados.
+                      </>
+                    ) : (
+                      <>
+                        Já existe <b>outra planilha registrada</b> em{" "}
+                        <b>{rotuloMes(pendente.mes)}</b>:{" "}
+                        <span className="break-all text-muted-foreground">
+                          {existente.url}
+                        </span>
+                        . Ao confirmar, ela será{" "}
+                        <b>substituída</b> por esta.
+                      </>
+                    )}
+                  </p>
+                );
+              })()}
+
               <div className="flex gap-2">
                 <button
                   onClick={confirmarRegistro}
                   disabled={salvandoPlanilha}
                   className="flex-1 rounded-xl border border-brand/40 bg-brand/10 px-3 py-1.5 text-xs font-semibold hover:bg-brand/20 transition-colors disabled:opacity-60"
                 >
-                  {salvandoPlanilha ? "Registrando..." : `Registrar em ${rotuloMes(pendente.mes)}`}
+                  {salvandoPlanilha
+                    ? "Registrando..."
+                    : planilhasMes.find((p) => p.mes === pendente.mes && p.cadastrada)
+                      ? `Substituir em ${rotuloMes(pendente.mes)}`
+                      : `Registrar em ${rotuloMes(pendente.mes)}`}
                 </button>
                 <button
                   onClick={() => setPendente(null)}
