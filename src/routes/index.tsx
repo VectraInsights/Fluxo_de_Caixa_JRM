@@ -231,11 +231,8 @@ function Dashboard() {
   const registrarPlanilhaFn = useServerFn(registrarPlanilhaMes);
   const queryClient = useQueryClient();
 
-  // Cadastro da planilha de faturamento do mes (uma planilha nova por mes).
-  const [mesPlanilha, setMesPlanilha] = useState<string>(() => {
-    const h = new Date();
-    return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, "0")}`;
-  });
+  // Cadastro da planilha de faturamento: registra a planilha do MES VISADO no
+  // painel (mes de dataInicio). Uma planilha nova por mes.
   const [urlPlanilha, setUrlPlanilha] = useState("");
   const [salvandoPlanilha, setSalvandoPlanilha] = useState(false);
   const [msgPlanilha, setMsgPlanilha] = useState<{ tipo: "ok" | "erro"; texto: string } | null>(null);
@@ -340,6 +337,9 @@ function Dashboard() {
     refetchOnReconnect: false,
   });
 
+  // Mes visado no painel (mes de dataInicio): e a ele que a URL colada aponta.
+  const mesVisao = dataInicio.slice(0, 7);
+
   // Registro das planilhas de faturamento por mes (jan/2026 a dez/2030).
   const { data: planilhasMes = [], refetch: refetchPlanilhas } = useQuery({
     queryKey: ["planilhas-mes"],
@@ -351,22 +351,23 @@ function Dashboard() {
     refetchOnReconnect: false,
   });
 
-  // Ao trocar o mes no seletor, preenche a URL ja cadastrada (se houver).
+  // Ao trocar o mes visado, preenche a URL ja cadastrada (se houver).
   useEffect(() => {
-    const row = planilhasMes.find((p) => p.mes === mesPlanilha);
+    const row = planilhasMes.find((p) => p.mes === mesVisao);
     setUrlPlanilha(row?.url ?? "");
-  }, [mesPlanilha, planilhasMes]);
+    setMsgPlanilha(null);
+  }, [mesVisao, planilhasMes]);
 
-  // Registra a URL da planilha do mes selecionado no Supabase.
+  // Registra a URL da planilha do mes visado no Supabase.
   async function salvarPlanilha() {
     const url = urlPlanilha.trim();
     if (!url) return;
     setSalvandoPlanilha(true);
     setMsgPlanilha(null);
     try {
-      const r = await registrarPlanilhaFn({ data: { mes: mesPlanilha, url } });
+      const r = await registrarPlanilhaFn({ data: { mes: mesVisao, url } });
       if (r.status === "sucesso") {
-        setMsgPlanilha({ tipo: "ok", texto: `Planilha de ${rotuloMes(mesPlanilha)} registrada.` });
+        setMsgPlanilha({ tipo: "ok", texto: `Planilha de ${rotuloMes(mesVisao)} registrada.` });
         await refetchPlanilhas();
         refetchFaturamento(); // o faturamento do periodo pode ter passado a existir
       } else {
@@ -690,20 +691,7 @@ function Dashboard() {
 
         <SectionLabel className="mt-8">Planilhas de Faturamento</SectionLabel>
         <div className="space-y-2">
-          <Label>Mês da planilha</Label>
-          <Select value={mesPlanilha} onChange={(e) => setMesPlanilha(e.target.value)}>
-            {planilhasMes.length === 0 ? (
-              <option value={mesPlanilha}>{rotuloMes(mesPlanilha)}</option>
-            ) : (
-              planilhasMes.map((p) => (
-                <option key={p.mes} value={p.mes}>
-                  {rotuloMes(p.mes)} {p.cadastrada ? "✓" : "— pendente"}
-                </option>
-              ))
-            )}
-          </Select>
-
-          <Label>URL da planilha do mês</Label>
+          <Label>URL da planilha de {rotuloMes(mesVisao)}</Label>
           <Input
             placeholder="https://docs.google.com/spreadsheets/d/..."
             value={urlPlanilha}
@@ -712,6 +700,7 @@ function Dashboard() {
           <button
             onClick={salvarPlanilha}
             disabled={salvandoPlanilha || !urlPlanilha.trim()}
+            title="A planilha precisa estar compartilhada como 'qualquer pessoa com o link' (leitor)"
             className="flex w-full items-center justify-center gap-2 rounded-xl border border-brand/40 bg-brand/10 px-3 py-2 text-xs font-semibold hover:bg-brand/20 transition-colors disabled:opacity-60"
           >
             {salvandoPlanilha ? (
@@ -719,7 +708,7 @@ function Dashboard() {
             ) : (
               <FileSpreadsheet className="h-3.5 w-3.5" />
             )}
-            {planilhasMes.find((p) => p.mes === mesPlanilha)?.cadastrada
+            {planilhasMes.find((p) => p.mes === mesVisao)?.cadastrada
               ? "Atualizar planilha do mês"
               : "Registrar planilha do mês"}
           </button>
@@ -732,11 +721,6 @@ function Dashboard() {
               {msgPlanilha.texto}
             </p>
           )}
-          <p className="text-[10px] text-muted-foreground leading-relaxed">
-            Ao criar a planilha nova no Google Drive, copie a URL e registre aqui. Ela precisa
-            estar compartilhada como <span className="text-foreground/70">"qualquer pessoa com o
-            link"</span> (leitor) para o painel conseguir ler.
-          </p>
         </div>
       </aside>
 
