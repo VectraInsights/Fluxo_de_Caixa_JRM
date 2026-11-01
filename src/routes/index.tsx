@@ -687,6 +687,50 @@ function Dashboard() {
               </button>
             </div>
           )}
+          
+          {/* Banner visível de empresas com erro definitivo (token revogado/credenciais inválidas) */}
+          {(data?.avisos?.length ?? 0) > 0 && (
+            <div className="mb-5 rounded-xl border border-destructive/30 bg-destructive/10 p-4">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+                <div className="text-sm">
+                  <div className="font-semibold mb-1">Falha na sincronização com a Conta Azul</div>
+                  <div className="text-muted-foreground">
+                    Os valores abaixo podem estar zerados ou incompletos porque não foi possível
+                    obter os dados dessas empresas:
+                  </div>
+                  <ul className="mt-2 space-y-1 text-muted-foreground">
+                    {data!.avisos.map((a, i) => (
+                      <li key={i} className="flex items-start gap-1.5">
+                        <span className="shrink-0 text-destructive">•</span>
+                        <span>{a}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="mt-2 text-muted-foreground">
+                    <span className="font-medium">Como resolver:</span> se a mensagem indicar token
+                    inválido ou expirado, clique em{" "}
+                    <span className="font-medium text-foreground">Conectar Conta Azul</span> na
+                    lateral para reautenticar a empresa e gerar um token novo.
+                  </div>
+                  {(data?.empresas_com_problema?.length ?? 0) > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {data!.empresas_com_problema.map((emp) => (
+                        <a
+                          key={emp}
+                          href={`/api/autorizar?empresa=${encodeURIComponent(emp)}`}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/20 transition-colors"
+                        >
+                          <Link2 className="h-3 w-3" />
+                          Conectar {emp}
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* KPI cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-5">

@@ -5,6 +5,7 @@ import {
   pedirToken,
   log,
   obterToken,
+  renovarToken,
   buscarSaldos,
   buscarV2,
   removerAcentos,
@@ -12,6 +13,9 @@ import {
   limparLogs,
   inspecionarPrimeirosRecebimentos,
   limparCacheDetalhes,
+  enviarAlertaSlack,
+  gravarLogEvento,
+  cronSecret,
 } from "./contaazul.server";
 
 export const listarEmpresas = createServerFn({ method: "GET" }).handler(async () => {
@@ -81,6 +85,9 @@ export const finalizarAutorizacao = createServerFn({ method: "POST" })
     const dados: any = await tokenRes.json();
     const access = dados.access_token as string;
     const refresh = dados.refresh_token as string;
+    const agora = new Date().toISOString();
+    const expiresIn = dados.expires_in ? dados.expires_in * 1000 : 3600 * 1000;
+    const expiresAt = new Date(Date.now() + expiresIn).toISOString();
 
     // Nome da empresa: usa o que veio no state; senão busca na API da Conta Azul.
     let nome = (data.empresa || "").trim();
@@ -96,7 +103,6 @@ export const finalizarAutorizacao = createServerFn({ method: "POST" })
     if (!nome) nome = "NOVA_EMPRESA";
 
     const sb = getSupabase();
-    const agora = new Date().toISOString();
 
     // Atualiza o registro existente pela empresa; se não existir, insere novo.
     const { data: atualizado } = await sb
@@ -106,6 +112,7 @@ export const finalizarAutorizacao = createServerFn({ method: "POST" })
         refresh_token: refresh,
         status: "ATIVO",
         mensagem_erro: null,
+        expires_at: expiresAt,
         updated_at: agora,
       })
       .eq("empresa", nome)
@@ -118,6 +125,7 @@ export const finalizarAutorizacao = createServerFn({ method: "POST" })
         refresh_token: refresh,
         status: "ATIVO",
         mensagem_erro: null,
+        expires_at: expiresAt,
         updated_at: agora,
       });
     }
@@ -125,6 +133,72 @@ export const finalizarAutorizacao = createServerFn({ method: "POST" })
     limparCacheDetalhes();
 
     return { status: "sucesso" as const, empresa: nome };
+  });
+
+// Endpoint cron: renova tokens de todas as empresas.
+// Deve ser chamado por serviço externo (cron-job.org / GitHub Actions) a cada
+// 30 min, enviando header X-Cron-Secret com o mesmo valor de CRON_SECRET da
+// Vercel. Nao usar o cron nativo do Vercel no plano Hobby (limite baixo).
+export const renovarTodosTokens = createServerFn({ method: "POST" })
+  .validator((d) =>
+    z
+      .object({
+        cron_secret: z.string().optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const secreto = cronSecret();
+    if (secreto && data.cron_secret !== secreto) {
+      return { status: "erro" as const, mensagem: "Cron secret invalido" };
+    }
+
+    const sb = getSupabase();
+    const { data: empresas } = await sb
+      .from("tokens")
+      .select("empresa,refresh_token,expires_at,status")
+      .order("empresa");
+
+    const resultados = await Promise.all(
+      (empresas || []).map(async (emp: any) => {
+        const empresa = emp.empresa as string;
+        // Pula empresas que nao tem refresh_token (nao podem renovar sozinhas)
+        if (!emp.refresh_token) {
+          return { empresa, acao: "sem_refresh_token" };
+        }
+
+        // Se expira em mais de 10 min, nao precisa renovar agora
+        if (emp.expires_at) {
+          const expiraEm = new Date(emp.expires_at).getTime();
+          const agora = Date.now();
+          if (expiraEm - agora > 10 * 60 * 1000) {
+            return { empresa, acao: "valido" };
+          }
+        }
+
+        const token = await renovarToken(empresa);
+        return {
+          empresa,
+          acao: token ? "renovado" : "falhou",
+        };
+      }),
+    );
+
+    const renovados = resultados.filter((r) => r.acao === "renovado").length;
+    const falhados = resultados.filter((r) => r.acao === "falhou").length;
+
+    log(
+      "info",
+      `cron renovacao: ${empresas?.length ?? 0} empresas, ${renovados} renovados, ${falhados} falharam`,
+    );
+
+    return {
+      status: "sucesso" as const,
+      total: empresas?.length ?? 0,
+      renovados,
+      falhados,
+      detalhes: resultados,
+    };
   });
 
 export const inspecionarRecebimentos = createServerFn({ method: "GET" })

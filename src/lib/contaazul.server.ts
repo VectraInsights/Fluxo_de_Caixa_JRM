@@ -36,6 +36,106 @@ export function basicAuth(): string {
 const ENDPOINT_TOKEN_V2 = "https://api-v2.contaazul.com/oauth/token";
 const ENDPOINT_TOKEN_LEGADO = "https://auth.contaazul.com/oauth2/token";
 
+// Secreto opcional para proteger o endpoint cron de renovacao.
+// Deve ser configurado como env var CRON_SECRET na Vercel e enviado
+// pelo serviço externo (cron-job.org / GitHub Actions) no header
+// X-Cron-Secret.
+export function cronSecret(): string | undefined {
+  return process.env.CRON_SECRET || undefined;
+}
+
+// ------------------- Alerta Slack (webhook) -------------------
+// Envia mensagem para um canal do Slack via Incoming Webhook.
+// Configurar env var SLACK_WEBHOOK_URL na Vercel com a URL gerada no Slack.
+export async function enviarAlertaSlack(
+  empresa: string,
+  evento: string,
+  erro: string | null,
+  acao: string,
+): Promise<void> {
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+  if (!webhookUrl) return;
+
+  const erroTxt = erro ? `\n*Erro:* ${erro}` : "";
+  try {
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: `🚨 *Falha de token — Fluxo de Caixa JRM*\n*Empresa:* ${empresa}\n*Evento:* ${evento}${erroTxt}\n*Ação:* ${acao}`,
+      }),
+    });
+  } catch {
+    // falha silenciosa: nao deixa o fluxo principal quebrar por causa do Slack
+  }
+}
+
+// ------------------- Log de eventos persistente (Supabase) -------------------
+export async function gravarLogEvento({
+  empresa,
+  evento,
+  erro,
+  detalhe,
+  acao_necessaria,
+}: {
+  empresa: string;
+  evento: string;
+  erro?: string | null;
+  detalhe?: string | null;
+  acao_necessaria?: string | null;
+}): Promise<void> {
+  try {
+    const sb = getSupabase();
+    await sb.from("logs_eventos").insert({
+      empresa,
+      evento,
+      erro: erro ?? null,
+      detalhe: detalhe ?? null,
+      acao_necessaria: acao_necessaria ?? null,
+    });
+  } catch {
+    // falha silenciosa: nao quebra o fluxo principal por causa do log
+  }
+}
+
+// ------------------- Lock distribuído (Supabase) -------------------
+// Evita que duas instancias serverless renovem o refresh_token da mesma
+// empresa ao mesmo tempo (o refresh_token e rotacionado pela Conta Azul).
+const LOCK_TTL_SEGUNDOS = 300; // 5 minutos
+
+async function tentarObterLock(empresa: string, lockedBy: string): Promise<boolean> {
+  const sb = getSupabase();
+  const agora = new Date().toISOString();
+  const { data: existente } = await sb
+    .from("token_locks")
+    .select("locked_at")
+    .eq("empresa", empresa)
+    .maybeSingle();
+  if (!existente) {
+    // ainda nao tem lock: tenta criar
+    const { error } = await sb.from("token_locks").insert({
+      empresa,
+      locked_at: agora,
+      locked_by: lockedBy,
+    });
+    return !error;
+  }
+  const lockEm = new Date(existente.locked_at).getTime();
+  const expirado = Date.now() - lockEm > LOCK_TTL_SEGUNDOS * 1000;
+  if (!expirado) return false;
+  // lock expirado: tenta adquirir novamente
+  const { error: err2 } = await sb
+    .from("token_locks")
+    .update({ locked_at: agora, locked_by: lockedBy })
+    .eq("empresa", empresa);
+  return !err2;
+}
+
+async function liberarLock(empresa: string): Promise<void> {
+  const sb = getSupabase();
+  await sb.from("token_locks").delete().eq("empresa", empresa);
+}
+
 export async function pedirToken(params: Record<string, string>): Promise<Response> {
   const tentar = (url: string) =>
     fetch(url, {
@@ -204,7 +304,7 @@ async function executarRefresh(empresa: string): Promise<string | null> {
   const sb = getSupabase();
   const { data } = await sb
     .from("tokens")
-    .select("refresh_token,access_token,updated_at")
+    .select("refresh_token,access_token,updated_at,expires_at")
     .eq("empresa", empresa)
     .limit(1);
   if (!data || !data.length) return null;
@@ -215,46 +315,123 @@ async function executarRefresh(empresa: string): Promise<string | null> {
     if (idadeMs < 30_000 && data[0].access_token) return data[0].access_token;
   }
 
-  log("info", `renovando token: ${empresa}`);
-  const res = await pedirToken({
-    grant_type: "refresh_token",
-    refresh_token: refresh,
-  });
-
-  if (res.ok) {
-    const j: any = await res.json();
-    await sb
-      .from("tokens")
-      .update({
-        access_token: j.access_token,
-        refresh_token: j.refresh_token,
-        status: "ATIVO",
-        mensagem_erro: null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("empresa", empresa);
-    log("info", `token renovado: ${empresa}`);
-    return j.access_token;
+  // Lock distribuído: evita renovacoes concorrentes entre instancias serverless.
+  const lockedBy = `${crypto.randomUUID()}-${Date.now()}`;
+  const lockObtido = await tentarObterLock(empresa, lockedBy);
+  if (!lockObtido) {
+    log("warn", `refresh ja em andamento por outra instancia: ${empresa}`);
+    return null;
   }
 
-  const txt = await res.text();
-  const corpoLower = txt.toLowerCase();
-  const ehInvalidGrant =
-    res.status === 400 && (corpoLower.includes("invalid_grant") || corpoLower.includes("invalid_token"));
-  if (ehInvalidGrant) {
-    await sb
-      .from("tokens")
-      .update({
-        status: "ERRO",
-        mensagem_erro: `Token revogado: ${res.status} ${txt.slice(0, 200)}`,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("empresa", empresa);
-    log("error", `token revogado: ${empresa} -> ${txt.slice(0, 200)}`);
-  } else {
+  try {
+    log("info", `renovando token: ${empresa}`);
+    const res = await pedirToken({
+      grant_type: "refresh_token",
+      refresh_token: refresh,
+    });
+
+    if (res.ok) {
+      const j: any = await res.json();
+      const agora = new Date().toISOString();
+      const expiresIn = j.expires_in ? j.expires_in * 1000 : 3600 * 1000;
+      const expiresAt = new Date(Date.now() + expiresIn).toISOString();
+
+      await sb
+        .from("tokens")
+        .update({
+          access_token: j.access_token,
+          refresh_token: j.refresh_token,
+          status: "ATIVO",
+          mensagem_erro: null,
+          expires_at: expiresAt,
+          updated_at: agora,
+        })
+        .eq("empresa", empresa);
+      log("info", `token renovado: ${empresa}`);
+      await gravarLogEvento({
+        empresa,
+        evento: "token_renovado",
+        acao_necessaria: null,
+      });
+      return j.access_token;
+    }
+
+    const txt = await res.text();
+    const corpoLower = txt.toLowerCase();
+
+    // Falha definitiva: acesso revogado ou refresh token invalido/inexistente.
+    // Nao ha reativacao automatica: e necessario reconectar via OAuth.
+    const ehDefinitivo =
+      res.status === 400 &&
+      (corpoLower.includes("access_revoked") ||
+        corpoLower.includes("invalid_refresh_token") ||
+        corpoLower.includes("invalid_grant"));
+
+    // Falha por credenciais do aplicativo (invalid_client): nao e problema da empresa.
+    const ehInvalidoClient = corpoLower.includes("invalid_client");
+
+    if (ehDefinitivo) {
+      await sb
+        .from("tokens")
+        .update({
+          status: "ERRO",
+          mensagem_erro: `Token revogado: ${res.status} ${txt.slice(0, 300)}`,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("empresa", empresa);
+      log("error", `token revogado: ${empresa} -> ${txt.slice(0, 300)}`);
+      await gravarLogEvento({
+        empresa,
+        evento: "token_revogado",
+        erro: txt.slice(0, 300),
+        acao_necessaria: "reconectar_via_oauth",
+      });
+      await enviarAlertaSlack(
+        empresa,
+        "token_revogado",
+        txt.slice(0, 200),
+        "Reconectar a empresa via botao 'Conectar Conta Azul'",
+      );
+      return null;
+    }
+
+    if (ehInvalidoClient) {
+      await sb
+        .from("tokens")
+        .update({
+          status: "ERRO",
+          mensagem_erro: `Credenciais do aplicativo invalidas: ${res.status} ${txt.slice(0, 300)}`,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("empresa", empresa);
+      log("error", `client invalido: ${empresa} -> ${txt.slice(0, 300)}`);
+      await gravarLogEvento({
+        empresa,
+        evento: "client_invalido",
+        erro: txt.slice(0, 300),
+        acao_necessaria: "verificar_CONTA_AZUL_CLIENT_ID_SECRET_na_Vercel",
+      });
+      await enviarAlertaSlack(
+        empresa,
+        "client_invalido",
+        txt.slice(0, 200),
+        "Verificar variaveis CONTA_AZUL_CLIENT_ID e CONTA_AZUL_CLIENT_SECRET na Vercel",
+      );
+      return null;
+    }
+
+    // Falha transitória (rede, 429, 5xx): nao marca ERRO, apenas avisa.
     log("warn", `refresh falhou (transitório): ${empresa} ${res.status}`);
+    await gravarLogEvento({
+      empresa,
+      evento: "refresh_transitorio",
+      erro: `${res.status} ${txt.slice(0, 200)}`,
+      acao_necessaria: "tentar_novamente_em_alguns_minutos",
+    });
+    return null;
+  } finally {
+    await liberarLock(empresa);
   }
-  return null;
 }
 
 export async function renovarToken(empresa: string): Promise<string | null> {
@@ -271,12 +448,25 @@ export async function obterToken(empresa: string): Promise<string | null> {
   const sb = getSupabase();
   const { data } = await sb
     .from("tokens")
-    .select("access_token,status")
+    .select("access_token,status,expires_at")
     .eq("empresa", empresa)
     .limit(1);
   if (data && data.length) {
-    if (data[0].status === "ERRO") return renovarToken(empresa);
-    if (data[0].access_token) return data[0].access_token;
+    const linha = data[0];
+    if (linha.status === "ERRO") return renovarToken(empresa);
+
+    // Renovacao proativa: se o access_token esta prestes a expirar (menos de 5 min),
+    // renova antes de usar, evitando que o usuario veja dados zerados.
+    if (linha.expires_at) {
+      const agora = Date.now();
+      const expiraEm = new Date(linha.expires_at).getTime();
+      const margemSeguranca = 5 * 60 * 1000; // 5 minutos
+      if (expiraEm - agora < margemSeguranca) {
+        return renovarToken(empresa);
+      }
+    }
+
+    if (linha.access_token) return linha.access_token;
   }
   return renovarToken(empresa);
 }
