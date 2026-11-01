@@ -18,11 +18,31 @@ export const Route = createFileRoute("/api/cron/renovar-tokens")({
         const auth = request.headers.get("authorization");
         const xSecret = request.headers.get("x-cron-secret");
         const qSecret = url.searchParams.get("secret");
+
+        // Diagnostico: sem CRON_SECRET no ambiente Production, nada autentica.
+        // Responde 500 (e nao 401) para distinguir "env var ausente" de
+        // "valor errado" durante o teste manual.
+        if (!secreto) {
+          return Response.json(
+            {
+              erro:
+                "CRON_SECRET nao configurado no ambiente Production da Vercel (adicionar em Settings > Environment Variables com escopo Production e redeploy)",
+            },
+            { status: 500 },
+          );
+        }
+
         const autorizado =
-          !!secreto &&
-          (auth === `Bearer ${secreto}` || xSecret === secreto || qSecret === secreto);
+          auth === `Bearer ${secreto}` || xSecret === secreto || qSecret === secreto;
         if (!autorizado) {
-          return new Response("Unauthorized", { status: 401 });
+          return Response.json(
+            {
+              erro: "secret invalido",
+              // ajuda a comparar sem revelar o valor esperado
+              tamanho_esperado: secreto.length,
+            },
+            { status: 401 },
+          );
         }
 
         if (url.searchParams.get("teste") === "slack") {
