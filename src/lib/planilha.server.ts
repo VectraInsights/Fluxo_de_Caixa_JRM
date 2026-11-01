@@ -303,10 +303,30 @@ export async function buscarFaturamentoPlanilha(
 }
 
 // ------------------- Leitura do nome (titulo) da planilha -------------------
-// Dois metodos, em ordem: (1) cabecalho Content-Disposition do export CSV —
-// leve, nao baixa o conteudo; (2) tag <title> da pagina /edit. Ambos exigem
-// que a planilha esteja compartilhada como "qualquer pessoa com o link".
+// Dois metodos, em ordem: (1) tag <title> da pagina /edit — retorna EXATAMENTE
+// o nome do documento ("10.26 OUTUBRO - Google Planilhas" -> "10.26 OUTUBRO");
+// (2) cabecalho Content-Disposition do export CSV — mais leve, mas o nome
+// vem no formato "<documento> - <primeira aba>", incluindo a aba no sufixo.
+// Ambos exigem planilha compartilhada como "qualquer pessoa com o link".
 export async function lerTituloPlanilha(idPlanilha: string): Promise<string | null> {
+  try {
+    const res = await fetch(`https://docs.google.com/spreadsheets/d/${idPlanilha}/edit`, {
+      signal: AbortSignal.timeout(15_000),
+      redirect: "follow",
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const m = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      // So aceita titulos de pagina de documento real (sufixo "Google Planilhas/
+      // Sheets/Drive"); paginas de login/consenso caem no metodo 2.
+      if (m && /\s-\sGoogle\s(Planilhas|Sheets|Drive)\s*$/i.test(m[1])) {
+        const nome = m[1].replace(/\s*-\s*Google\s+(Planilhas|Sheets|Drive)\s*$/i, "").trim();
+        if (nome) return nome;
+      }
+    }
+  } catch {
+    // tenta o proximo metodo
+  }
   try {
     const res = await fetch(
       `https://docs.google.com/spreadsheets/d/${idPlanilha}/export?format=csv`,
@@ -317,24 +337,10 @@ export async function lerTituloPlanilha(idPlanilha: string): Promise<string | nu
     const simples = disp.match(/filename="?([^";]+)"?/i);
     const bruto = estrela ? estrela[1] : simples ? simples[1] : null;
     if (bruto) {
+      // Pode incluir a primeira aba no sufixo ("<documento> - <aba>.csv");
+      // o parser de mes continua funcionando nesse formato.
       const nome = decodeURIComponent(bruto).replace(/\.csv$/i, "").trim();
       if (nome) return nome;
-    }
-  } catch {
-    // tenta o proximo metodo
-  }
-  try {
-    const res = await fetch(`https://docs.google.com/spreadsheets/d/${idPlanilha}/edit`, {
-      signal: AbortSignal.timeout(15_000),
-      redirect: "follow",
-    });
-    if (res.ok) {
-      const html = await res.text();
-      const m = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-      if (m) {
-        const nome = m[1].replace(/\s*-\s*Google\s+(Planilhas|Sheets|Drive)\s*$/i, "").trim();
-        if (nome) return nome;
-      }
     }
   } catch {
     // sem titulo
