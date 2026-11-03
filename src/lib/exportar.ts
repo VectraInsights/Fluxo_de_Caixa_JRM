@@ -816,17 +816,17 @@ export async function exportarPdf(rel: RelatorioListas) {
 
     autoTable(doc, {
       startY: y,
-      head: [["Data", "Descrição", item.rotuloTerceiro, "Categoria", "Empresa", "Método", "Valor (R$)"]],
+      // Sem a coluna "Categoria" no PDF impresso (ela continua no XLSX).
+      head: [["Data", "Descrição", item.rotuloTerceiro, "Empresa", "Método", "Valor (R$)"]],
       body: lista.map((t) => [
         formatarDataBR(t.data),
         tituloDaLinha(t),
         subtituloDaLinha(t),
-        t.categoria || "",
         t.empresa || "",
         t.metodo || "",
         formatarValor(t.valor),
       ]),
-      foot: [["", "TOTAL", "", "", "", "", formatarValor(total)]],
+      foot: [["", "TOTAL", "", "", "", formatarValor(total)]],
       theme: "grid",
       styles: { fontSize: 8, cellPadding: 2, overflow: "linebreak" },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
@@ -835,12 +835,11 @@ export async function exportarPdf(rel: RelatorioListas) {
       // "maxWidth" existe no runtime do jspdf-autotable, mas nao nos tipos da v5.
       columnStyles: {
         0: { maxWidth: 18 },
-        1: { maxWidth: 54 },
-        2: { maxWidth: 40 },
-        3: { maxWidth: 30 },
-        4: { maxWidth: 34 },
-        5: { maxWidth: 22 },
-        6: { maxWidth: 28, halign: "right" },
+        1: { maxWidth: 56 },
+        2: { maxWidth: 42 },
+        3: { maxWidth: 32 },
+        4: { maxWidth: 22 },
+        5: { maxWidth: 28, halign: "right" },
       } as any,
       margin: { top: 30, bottom: 16, left: margem, right: margem },
     });
