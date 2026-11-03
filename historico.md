@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `93cd843` | feat: PDF de "Todas as Empresas" separado por empresa — cada empresa em um bloco proprio, com Faturamento, Recebidos e Pagos na mesma folha enquanto houver espaco | 03/11/2026 |
 | `348dde5` | docs: documenta o recebimento de titulos quitados (card Contas Recebidas, lista Recebidos) e o novo recorte do PDF impresso | 03/11/2026 |
 | `852ac2d` | feat: puxa as contas efetivamente recebidas (titulos quitados) — card "Contas Recebidas", lista "Recebidos" no rodape e secao "Recebidos" nos relatorios; o PDF impresso passa a ter apenas Faturamento, Recebidos e Pagos (sem A Receber, A Pagar e sem o card de Resultado) | 03/11/2026 |
 | `969164a` | feat: aviso no painel de confirmacao quando o mes escolhido ja tem planilha salva (mesma URL = re-registro; URL diferente = substituir, mostrando a URL atual) | 01/11/2026 |
@@ -241,6 +242,10 @@ Regra pedida e aplicada em `exportarPdf` (`src/lib/exportar.ts`):
 > (Faturamento, A Receber, A Pagar, Pagos) e 4 cards; agora o PDF impresso tem
 > **apenas Faturamento, Recebidos e Pagos** (3 cards, 3 secoes). "A Receber" e
 > "A Pagar" continuam existindo **apenas no XLSX** (e na tela).
+>
+> **Nota 2:** no filtro **"Todas as Empresas"** a paginação acima **nao se aplica**:
+> o PDF sai separado por empresa, com as secoes da mesma empresa fluindo na mesma
+> folha (ver secao 3.8).
 
 Como o `autoTable` pagina sozinho quando a tabela nao cabe, "ultima pagina da secao"
 pode ser varias paginas adiante: a proxima secao sempre comeca na pagina seguinte
@@ -393,6 +398,67 @@ continua usando a lista completa `ROTULOS`.
 endpoint/status, a quantidade de itens e as datas de recebimento. Como as variaveis
 de ambiente (tokens da Conta Azul) so existem na Vercel, esta e a forma de conferir
 em producao qual endpoint/status responde de verdade.
+
+---
+
+## 3.8 PDF de "Todas as Empresas" separado por empresa
+
+Antes, o PDF do filtro "Todas as Empresas" trazia **tudo junto**: um bloco de
+Faturamento (de todas as empresas), um bloco de Recebidos (de todas) e um de Pagos
+(de todas). Agora o relatorio sai **separado por empresa**: cada empresa tem um
+bloco proprio, com os **lancamentos dela juntos** — Faturamento, Recebidos e Pagos
+da mesma empresa ficam **na mesma folha enquanto ainda houver espaco**.
+
+**Exemplo (4 empresas):**
+
+```
+Pagina 1  |  cabecalho + 3 cards (totais consolidados)
+           |  [ALVARENGA]        Faturamento R$ 500
+Pagina 2  |  [JRM TRANSPORTES]  Recebidos R$ 90 | Pagos R$ 120
+Pagina 3  |  [JUVENAL TRANSPORTES] Faturamento | Recebidos | Pagos  (tudo na mesma folha)
+Pagina 4  |  [ROSANGELA TRANSPORTES] Faturamento | Recebidos | Pagos (tudo na mesma folha)
+```
+
+**Regras:**
+
+- Cada empresa comeca numa **pagina nova** (a primeira continua na pagina 1, logo
+  apos os cards de totais, que continuam **consolidados**).
+- Dentro do bloco da empresa as secoes **fluem**: a proxima secao so pula de
+  pagina se nao couber a faixa + um pedaco da tabela (`garantirEspaco`, minimo
+  de 42 mm). Sem essa checagem a faixa da secao ficaria "orfa" no rodape da
+  pagina anterior.
+- Secao vazia e **pulada** (empresa sem Recebidos nao ganha tabela vazia).
+- As empresas saem em **ordem alfabetica**.
+- A faixa da empresa mostra o nome e, a direita, os totais dela
+  (Faturamento / Recebidos / Pagos).
+
+**Como as empresas sao reconciliadas:**
+
+| Origem | Campo | Exemplo |
+|--------|-------|---------|
+| Faturamento (planilha) | chave do "dono", nova em `clientes[].empresa` | `JUVENAL`, `ROSANGELA`, `ALVARENGA`, `OUTROS` |
+| Listas de titulos | `empresa` cadastrada | `Juvenal Transportes` |
+
+`chaveEmpresa()` (em `exportar.ts`) normaliza o nome (sem acento, sem caixa) e
+aplica a **mesma regra de prefixo** do filtro da planilha
+(`filtroDaEmpresa` em `planilha.server.ts`): "Juvenal Transportes" -> `JUVENAL`,
+"Rosângela Transportes" -> `ROSANGELA`. Empresa sem regra (ex.: "JRM Transportes")
+fica com a propria chave normalizada. O nome exibido e o **cadastrado** quando
+existe; senao, um nome amigavel (`Alvarenga`, `Rosângela`, `Juvenal`, `Outros`).
+
+**Mudancas no codigo:**
+
+- `planilha.server.ts`: `clientes[].empresa` passa a trazer a chave do dono.
+- `exportar.ts`: `FaturamentoExport` ganhou `clientes[].empresa`; novas funcoes
+  `chaveEmpresa()`, `agruparPorEmpresa()` e o tipo `GrupoEmpresa`; o desenho das
+  secoes foi extraido para `secaoFaturamento()` / `secaoTitulos()` (usadas nos
+  dois modos).
+- `contaazul.functions.ts`: tipo de retorno do `getFaturamento` atualizado.
+
+**Empresa unica (fora do "Todas"):** **nao mudou** — segue a paginação fixa
+aprovada (Faturamento na pagina 1 com o cabecalho/cards, cada secao seguinte
+numa pagina nova). O XLSX **nao muda** (continua com as 6 abas e o Resumo
+consolidado).
 
 ---
 
