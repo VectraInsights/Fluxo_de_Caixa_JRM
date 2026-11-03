@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `ed2510f` | docs: registra a remocao das colunas Categoria, Empresa e Metodo condicional no PDF impresso | 03/11/2026 |
 | `b116335` | fix: remove a coluna Empresa do PDF impresso (ja sai separado por empresa) e torna a coluna Metodo condicional | 03/11/2026 |
 | `68f7924` | fix: remove a coluna Categoria do PDF impresso (mantida no XLSX) | 03/11/2026 |
 | `6820f4d` | docs: documenta a separacao por empresa no PDF de Todas as Empresas | 03/11/2026 |
