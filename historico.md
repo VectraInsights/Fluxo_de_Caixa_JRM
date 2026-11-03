@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `f190684` | feat: filtra os titulos (A Receber, A Pagar, Pagos e Recebidos) pelos bancos exibidos no painel — lista de bancos compartilhada entre frontend e backend | 03/11/2026 |
 | `ed2510f` | docs: registra a remocao das colunas Categoria, Empresa e Metodo condicional no PDF impresso | 03/11/2026 |
 | `b116335` | fix: remove a coluna Empresa do PDF impresso (ja sai separado por empresa) e torna a coluna Metodo condicional | 03/11/2026 |
 | `68f7924` | fix: remove a coluna Categoria do PDF impresso (mantida no XLSX) | 03/11/2026 |
@@ -478,6 +479,72 @@ consolidado).
 
 ---
 
+## 3.9 Titulos filtrados pelos bancos exibidos no painel
+
+Antes, os titulos vinham **sem filtro de banco**: o `buscarPagas` (e o
+`buscarRecebidas`) chamavam a API só com `data_vencimento_*`,
+`data_pagamento_*` e `status` — entao **entravam titulos de qualquer conta
+financeira** da empresa, mesmo de bancos que **nao aparecem no painel**. A lista
+de bancos permitidos vivia so no frontend (`bancosPorEmpresa`), e so servia para
+esconder contas da exibicao — nunca filtrava os titulos.
+
+Agora os titulos sao filtrados **pelo backend**, usando a **mesma lista** de
+bancos exibida no painel.
+
+**Fonte unica da verdade:** `src/lib/bancos.ts` (novo), importado pelo frontend
+**e** pelo backend:
+
+| Empresa | Bancos exibidos |
+|---------|-----------------|
+| LGP Transportes | Bradesco, Itau, Sicoob 3049, Sicoob 3109 |
+| Rosangela Transportes | Bradesco, Itau, Sicoob 3049, Sicoob 3109 |
+| JRM Transportes | Bradesco, Itau, Sicoob 3049, Sicoob 3109 |
+| demais (ex.: Juvenal) | Itau, Sicoob, Sicoob 3109, Bradesco (padrao) |
+
+Vocabulario do modulo: `bancosPermitidosDaEmpresa(empresa)`,
+`bancoPermitido(nome, permitido)`, `normalizarBanco(nome)`. Lista de bancos
+**vazia** = mostrar todos (e nao filtrar titulo nenhum).
+
+**Como o filtro funciona:**
+
+1. `buscarSaldos` passou a devolver o **id** da conta financeira
+   (`{ id, nome, saldo }`), que antes era descartado.
+2. `extrairContaId(titulo)` acha a conta do titulo em varias estruturas:
+   `conta_financeira_id`, `conta_id`, `evento.conta_financeira_id`,
+   `evento.conta_id`, `evento.conta.id`, `baixas[0].*`, `parcelas[0].*`.
+3. `mapaContaParaBanco(contas)` monta o mapa `conta_id -> nome do banco`.
+4. `filtrarPorBancos(titulos, mapa, permitidos)` aplica o filtro.
+
+**Regra (conservadora — nunca perde dinheiro da lista sem querer):**
+
+| Situacao do titulo | Resultado |
+|--------------------|-----------|
+| Banco conhecido e **permitido** | mantido |
+| Banco conhecido e **nao permitido** | **removido** |
+| Sem conta financeira | mantido (nao da para saber o banco) |
+| Conta que nao esta no mapa | mantido (banco desconhecido) |
+
+**Onde o filtro e aplicado (backend):** em `getDashboard` **e** em
+`getEmpresaBreakdown` — assim os **cards** (Entradas Previstas, Saidas
+Previstas, Contas Pagas, Contas Recebidas), o **grafico** e as **listas do
+rodape** usam exatamente o mesmo conjunto de titulos. O `getEmpresaBreakdown`
+passou a chamar `buscarSaldos` (que ja e chamado pelo `getDashboard`, entao
+normalmente vem do cache de 2 min).
+
+Um `log("info", ...)` registra quantos titulos foram removidos por empresa.
+
+**Diagnostico:** as rotas `/api/debug-pagas` e `/api/debug-recebidos` passaram a
+mostrar `bancos_exibidos`, `contas_financeiras` (id + nome) e, por titulo,
+`conta_id` / `banco` / `banco_exibido` — para conferir em producao se a API
+devolve o vinculo com o banco e se o filtro esta pegando.
+
+> **Nota:** `BANCOS_PERMITIDOS` (em `contaazul.server.ts`) e `mapaContaBanco`
+> (em `contaazul.functions.ts`) eram **codigo morto** — declarados e nunca
+> usados. O `mapaContaBanco` ainda nao podia funcionar (os objetos de conta
+> nao tinham `id`). Ambos foram removidos/substituidos por este filtro.
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
@@ -511,7 +578,8 @@ Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 ## 5. Estrutura de Arquivos Relevantes
 
 - `src/lib/contaazul.functions.ts` — `getDashboard`, `getEmpresaBreakdown`, `listarEmpresas`, `inspecionarRecebimentos`, `finalizarAutorizacao` (troca o `code` OAuth por token)
-- `src/lib/contaazul.server.ts` — `obterToken`, `renovarToken`, `pedirToken` (endpoint v2 com fallback legado), `buscarSaldos`, `buscarV2`, `buscarPagas`, `buscarRecebidas`, `basicAuth`, `getSupabase`
+- `src/lib/contaazul.server.ts` — `obterToken`, `renovarToken`, `pedirToken` (endpoint v2 com fallback legado), `buscarSaldos`, `buscarV2`, `buscarPagas`, `buscarRecebidas`, `filtrarPorBancos`, `mapaContaParaBanco`, `extrairContaId`, `basicAuth`, `getSupabase`
+- `src/lib/bancos.ts` — lista de bancos exibidos por empresa (`BANCOS_POR_EMPRESA`, `bancosPermitidosDaEmpresa`, `bancoPermitido`); compartilhada entre o frontend e o filtro dos titulos no backend
 - `src/lib/exportar.ts` — `exportarPdf` (cards, secoes e paginacao do PDF) e `construirXlsx` (aba Resumo + abas das listas); `ROTULOS` (todas) e `ROTULOS_PDF` (so Recebidos e Pagos)
 - `src/routes/index.tsx` — Dashboard frontend, indicador de sync, KPI cards, projeto diaria, deteccao do `code` OAuth na raiz e botoes "Conectar Conta Azul"
 - `src/routes/api/autorizar.ts` — Redirecionamento para login da Conta Azul (`state` = nome da empresa)

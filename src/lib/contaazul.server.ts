@@ -571,18 +571,6 @@ export async function executarRenovacaoEmLote(): Promise<{
   };
 }
 
-const BANCOS_PERMITIDOS = [
-  "ITAU",
-  "BRADESCO",
-  "SICOOB",
-  "SICOOB 3109",
-  "SICREDI",
-  "SANTANDER",
-  "BANCO DO BRASIL",
-  "NUBANK",
-  "INTER",
-];
-
 // Uma conta financeira retornada pela API da Conta Azul, com o motivo de ela
 // potencialmente nao aparecer no painel (saldo zerado ou falha ao buscar saldo).
 export type ContaSaldo = { id: string; nome: string; saldo: number; erro: boolean };
