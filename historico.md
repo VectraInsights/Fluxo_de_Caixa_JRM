@@ -64,6 +64,8 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `b116335` | fix: remove a coluna Empresa do PDF impresso (ja sai separado por empresa) e torna a coluna Metodo condicional | 03/11/2026 |
+| `68f7924` | fix: remove a coluna Categoria do PDF impresso (mantida no XLSX) | 03/11/2026 |
 | `6820f4d` | docs: documenta a separacao por empresa no PDF de Todas as Empresas | 03/11/2026 |
 | `93cd843` | feat: PDF de "Todas as Empresas" separado por empresa — cada empresa em um bloco proprio, com Faturamento, Recebidos e Pagos na mesma folha enquanto houver espaco | 03/11/2026 |
 | `348dde5` | docs: documenta o recebimento de titulos quitados (card Contas Recebidas, lista Recebidos) e o novo recorte do PDF impresso | 03/11/2026 |
@@ -200,9 +202,21 @@ Os dois formatos que a API usa dependem do endpoint:
 O que nao vier vira `null` e a coluna sai **em branco** — nunca derruba a lista.
 
 **Passagem ate o relatorio:** `ItemLancamento.categoria` → `TituloDetalhe.categoria`
-(`contaazul.functions.ts`) → coluna "Categoria" do **PDF** e do **XLSX**, sempre entre
+(`contaazul.functions.ts`) → coluna "Categoria" do **XLSX**, sempre entre
 *Cliente/Fornecedor* e *Empresa*. Nas listas da tela a coluna **nao** foi adicionada
 (pedido: apenas nos relatorios).
+
+> **Notas (03/11/2026) — colunas do PDF impresso:**
+> - **"Categoria" foi REMOVIDA** do PDF. A coluna continua no **XLSX**, onde e util
+>   para filtrar/pivotar, e a extracao no backend (`extrairCategoria`) segue igual.
+> - **"Empresa" tambem foi REMOVIDA** — o relatorio ja vem separado por empresa
+>   (secao 3.8), entao ela era repetida em todas as linhas.
+> - **"Metodo" virou condicional**: so aparece se a lista tiver algum metodo
+>   preenchido (nos Pagos e Recebidos ela e **sempre vazia**, porque esses titulos
+>   vem sem metodo).
+>
+> No PDF impresso restam, no maximo, **4 colunas**: **Data, Descricao,
+> Cliente/Fornecedor e Valor**.
 
 ---
 
