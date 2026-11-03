@@ -62,6 +62,18 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `969164a` | feat: aviso no painel de confirmacao quando o mes escolhido ja tem planilha salva (mesma URL = re-registro; URL diferente = substituir, mostrando a URL atual) | 01/11/2026 |
+| `e0f3dd7` | feat: seletor de mes no painel de confirmacao do registro de planilha (pré-selecionado com a sugestao do sistema, jan/2026 a dez/2030, meses ja cadastrados com ✓) | 01/11/2026 |
+| `8ceca5c` | fix: titulo da planilha lido pela pagina /edit traz so o nome do documento (sem a primeira aba no sufixo); export CSV vira fallback | 01/11/2026 |
+| `1435de9` | feat: cadastro de planilha em dois passos — le o nome da planilha e deduz o mes/ano ("10.26 OUTUBRO" -> out/2026), pergunta ao usuario e so registra apos confirmacao (fallback: mes visado) | 01/11/2026 |
+| `9485f3d` | feat: sidebar "Planilhas de Faturamento" simplificada para apenas campo de URL + botao (mes = mes visado no painel) | 01/11/2026 |
+| `083f56d` | fix: diagnostico do cron distingue CRON_SECRET ausente no ambiente (500) de valor invalido (401) | 01/11/2026 |
+| `670b3c6` | feat: endpoint de teste do Slack no cron (?teste=slack) para validar alertas ponta a ponta | 01/11/2026 |
+| `db92f2e` | feat: tabela `planilhas_mes` (upsert por PK mes, jan/2026 a dez/2030) e cadastro da URL da planilha de faturamento por mes na sidebar | 01/11/2026 |
+| `1671afd` | feat: cron nativo diario na Vercel (`vercel.json`, 13h UTC ~ 10h BRT) para renovacao em lote de tokens via `/api/cron/renovar-tokens` | 01/11/2026 |
+| `6191824` | fix: renovacao proativa de token, lock distribuido, log de eventos (`gravarLogEvento`), alerta Slack (`enviarAlertaSlack`/`testarSlack`) e endpoint cron de renovacao em lote (`executarRenovacaoEmLote`) | 01/11/2026 |
+| `d695a95` | docs: documenta o novo topo do PDF (titulo curto e card do Resultado a direita) | 30/10/2026 |
+| `755b280` | docs: preenche hash a784dc8 no historico | 30/10/2026 |
 | `a784dc8` | feat: titulo do PDF so "Fluxo de Caixa" e card do Resultado no topo a direita (verde/vermelho conforme o sinal) | 30/10/2026 |
 | `8ca4056` | feat: relatorios voltam a ter os 4 cards e ganham o valor "Resultado" (A Receber − A Pagar) no PDF e na aba Resumo do XLSX | 30/10/2026 |
 | `5cd6da6` | feat: resumo dos relatorios (cards do PDF e aba Resumo do XLSX) passa a trazer apenas A Receber e A Pagar | 30/10/2026 |
@@ -342,6 +354,9 @@ Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 - `src/routes/index.tsx` — Dashboard frontend, indicador de sync, KPI cards, projeto diaria, deteccao do `code` OAuth na raiz e botoes "Conectar Conta Azul"
 - `src/routes/api/autorizar.ts` — Redirecionamento para login da Conta Azul (`state` = nome da empresa)
 - `src/routes/api/callback.ts` — Legado (usa `redirect_uri` `/api/callback`, que nao e a cadastrada). **Nao e usado pelo fluxo atual.**
+- `src/routes/api/cron/renovar-tokens.ts` — Rota do cron diario da Vercel (renovacao em lote de tokens); aceita `Authorization: Bearer CRON_SECRET`, header `X-Cron-Secret` ou `?secret=`; `?teste=slack` envia mensagem de teste ao Slack
+- `src/lib/planilha.server.ts` — `buscarFaturamentoPlanilha`, `lerTituloPlanilha` (nome da planilha via `/edit`, fallback export CSV), `mesDoTitulo` (deduz `YYYY-MM` do nome)
+- `src/lib/contaazul.server.ts` — `executarRenovacaoEmLote`, `testarSlack`/`enviarAlertaSlack` (webhook `SLACK_WEBHOOK_URL`), `obterToken` com renovacao proativa, lock distribuido
 
 ---
 
@@ -359,6 +374,20 @@ Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 | `status` | text | `ATIVO` ou `ERRO` |
 | `mensagem_erro` | text | Mensagem de erro se status = ERRO |
 | `updated_at` | timestampz | Ultima atualizacao |
+
+### Tabela `planilhas_mes`
+
+Cadastro da planilha de faturamento de **cada mes** (migration `20261101000001_planilhas_mes.sql`, executada no Supabase com seed de 60 meses: jan/2026 a dez/2030).
+
+| Coluna | Tipo | Descricao |
+|--------|------|-----------|
+| `mes` | text (PK) | Mes no formato `YYYY-MM` (ex: `2026-11`) |
+| `url` | text | URL da planilha do Google Sheets |
+| `id_planilha` | text | Id extraido da URL (`/spreadsheets/d/<id>`) |
+| `cadastrada` | boolean | `true` quando ha URL registrada para o mes |
+| `created_at` / `updated_at` | timestampz | Auditoria |
+
+**Registro:** o fluxo na sidebar le o **nome da planilha** (`lerTituloPlanilha`, pagina `/edit` primeiro), deduz o mes/ano (`mesDoTitulo`, ex.: `"10.26 OUTUBRO"` -> `2026-10`), mostra painel de confirmacao com **seletor de mes** (sugestao pre-selecionada) e **so registra depois da confirmacao do usuario**. Se o nome nao indicar o mes, propoe o mes visado no painel. O registro e **upsert pela PK `mes`** (idempotente: re-registrar nao cria duplicata; URL diferente no mesmo mes substitui a anterior, com aviso no painel). Se o mes nao tiver planilha, `getFaturamento` devolve `meses_sem_planilha` e o painel exibe aviso.
 
 ---
 
