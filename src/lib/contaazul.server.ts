@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { bancoPermitido } from "./bancos";
 
 // Singleton: cria o cliente uma única vez por processo (seguro pois as
 // credenciais são env vars imutáveis durante o ciclo de vida do servidor).
@@ -259,7 +260,7 @@ const LIST_TTL_MS = 2 * 60 * 1000; // 2 minutos de cache para listas
 
 const saldoCache = new Map<
   string,
-  EntradaCache<{ lista: { nome: string; saldo: number }[]; ok: boolean; todas: ContaSaldo[] }>
+  EntradaCache<{ lista: { id: string; nome: string; saldo: number }[]; ok: boolean; todas: ContaSaldo[] }>
 >();
 const SALDO_TTL_MS = 2 * 60 * 1000; // 2 minutos de cache para saldos
 
@@ -584,12 +585,12 @@ const BANCOS_PERMITIDOS = [
 
 // Uma conta financeira retornada pela API da Conta Azul, com o motivo de ela
 // potencialmente nao aparecer no painel (saldo zerado ou falha ao buscar saldo).
-export type ContaSaldo = { nome: string; saldo: number; erro: boolean };
+export type ContaSaldo = { id: string; nome: string; saldo: number; erro: boolean };
 
 export async function buscarSaldos(
   empresa: string,
   tokenInicial: string,
-): Promise<{ lista: { nome: string; saldo: number }[]; ok: boolean; todas: ContaSaldo[] }> {
+): Promise<{ lista: { id: string; nome: string; saldo: number }[]; ok: boolean; todas: ContaSaldo[] }> {
   const r = await lerOuCriar(
     saldoCache,
     empresa,
@@ -649,8 +650,8 @@ async function listarContasFinanceiras(
 async function buscarSaldosInterna(
   empresa: string,
   tokenInicial: string,
-): Promise<{ lista: { nome: string; saldo: number }[]; ok: boolean; todas: ContaSaldo[] }> {
-  const lista: { nome: string; saldo: number }[] = [];
+): Promise<{ lista: { id: string; nome: string; saldo: number }[]; ok: boolean; todas: ContaSaldo[] }> {
+  const lista: { id: string; nome: string; saldo: number }[] = [];
   const todas: ContaSaldo[] = [];
 
   const { ok, contas, token } = await listarContasFinanceiras(empresa, tokenInicial);
@@ -661,6 +662,7 @@ async function buscarSaldosInterna(
 
   const resps = await Promise.all(
     contas.map(async (c) => {
+      const id = String(c.id ?? "");
       const r = await fetchComRetry(
         `https://api-v2.contaazul.com/v1/conta-financeira/${c.id}/saldo-atual`,
         { headers: { Authorization: `Bearer ${token}` } },
@@ -668,19 +670,20 @@ async function buscarSaldosInterna(
       if (r.ok) {
         const sj: any = await r.json();
         return {
+          id,
           nome: String(c.nome ?? "").trim(),
           saldo: (sj.saldo_atual as number) || 0,
           erro: false as const,
         };
       }
       log("warn", `buscarSaldos saldo-atual falhou: ${empresa} / ${c.nome} status=${r.status}`);
-      return { nome: String(c.nome ?? "").trim(), saldo: 0, erro: true as const };
+      return { id, nome: String(c.nome ?? "").trim(), saldo: 0, erro: true as const };
     }),
   );
 
   for (const r of resps) {
     todas.push(r);
-    if (!r.erro) lista.push({ nome: r.nome, saldo: r.saldo });
+    if (!r.erro) lista.push({ id: r.id, nome: r.nome, saldo: r.saldo });
   }
 
   return { lista, ok: true, todas };
@@ -891,6 +894,64 @@ export function extrairCategoria(j: any): string | null {
   }
 
   return nomes.length ? nomes.join(" / ") : null;
+}
+
+// Extrai o id da conta financeira (banco) do titulo. A API usa nomes
+// diferentes conforme o endpoint: na lista de titulos vem em
+// `conta_financeira_id`; no endpoint de parcelas (contas a pagar/receber
+// baixadas) o vinculo com o banco costuma estar dentro de `evento`.
+export function extrairContaId(j: any): string | undefined {
+  if (!j) return undefined;
+  const candidatos = [
+    j.conta_financeira_id,
+    j.conta_id,
+    j.evento?.conta_financeira_id,
+    j.evento?.conta_id,
+    j.evento?.conta?.id,
+    j.baixas?.[0]?.conta_financeira_id,
+    j.baixas?.[0]?.conta_id,
+    j.parcelas?.[0]?.conta_financeira_id,
+    j.parcelas?.[0]?.conta_id,
+  ];
+  for (const c of candidatos) {
+    if (c === undefined || c === null || c === "") continue;
+    return String(c);
+  }
+  return undefined;
+}
+
+// Mapa conta_id -> nome do banco, para saber de qual banco veio cada titulo.
+export function mapaContaParaBanco(
+  contas: { id?: string; nome: string }[],
+): Map<string, string> {
+  const mapa = new Map<string, string>();
+  for (const c of contas ?? []) {
+    if (c?.id) mapa.set(String(c.id), c.nome);
+  }
+  return mapa;
+}
+
+// Filtra os titulos pelos bancos EXIBIDOS no dashboard.
+//
+// Regra (conservadora, para nunca perder dinheiro da lista sem querer):
+//  - titulo sem conta financeira (ou com conta que nao esta no mapa): MANTIDO
+//    (nao da para saber de qual banco veio);
+//  - titulo de um banco conhecido e que NAO esta na lista permitida: REMOVIDO;
+//  - titulo de um banco permitido: MANTIDO.
+//
+// Lista de bancos vazia = nao filtra nada.
+export function filtrarPorBancos(
+  itens: ItemLancamento[],
+  contaParaBanco: Map<string, string>,
+  permitidos: string[],
+): ItemLancamento[] {
+  if (!permitidos || permitidos.length === 0) return itens;
+  return (itens ?? []).filter((i) => {
+    if (!i.conta_id) return true;
+    const banco = contaParaBanco.get(String(i.conta_id));
+    if (!banco) return true;
+    return permitidos.some((p) => bancoPermitido(banco, p));
+  });
 }
 
 async function buscarDetalheFormaPagamento(
@@ -1190,7 +1251,7 @@ async function buscarV2Interna(
           data: dv, 
           valor: aberto,
           metodo: metodoInicial,
-          conta_id: i.conta_financeira_id || i.conta_id || undefined,
+          conta_id: extrairContaId(i),
           descricao: extrairDescricao(i),
           terceiro: extrairTerceiro(i),
           categoria: extrairCategoria(i),
@@ -1422,7 +1483,7 @@ async function processarPagasResposta(
       data,
       valor,
       metodo: null,
-      conta_id: i.conta_financeira_id || i.conta_id || undefined,
+      conta_id: extrairContaId(i),
       descricao: extrairDescricao(i),
       terceiro: extrairTerceiro(i),
       categoria: extrairCategoria(i),
@@ -1501,7 +1562,7 @@ export function processarRecebidas(
       data,
       valor,
       metodo: null,
-      conta_id: i.conta_financeira_id || i.conta_id || undefined,
+      conta_id: extrairContaId(i),
       descricao: extrairDescricao(i),
       terceiro: extrairTerceiro(i),
       categoria: extrairCategoria(i),

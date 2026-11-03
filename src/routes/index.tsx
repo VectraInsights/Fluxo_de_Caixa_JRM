@@ -45,6 +45,7 @@ import {
   type TituloDetalhe,
 } from "@/lib/contaazul.functions";
 import { ordenarTitulos, exportarXlsx, exportarPdf } from "@/lib/exportar";
+import { bancoPermitido, bancosPermitidosDaEmpresa } from "@/lib/bancos";
 import { useQueryClient } from "@tanstack/react-query";
 // using public SVG logo
 const logo = "/jrmicon.png";
@@ -466,33 +467,18 @@ function Dashboard() {
   }
 
 
-  // Normaliza para comparar nomes de empresa sem depender de acento/maiúsculas.
-  const chave = (s: string) =>
-    (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().trim();
-
-  const bancosPorEmpresa: Record<string, string[]> = {
-    // array vazio = mostra TODOS os bancos que a API retornar
-    "LGP Transportes": ["BRADESCO", "ITAU", "SICOOB 3049", "SICOOB 3109"],
-    "Rosângela Transportes": ["BRADESCO", "ITAU", "SICOOB 3049", "SICOOB 3109"],
-    "JRM Transportes": ["BRADESCO", "ITAU", "SICOOB 3049", "SICOOB 3109"],
-  };
-
-  const regraBancos = Object.entries(bancosPorEmpresa).find(
-    ([k]) => chave(k) === chave(empresa),
-  )?.[1];
-  const bancosPermitidos = regraBancos ?? ["ITAU", "SICOOB", "SICOOB 3109", "BRADESCO"];
-  const mostrarTodos = regraBancos !== undefined && bancosPermitidos.length === 0;
+  // Bancos exibidos no painel: a lista vem de src/lib/bancos.ts, o MESMO
+  // arquivo usado no backend para filtrar os titulos (fonte unica).
+  const bancosPermitidos = useMemo(
+    () => bancosPermitidosDaEmpresa(empresa),
+    [empresa],
+  );
+  const mostrarTodos = bancosPermitidos.length === 0;
 
   // Chaves que terminam em numero (ex.: SICOOB 3049) podem vir truncadas no
   // avatar, entao aceitamos prefixo. As demais (BRADESCO, ITAU) exigem
   // correspondencia exata para nao bater em "Bradesco ap." por acaso.
-  const corresponde = (nome: string, permitido: string) => {
-    const n = (nome || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().trim();
-    const p = permitido.toUpperCase().trim();
-    if (n === p) return true;
-    if (/\d\s*$/.test(p)) return n.startsWith(p);
-    return false;
-  };
+  const corresponde = bancoPermitido;
 
   // Todas as contas retornadas pela API sao exibidas, inclusive as de saldo
   // zerado: esconder uma conta existente na Conta Azul fazia o usuario achar

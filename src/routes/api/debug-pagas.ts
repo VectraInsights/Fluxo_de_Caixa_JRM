@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { obterToken, renovarToken } from "../../lib/contaazul.server";
+import { obterToken, renovarToken, buscarSaldos, extrairContaId } from "../../lib/contaazul.server";
+import { bancosPermitidosDaEmpresa, bancoPermitido } from "../../lib/bancos";
 
 // Rota de debug: retorna o JSON cru que a API da Conta Azul retorna para
 // contas a pagar com status PAGO. Usada apenas para diagnosticar por que o
@@ -79,6 +80,13 @@ export const Route = createFileRoute("/api/debug-pagas")({
         ];
 
         const resultados: any[] = [];
+        // Contas financeiras (bancos) da empresa + lista de bancos exibidos:
+        // usado para conferir se o titulo traz o vinculo com o banco.
+        const sal = await buscarSaldos(empresa, tokenRef.token);
+        const contas = sal.todas.map((c) => ({ id: c.id, nome: c.nome }));
+        const nomeDaConta = new Map(contas.map((c) => [String(c.id), c.nome]));
+        const permitidos = bancosPermitidosDaEmpresa(empresa);
+
         for (const ep of endpoints) {
           const qs = new URLSearchParams(ep.params).toString();
           const fullUrl = `${ep.url}?${qs}`;
@@ -95,24 +103,55 @@ export const Route = createFileRoute("/api/debug-pagas")({
             corpoTexto = await res.text().catch(() => "");
           }
 
+          const itens = Array.isArray(body?.itens)
+            ? body.itens
+            : Array.isArray(body)
+              ? body
+              : [];
+
+          // De qual banco veio cada titulo (o filtro do dashboard usa isso).
+          const vinculoBanco = itens.slice(0, 20).map((i: any) => {
+            const contaId = extrairContaId(i);
+            const banco = contaId ? nomeDaConta.get(String(contaId)) : undefined;
+            return {
+              id: i?.id ?? null,
+              conta_id: contaId ?? null,
+              banco: banco ?? null,
+              banco_exibido: banco ? permitidos.some((p) => bancoPermitido(banco, p)) : null,
+            };
+          });
+
           resultados.push({
             endpoint: ep.nome,
             url: fullUrl,
             http_status: status,
             itens_totais: body?.itens_totais ?? null,
-            qtd_itens: Array.isArray(body?.itens) ? body.itens.length : Array.isArray(body) ? body.length : 0,
+            qtd_itens: itens.length,
             primeiro_item: Array.isArray(body?.itens)
               ? body.itens[0]
               : Array.isArray(body)
                 ? body[0]
                 : null,
+            vinculo_banco: vinculoBanco,
             corpo_preview: corpoTexto,
           });
         }
 
-        return new Response(JSON.stringify({ empresa, dataInicio, dataFim, resultados }, null, 2), {
-          headers: { "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify(
+            {
+              empresa,
+              dataInicio,
+              dataFim,
+              bancos_exibidos: permitidos,
+              contas_financeiras: contas,
+              resultados,
+            },
+            null,
+            2,
+          ),
+          { headers: { "Content-Type": "application/json" } },
+        );
       },
     },
   },

@@ -10,6 +10,8 @@ import {
   buscarV2,
   buscarPagas,
   buscarRecebidas,
+  filtrarPorBancos,
+  mapaContaParaBanco,
   removerAcentos,
   getLogs,
   limparLogs,
@@ -20,6 +22,7 @@ import {
   cronSecret,
 } from "./contaazul.server";
 import { buscarFaturamentoPlanilha, limparCachePlanilha, lerTituloPlanilha, mesDoTitulo } from "./planilha.server";
+import { bancosPermitidosDaEmpresa } from "./bancos";
 
 export const listarEmpresas = createServerFn({ method: "GET" }).handler(async () => {
   const sb = getSupabase();
@@ -383,19 +386,40 @@ export const getDashboard = createServerFn({ method: "GET" })
         // Nota: falha em buscarPagas/buscarRecebidas NAO vira aviso/erro de
         // sincronizacao — e um card complementar; o token ruim ja e detectado
         // por rec/desp.
+
+        // Filtra os titulos pelos BANCOS EXIBIDOS no painel (mesma lista do
+        // card de Bancos): titulo de banco que nao aparece la nao entra nas
+        // listas nem nos cards.
+        const contasMap = mapaContaParaBanco(sal.todas);
+        const bancosOk = bancosPermitidosDaEmpresa(emp);
+        const recF = filtrarPorBancos(rec.dados, contasMap, bancosOk);
+        const despF = filtrarPorBancos(desp.dados, contasMap, bancosOk);
+        const pagasF = filtrarPorBancos(pagas.dados, contasMap, bancosOk);
+        const recebidasF = filtrarPorBancos(recebidas.dados, contasMap, bancosOk);
+        const removidos =
+          rec.dados.length - recF.length +
+          (desp.dados.length - despF.length) +
+          (pagas.dados.length - pagasF.length) +
+          (recebidas.dados.length - recebidasF.length);
+        if (removidos > 0) {
+          log(
+            "info",
+            `filtro de bancos ${emp}: ${removidos} titulo(s) fora dos bancos exibidos foram removidos`,
+          );
+        }
+
         return {
           empresa: emp,
           bancos: sal.lista,
-          rec: rec.dados,
-          desp: desp.dados,
-          pagas: pagas.dados,
-          recebidas: recebidas.dados,
+          rec: recF,
+          desp: despF,
+          pagas: pagasF,
+          recebidas: recebidasF,
         };
       }),
     );
 
     const mapaBancos = new Map<string, { nome: string; saldo: number }>();
-    const mapaContaBanco = new Map<string, string>(); // conta_id -> banco_nome
     for (const r of resultados) {
       for (const b of r.bancos) {
         const chave = removerAcentos(b.nome).toUpperCase();
@@ -407,10 +431,6 @@ export const getDashboard = createServerFn({ method: "GET" })
             nome: nomeFormatado,
             saldo: b.saldo,
           });
-        // Mapear conta ID para nome do banco
-        if ((b as any).id) {
-          mapaContaBanco.set(String((b as any).id), nomeFormatado);
-        }
       }
     }
     const saldos_por_banco = Array.from(mapaBancos.values()).map((v) => ({
@@ -551,18 +571,24 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
             recebidas: { total: 0, titulos: [] },
           };
         }
-        const [rec, desp, pagas, recebidas] = await Promise.all([
+        const [sal, rec, desp, pagas, recebidas] = await Promise.all([
+          // As contas financeiras (bancos) sao necessarias para saber de qual
+          // banco veio cada titulo — o filtro e o MESMO do getDashboard.
+          buscarSaldos(emp, token),
           buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar", data.data_inicio, data.data_fim),
           buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar", data.data_inicio, data.data_fim),
           buscarPagas(emp, data.data_inicio, data.data_fim),
           buscarRecebidas(emp, data.data_inicio, data.data_fim),
         ]);
+        // Filtra pelos bancos exibidos no painel (mesma regra do getDashboard).
+        const contasMap = mapaContaParaBanco(sal.todas);
+        const bancosOk = bancosPermitidosDaEmpresa(emp);
         return {
           empresa: emp,
-          receber: montar(rec.dados),
-          pagar: montar(desp.dados),
-          pagos: montar(pagas.dados),
-          recebidas: montar(recebidas.dados),
+          receber: montar(filtrarPorBancos(rec.dados, contasMap, bancosOk)),
+          pagar: montar(filtrarPorBancos(desp.dados, contasMap, bancosOk)),
+          pagos: montar(filtrarPorBancos(pagas.dados, contasMap, bancosOk)),
+          recebidas: montar(filtrarPorBancos(recebidas.dados, contasMap, bancosOk)),
         };
       }),
     );
