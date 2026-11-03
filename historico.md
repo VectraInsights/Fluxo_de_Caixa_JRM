@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `6820f4d` | docs: documenta a separacao por empresa no PDF de Todas as Empresas | 03/11/2026 |
 | `93cd843` | feat: PDF de "Todas as Empresas" separado por empresa — cada empresa em um bloco proprio, com Faturamento, Recebidos e Pagos na mesma folha enquanto houver espaco | 03/11/2026 |
 | `348dde5` | docs: documenta o recebimento de titulos quitados (card Contas Recebidas, lista Recebidos) e o novo recorte do PDF impresso | 03/11/2026 |
 | `852ac2d` | feat: puxa as contas efetivamente recebidas (titulos quitados) — card "Contas Recebidas", lista "Recebidos" no rodape e secao "Recebidos" nos relatorios; o PDF impresso passa a ter apenas Faturamento, Recebidos e Pagos (sem A Receber, A Pagar e sem o card de Resultado) | 03/11/2026 |
