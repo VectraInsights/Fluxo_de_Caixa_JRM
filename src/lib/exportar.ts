@@ -814,33 +814,50 @@ export async function exportarPdf(rel: RelatorioListas) {
     doc.setTextColor(0);
     y += 8;
 
+    // Sem "Categoria" e sem "Empresa" no PDF impresso: o relatorio ja sai
+    // separado por empresa (cada bloco e de uma empresa) e a Categoria
+    // continua apenas no XLSX. A coluna "Metodo" so aparece se a lista tiver
+    // algum metodo preenchido (nos Pagos/Recebidos ela e sempre vazia).
+    const temMetodo = lista.some((t) => !!t.metodo);
+    const head = temMetodo
+      ? [["Data", "Descrição", item.rotuloTerceiro, "Método", "Valor (R$)"]]
+      : [["Data", "Descrição", item.rotuloTerceiro, "Valor (R$)"]];
+    const body = lista.map((t) => {
+      const base = [formatarDataBR(t.data), tituloDaLinha(t), subtituloDaLinha(t)];
+      return temMetodo
+        ? [...base, t.metodo || "", formatarValor(t.valor)]
+        : [...base, formatarValor(t.valor)];
+    });
+    const foot = [
+      ["", "TOTAL", ...(temMetodo ? ["", ""] : [""]), formatarValor(total)],
+    ];
+    // Larguras automaticas com teto de quebra do texto (evita estourar a pagina).
+    // "maxWidth" existe no runtime do jspdf-autotable, mas nao nos tipos da v5.
+    const columnStyles = temMetodo
+      ? ({
+          0: { maxWidth: 18 },
+          1: { maxWidth: 60 },
+          2: { maxWidth: 46 },
+          3: { maxWidth: 24 },
+          4: { maxWidth: 30, halign: "right" },
+        } as any)
+      : ({
+          0: { maxWidth: 18 },
+          1: { maxWidth: 64 },
+          2: { maxWidth: 50 },
+          3: { maxWidth: 32, halign: "right" },
+        } as any);
+
     autoTable(doc, {
       startY: y,
-      // Sem a coluna "Categoria" no PDF impresso (ela continua no XLSX).
-      head: [["Data", "Descrição", item.rotuloTerceiro, "Empresa", "Método", "Valor (R$)"]],
-      body: lista.map((t) => [
-        formatarDataBR(t.data),
-        tituloDaLinha(t),
-        subtituloDaLinha(t),
-        t.empresa || "",
-        t.metodo || "",
-        formatarValor(t.valor),
-      ]),
-      foot: [["", "TOTAL", "", "", "", formatarValor(total)]],
+      head,
+      body,
+      foot,
       theme: "grid",
       styles: { fontSize: 8, cellPadding: 2, overflow: "linebreak" },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
       footStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: "bold" },
-      // Larguras automaticas com teto de quebra do texto (evita estourar a pagina).
-      // "maxWidth" existe no runtime do jspdf-autotable, mas nao nos tipos da v5.
-      columnStyles: {
-        0: { maxWidth: 18 },
-        1: { maxWidth: 56 },
-        2: { maxWidth: 42 },
-        3: { maxWidth: 32 },
-        4: { maxWidth: 22 },
-        5: { maxWidth: 28, halign: "right" },
-      } as any,
+      columnStyles,
       margin: { top: 30, bottom: 16, left: margem, right: margem },
     });
 
