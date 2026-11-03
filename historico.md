@@ -41,6 +41,8 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
    - Obtem o token valido via `obterToken()`.
    - Busca saldos bancarios (`buscarSaldos`).
    - Busca contas a receber e contas a pagar via API Conta Azul (`buscarV2`).
+   - Busca os titulos **efetivamente pagos** (`buscarPagas`) e **efetivamente
+     recebidos** (`buscarRecebidas`) — titulos ja quitados no periodo.
 4. Os valores sao somados por dia e exibidos nos cards (Entradas Previstas, Saidas Previstas) e no grafico de Projecao Diaria.
 
 ### 2.3 Indicador de Sincronizacao
@@ -62,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `852ac2d` | feat: puxa as contas efetivamente recebidas (titulos quitados) — card "Contas Recebidas", lista "Recebidos" no rodape e secao "Recebidos" nos relatorios; o PDF impresso passa a ter apenas Faturamento, Recebidos e Pagos (sem A Receber, A Pagar e sem o card de Resultado) | 03/11/2026 |
 | `969164a` | feat: aviso no painel de confirmacao quando o mes escolhido ja tem planilha salva (mesma URL = re-registro; URL diferente = substituir, mostrando a URL atual) | 01/11/2026 |
 | `e0f3dd7` | feat: seletor de mes no painel de confirmacao do registro de planilha (pré-selecionado com a sugestao do sistema, jan/2026 a dez/2030, meses ja cadastrados com ✓) | 01/11/2026 |
 | `8ceca5c` | fix: titulo da planilha lido pela pagina /edit traz so o nome do documento (sem a primeira aba no sufixo); export CSV vira fallback | 01/11/2026 |
@@ -162,7 +165,7 @@ APENAS na visao "Todas as Empresas". Remetente sem regra cai em "OUTROS" (entra 
 
 **Retorno:** `buscarFaturamentoPlanilha` / `getFaturamento` devolvem `{ total, porDia }`
 (uma linha por dia do periodo, inclusive dias sem aba — zero). Esse detalhamento alimenta o
-card, a seção "Faturamento" do PDF (faixa verde, antes de "A Receber") e a aba "Faturamento"
+card, a seção "Faturamento" do PDF (faixa verde, antes de "Recebidos") e a aba "Faturamento"
 do XLSX (aba "Resumo" tambem ganhou a linha Faturamento).
 
 **Detalhe por cliente (remetente) em cada dia:** o cache da aba agora guarda o total POR
@@ -187,6 +190,7 @@ Os dois formatos que a API usa dependem do endpoint:
 | A Receber | `GET /v1/financeiro/eventos-financeiros/contas-a-receber/buscar` | `itens[].categorias[].nome` |
 | A Pagar | `GET /v1/financeiro/eventos-financeiros/contas-a-pagar/buscar` | `itens[].categorias[].nome` |
 | Pagos | `GET /v1/financeiro/contas-a-pagar` (status ACQUITTED / PAGO) | `itens[].evento.rateio[].nome_categoria` |
+| Recebidos | `GET /v1/financeiro/contas-a-receber` (status ACQUITTED / PAGO) | mesma extracao das contas a receber |
 
 **`extrairCategoria()`** (em `contaazul.server.ts`) cobre as duas estruturas e variantes
 (`categoria`, `nome_categoria`, `rateio` na raiz), unindo varias categorias com `" / "`.
@@ -208,7 +212,7 @@ Duas funcoes em `exportar.ts`:
 | Funcao | Onde | Ordem |
 |--------|------|-------|
 | `ordenarTitulos` | tela (rodape) | data → valor → descricao → empresa |
-| `ordenarTitulosRelatorio` | PDF e XLSX (as 3 listas) | **Cliente/Fornecedor (alfabetico)** → data → valor → descricao → empresa |
+| `ordenarTitulosRelatorio` | PDF e XLSX (as 4 listas) | **Cliente/Fornecedor (alfabetico)** → data → valor → descricao → empresa |
 
 Regras do `ordenarTitulosRelatorio`:
 
@@ -228,10 +232,14 @@ Regra pedida e aplicada em `exportarPdf` (`src/lib/exportar.ts`):
 
 | Secao | Pagina |
 |-------|--------|
-| **Faturamento** | **sempre na MESMA pagina do cabecalho e dos 4 cards de totais** (nunca abre pagina nova antes dela) |
-| **A Receber** | pagina nova, imediatamente apos a ultima pagina do Faturamento |
-| **A Pagar** | pagina nova, imediatamente apos a ultima pagina do A Receber |
-| **Pagos** | pagina nova, imediatamente apos a ultima pagina do A Pagar |
+| **Faturamento** | **sempre na MESMA pagina do cabecalho e dos 3 cards de totais** (nunca abre pagina nova antes dela) |
+| **Recebidos** | pagina nova, imediatamente apos a ultima pagina do Faturamento |
+| **Pagos** | pagina nova, imediatamente apos a ultima pagina dos Recebidos |
+
+> **Nota:** a lista do PDF mudou em 03/11/2026 (`852ac2d`). Antes eram 4 secoes
+> (Faturamento, A Receber, A Pagar, Pagos) e 4 cards; agora o PDF impresso tem
+> **apenas Faturamento, Recebidos e Pagos** (3 cards, 3 secoes). "A Receber" e
+> "A Pagar" continuam existindo **apenas no XLSX** (e na tela).
 
 Como o `autoTable` pagina sozinho quando a tabela nao cabe, "ultima pagina da secao"
 pode ser varias paginas adiante: a proxima secao sempre comeca na pagina seguinte
@@ -254,6 +262,10 @@ sem faturamento). Resultado: Faturamento na pagina 1 (y=58), A Receber na pagina
 Faturamento ocupa as paginas 1..8, A Receber comeca na 9, A Pagar na 15 e Pagos na 20.
 Nenhum texto abaixo da margem inferior (so o rodape com a numeracao de paginas).
 
+Revalidado em 03/11/2026 com a lista nova do PDF (Faturamento, Recebidos, Pagos):
+Faturamento na pagina 1 junto do cabecalho e dos 3 cards, Recebidos na pagina 2 e
+Pagos na pagina 3.
+
 O XLSX **nao** muda: paginacao so faz sentido em PDF.
 
 ---
@@ -272,14 +284,17 @@ de grade — recursos que o SheetJS nao grava). O pacote `xlsx` foi removido do
 
 | Aba | Visual |
 |-----|--------|
-| **Resumo** | titulo + periodo; 4 linhas com o nome da relacao pintado na cor (verde/vermelho, igual aos cards do PDF), total em moeda, quantidade de titulos e rodape "Gerado em ..." |
+| **Resumo** | titulo + periodo; 5 linhas de relacao (Faturamento, A Receber, A Pagar, Pagos, Recebidos) com o nome pintado na cor (verde/vermelho, igual aos cards do PDF), total em moeda, quantidade de titulos, mais a linha "Resultado (A receber - A pagar)" e o rodape "Gerado em ..." |
 | **Faturamento** | titulo na cor verde, uma linha por cliente, linha "Total do dia" em negrito com fundo claro, linha TOTAL com borda dupla |
-| **A Receber / A Pagar / Pagos** | titulo na cor da relacao, cabecalho escuro com texto branco, zebrado no corpo, quebra de linha em Descricao e Categoria, linha TOTAL em negrito |
+| **A Receber / A Pagar / Pagos / Recebidos** | titulo na cor da relacao, cabecalho escuro com texto branco, zebrado no corpo, quebra de linha em Descricao e Categoria, linha TOTAL em negrito |
 
 **Em todas as abas:** cabecalho congelado (4 linhas: titulo, periodo, separador e
 cabecalho da tabela), autofiltro, larguras de coluna calibradas, linhas de grade
-escondidas e cor na aba da planilha (verde para Faturamento/A Receber, vermelho para
-A Pagar/Pagos).
+escondidas e cor na aba da planilha (verde para Faturamento/A Receber/Recebidos,
+vermelho para A Pagar/Pagos).
+
+**Abas geradas (6):** `Resumo`, `Faturamento`, `A Receber`, `A Pagar`, `Pagos`,
+`Recebidos`.
 
 **Formatos de numero:** moeda `"R$" #,##0.00` (negativo em vermelho) e inteiro `#,##0`.
 
@@ -301,19 +316,82 @@ Faturamento e Pagos **nao entram** no calculo.
 
 | Parte | Onde aparece |
 |-------|--------------|
-| PDF | card no **topo a direita, na mesma linha do titulo**, com o rotulo "Resultado (A receber - A pagar)" (verde se >= 0, vermelho se < 0) |
-| XLSX | aba "Resumo", 5ª linha "Resultado (A receber - A pagar)" (verde/vermelho conforme o sinal) + nota explicativa abaixo da tabela |
+| XLSX | aba "Resumo", linha "Resultado (A receber - A pagar)" (verde/vermelho conforme o sinal) + nota explicativa abaixo da tabela |
 
-O **titulo do PDF** passou a ser so **"Fluxo de Caixa"** (antes era "Fluxo de Caixa —
-Faturamento, A Receber, A Pagar e Pagos"). Os **4 cards** (Faturamento, A Receber,
-A Pagar, Pagos) continuam na linha de baixo, e as 4 secoes do relatorio seguem
-intactas (com a paginação da secao 3.4).
+O **titulo do PDF** e so **"Fluxo de Caixa"** (antes era "Fluxo de Caixa —
+Faturamento, A Receber, A Pagar e Pagos").
+
+> **Nota (03/11/2026, `852ac2d`):** o **card de Resultado saiu do PDF** e o PDF
+> passou a mostrar **apenas Faturamento, Recebidos e Pagos** (3 cards, 3 secoes).
+> O Resultado continua **apenas no XLSX** (aba "Resumo") — e por isso
+> `calcularResultado()` nao e mais chamado pelo `exportarPdf`.
 
 > **Nota:** o commit `5cd6da6` tinha tirado Faturamento e Pagos do resumo; o
 > `8ca4056` volta os 4 cards e acrescenta o card/linha "Resultado".
 
 Implementacao: `calcularResultado(rel)` em `exportar.ts` (soma de `rel.receber` menos
 soma de `rel.pagar`).
+
+---
+
+## 3.7 Contas efetivamente recebidas (Recebidos)
+
+Antes desta mudanca o dashboard trazia **so as entradas previstas** (titulos em
+aberto) e **so as saidas efetivas** (titulos pagos). Um titulo que era recebido e
+baixado **sumia** do painel: saia de "A Receber" (deixava de estar `EM_ABERTO`) e
+nao tinha para onde ir. Agora existe o **espelho do "Pagos"** do lado das entradas.
+
+**Backend** (`src/lib/contaazul.server.ts`):
+
+| Funcao | Papel |
+|--------|-------|
+| `buscarRecebidas(empresa, inicio, fim)` | busca os titulos de contas a receber **quitados** no periodo (cache de 2 min, igual ao `buscarPagas`) |
+| `buscarRecebidasInterna(...)` | testas as combinacoes de endpoint x status e fica com a **primeira que responder 200** |
+| `processarRecebidas(itens, inicio, fim)` | funcao **pura**: normaliza os itens da API e aplica o filtro de data (testavel sem API) |
+| `extrairDataRecebimento(i)` | acha a data de recebimento/baixa em varias estructuras da API |
+
+**Combinacoes testadas** (a API pode atender por um endpoint e recusar o status):
+
+| Endpoint | Status |
+|----------|--------|
+| `/v1/financeiro/contas-a-receber` | `ACQUITTED`, depois `PAGO` |
+| `/v1/financeiro/eventos-financeiros/contas-a-receber/buscar` | `ACQUITTED`, depois `PAGO` |
+
+**Regras do `processarRecebidas`:**
+
+- **Valor:** `pago > 0 ? pago : total` (mesma regra do `buscarPagas`).
+- **Data:** `data_recebimento` → `data_pagamento` → `data_baixa` → `data_quitacao`
+  → `baixas[0].data*` → `parcelas[0].data*`; ultimo recurso `data_vencimento`.
+- **Periodo:** o filtro e refeito **no cliente** (a API pode ignorar o parametro
+  `data_pagamento_de/_ate`); titulo sem data ou fora do periodo e descartado.
+- Titulo sem `id` ou com valor <= 0 e descartado.
+- `categoria`, `terceiro` e `descricao` usam os mesmos extratores do `buscarPagas`.
+
+**Propagacao:**
+
+- `getDashboard` → `resumo.total_recebidas` (novo campo) e `recebidas` no resultado por empresa.
+- `getEmpresaBreakdown` → `recebidas: { total, titulos }` (nova lista).
+- Tela: card **"Contas Recebidas"** (verde) entre "Saidas Previstas" e "Contas Pagas"
+  (grid `xl:grid-cols-5`) e lista **"Recebidos"** (verde) no rodape, que passa a ter
+  4 colunas (A Receber | A Pagar | Pagos | Recebidos).
+- Relatorios: secao/aba **"Recebidos"** (coluna de terceiro = "Cliente", verde).
+
+**Relatorios depois da mudanca:**
+
+| Relatorio | Conteudo |
+|-----------|----------|
+| **PDF impresso** | **apenas** Faturamento, Recebidos e Pagos (3 cards + 3 secoes). **Sem** A Receber, **sem** A Pagar e **sem** card de Resultado |
+| **XLSX** | todas as listas: Resumo (com a linha "Resultado (A receber - A pagar)"), Faturamento, A Receber, A Pagar, Pagos e Recebidos |
+
+Em `exportar.ts` isso e controlado por `ROTULOS_PDF` (filtragem de `ROTULOS`, na ordem
+**Recebidos → Pagos**), usada tanto nos cards quanto no loop de secoes do PDF. O XLSX
+continua usando a lista completa `ROTULOS`.
+
+**Diagnostico em producao:** rota `/api/debug-recebidos?empresa=NOME&inicio=YYYY-MM-DD&fim=YYYY-MM-DD`
+(espelho do `/api/debug-pagas`) — mostra o JSON cru de cada combinacao de
+endpoint/status, a quantidade de itens e as datas de recebimento. Como as variaveis
+de ambiente (tokens da Conta Azul) so existem na Vercel, esta e a forma de conferir
+em producao qual endpoint/status responde de verdade.
 
 ---
 
@@ -349,11 +427,14 @@ Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 
 ## 5. Estrutura de Arquivos Relevantes
 
-- `src/lib/contaazul.functions.ts` — `getDashboard`, `listarEmpresas`, `inspecionarRecebimentos`, `finalizarAutorizacao` (troca o `code` OAuth por token)
-- `src/lib/contaazul.server.ts` — `obterToken`, `renovarToken`, `pedirToken` (endpoint v2 com fallback legado), `buscarSaldos`, `buscarV2`, `basicAuth`, `getSupabase`
+- `src/lib/contaazul.functions.ts` — `getDashboard`, `getEmpresaBreakdown`, `listarEmpresas`, `inspecionarRecebimentos`, `finalizarAutorizacao` (troca o `code` OAuth por token)
+- `src/lib/contaazul.server.ts` — `obterToken`, `renovarToken`, `pedirToken` (endpoint v2 com fallback legado), `buscarSaldos`, `buscarV2`, `buscarPagas`, `buscarRecebidas`, `basicAuth`, `getSupabase`
+- `src/lib/exportar.ts` — `exportarPdf` (cards, secoes e paginacao do PDF) e `construirXlsx` (aba Resumo + abas das listas); `ROTULOS` (todas) e `ROTULOS_PDF` (so Recebidos e Pagos)
 - `src/routes/index.tsx` — Dashboard frontend, indicador de sync, KPI cards, projeto diaria, deteccao do `code` OAuth na raiz e botoes "Conectar Conta Azul"
 - `src/routes/api/autorizar.ts` — Redirecionamento para login da Conta Azul (`state` = nome da empresa)
 - `src/routes/api/callback.ts` — Legado (usa `redirect_uri` `/api/callback`, que nao e a cadastrada). **Nao e usado pelo fluxo atual.**
+- `src/routes/api/debug-pagas.ts` — Diagnostico do JSON cru das contas a pagar baixadas (status ACQUITTED/PAGO)
+- `src/routes/api/debug-recebidos.ts` — Diagnostico do JSON cru das contas a receber baixadas (status ACQUITTED/PAGO)
 - `src/routes/api/cron/renovar-tokens.ts` — Rota do cron diario da Vercel (renovacao em lote de tokens); aceita `Authorization: Bearer CRON_SECRET`, header `X-Cron-Secret` ou `?secret=`; `?teste=slack` envia mensagem de teste ao Slack
 - `src/lib/planilha.server.ts` — `buscarFaturamentoPlanilha`, `lerTituloPlanilha` (nome da planilha via `/edit`, fallback export CSV), `mesDoTitulo` (deduz `YYYY-MM` do nome)
 - `src/lib/contaazul.server.ts` — `executarRenovacaoEmLote`, `testarSlack`/`enviarAlertaSlack` (webhook `SLACK_WEBHOOK_URL`), `obterToken` com renovacao proativa, lock distribuido
