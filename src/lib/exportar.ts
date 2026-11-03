@@ -13,7 +13,9 @@ export type FaturamentoExport = {
     total: number;
     // Detalhe por cliente (remetente) dentro do dia; opcional para
     // compatibilidade com dados antigos (dia sem detalhe sai sem linhas).
-    clientes?: { nome: string; total: number }[];
+    // "empresa" = chave da empresa dona da carga (JUVENAL/ROSANGELA/
+    // ALVARENGA/OUTROS) — usada para separar o relatorio por empresa.
+    clientes?: { nome: string; total: number; empresa?: string }[];
   }[];
 };
 
@@ -555,6 +557,104 @@ export async function exportarXlsx(rel: RelatorioListas) {
 
 // ------------------------------- PDF -------------------------------
 
+// ------------------- Separacao por empresa (visao "Todas") -------------------
+// O Faturamento vem da planilha e ja carrega a chave da empresa dona da
+// carga ("dono": JUVENAL / ROSANGELA / ALVARENGA / OUTROS). As listas de
+// titulos vem com o nome da empresa CADASTRADA (ex.: "Juvenal Transportes").
+// As duas pontas sao reconciliadas pela mesma regra de prefixo usada no
+// filtro da planilha (filtroDaEmpresa em planilha.server.ts).
+
+const CHAVES_EMPRESA_FATURAMENTO = ["JUVENAL", "ROSANGELA", "ALVARENGA"] as const;
+
+// Nome amigavel das chaves que nao tem empresa cadastrada (so aparecem no Faturamento).
+const ROTULO_EMPRESA: Record<string, string> = {
+  JUVENAL: "Juvenal",
+  ROSANGELA: "Rosângela",
+  ALVARENGA: "Alvarenga",
+  OUTROS: "Outros",
+};
+
+// Chave de agrupamento de uma empresa (sem acento, sem caixa, sem espacos duplos).
+function chaveEmpresa(nome: string): string {
+  const n = (nome || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+  for (const chave of CHAVES_EMPRESA_FATURAMENTO) {
+    if (n.startsWith(chave)) return chave;
+  }
+  return n || "OUTROS";
+}
+
+type GrupoEmpresa = {
+  chave: string;
+  nome: string;
+  faturamento: FaturamentoExport;
+  recebidas: LinhaExport[];
+  pagos: LinhaExport[];
+};
+
+// Separa o relatorio por empresa: cada grupo leva o Faturamento da empresa
+// (agrupado pela chave do "dono") e as listas de titulos (pelo campo `empresa`).
+function agruparPorEmpresa(rel: RelatorioListas): GrupoEmpresa[] {
+  const fat = rel.faturamento ?? { total: 0, porDia: [] };
+  const grupos = new Map<string, GrupoEmpresa>();
+
+  const grupo = (chave: string): GrupoEmpresa => {
+    let g = grupos.get(chave);
+    if (!g) {
+      g = {
+        chave,
+        nome: ROTULO_EMPRESA[chave] || chave,
+        faturamento: { total: 0, porDia: [] },
+        recebidas: [],
+        pagos: [],
+      };
+      grupos.set(chave, g);
+    }
+    return g;
+  };
+
+  // 1) Faturamento: cada dia pode ter clientes de empresas diferentes —
+  //    o dia e replicado em cada empresa com o total so dela.
+  for (const d of fat.porDia) {
+    const porEmpresa = new Map<string, { nome: string; total: number }[]>();
+    for (const c of d.clientes ?? []) {
+      const chave = chaveEmpresa(c.empresa || "OUTROS");
+      const lista = porEmpresa.get(chave) ?? [];
+      lista.push({ nome: c.nome, total: c.total });
+      porEmpresa.set(chave, lista);
+    }
+    for (const [chave, clientes] of porEmpresa) {
+      const g = grupo(chave);
+      const totalDia = clientes.reduce((s, c) => s + (Number(c.total) || 0), 0);
+      g.faturamento.porDia.push({ data: d.data, total: totalDia, clientes });
+      g.faturamento.total += totalDia;
+    }
+  }
+
+  // 2) Listas de titulos: cada linha ja vem com a empresa.
+  for (const t of rel.recebidas ?? []) grupo(chaveEmpresa(t.empresa || "")).recebidas.push(t);
+  for (const t of rel.pagos ?? []) grupo(chaveEmpresa(t.empresa || "")).pagos.push(t);
+
+  // 3) Nome de exibicao: o nome cadastrado quando existir (ex.: "Juvenal
+  //    Transportes"), senao o nome amigavel da chave (ex.: "Alvarenga").
+  for (const g of grupos.values()) {
+    const nomeReal = [...g.recebidas, ...g.pagos].find((t) => t.empresa)?.empresa;
+    if (nomeReal) g.nome = nomeReal;
+  }
+
+  const lista = [...grupos.values()];
+  for (const g of lista) {
+    g.faturamento.total = Math.round(g.faturamento.total * 100) / 100;
+  }
+  // Ordem alfabetica das empresas no relatorio.
+  lista.sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+  return lista;
+}
+
 export async function exportarPdf(rel: RelatorioListas) {
   const { jsPDF } = await import("jspdf");
   const { default: autoTable } = await import("jspdf-autotable");
@@ -631,28 +731,25 @@ export async function exportarPdf(rel: RelatorioListas) {
   let y = yCard + alturaCard + 10;
 
   // ---------------------------------------------------------------------
-  // Paginação determinística do relatório:
-  //  - "Faturamento" SEMPRE começa na MESMA página do cabeçalho/cards
-  //    (nunca abrimos página antes dele);
-  //  - cada seção seguinte ("A Receber", "A Pagar", "Pagos") começa numa
-  //    PÁGINA NOVA, imediatamente após o fim do conteúdo da anterior.
+  // Desenho das secoes (faixa colorida + tabela). Cada funcao devolve a nova
+  // posicao vertical (y) depois da tabela.
   // ---------------------------------------------------------------------
+  type LinhaFat = { data: string; cliente: string; valor: string; ehTotalDia: boolean };
 
-  // Seção Faturamento (planilha de cargas), antes das listas de títulos
-  if (fat.porDia.length > 0) {
+  const secaoFaturamento = (f: FaturamentoExport, yIni: number): number => {
+    let y = yIni;
     doc.setFillColor(22, 163, 74);
     doc.rect(margem, y - 4.5, largura - margem * 2, 8, "F");
     doc.setTextColor(255);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(11);
-    doc.text(`Faturamento — ${formatarValor(fat.total)}`, margem + 4, y + 1);
+    doc.text(`Faturamento — ${formatarValor(f.total)}`, margem + 4, y + 1);
     doc.setTextColor(0);
     y += 8;
 
     // Linhas: uma por cliente (remetente) em cada dia + linha "Total do dia".
-    type LinhaFat = { data: string; cliente: string; valor: string; ehTotalDia: boolean };
     const linhasFat: LinhaFat[] = [];
-    for (const d of fat.porDia) {
+    for (const d of f.porDia) {
       const clientes = d.clientes ?? [];
       if (clientes.length === 0) {
         linhasFat.push({ data: formatarDataBR(d.data), cliente: "", valor: formatarValor(d.total), ehTotalDia: false });
@@ -673,7 +770,7 @@ export async function exportarPdf(rel: RelatorioListas) {
       startY: y,
       head: [["Data", "Cliente", "Faturamento (R$)"]],
       body: linhasFat.map((l) => [l.data, l.cliente, l.valor]),
-      foot: [["", "TOTAL", formatarValor(fat.total)]],
+      foot: [["", "TOTAL", formatarValor(f.total)]],
       theme: "grid",
       styles: { fontSize: 8, cellPadding: 2, overflow: "linebreak" },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
@@ -693,22 +790,19 @@ export async function exportarPdf(rel: RelatorioListas) {
       margin: { top: 30, bottom: 16, left: margem, right: margem },
     });
 
-    // Posição final da tabela do Faturamento (o autoTable já pagina sozinho
-    // quando o conteúdo não cabe). A quebra de página vem logo abaixo, na
-    // entrada da próxima seção.
-    y = ((doc as any).lastAutoTable?.finalY ?? y + 30) + 14;
-  }
+    // Posicao final da tabela do Faturamento (o autoTable ja pagina sozinho
+    // quando o conteudo nao cabe).
+    return ((doc as any).lastAutoTable?.finalY ?? y + 30) + 14;
+  };
 
-  // No PDF impresso entram apenas "Recebidos" e "Pagos" (nenhuma lista de
-  // "A Receber"/"A Pagar" e nenhum card de Resultado).
-  for (const item of ROTULOS_PDF) {
-    const lista = ordenarTitulosRelatorio(rel[item.chave]);
+  const secaoTitulos = (
+    item: (typeof ROTULOS_PDF)[number],
+    listaBruta: LinhaExport[],
+    yIni: number,
+  ): number => {
+    let y = yIni;
+    const lista = ordenarTitulosRelatorio(listaBruta);
     const total = lista.reduce((s, t) => s + (Number(t.valor) || 0), 0);
-
-    // Cada seção de títulos começa em uma PÁGINA NOVA, imediatamente após o
-    // fim da seção anterior (Recebidos -> Pagos).
-    doc.addPage();
-    y = 24;
 
     // Faixa colorida do titulo da secao
     doc.setFillColor(...item.cor);
@@ -752,7 +846,86 @@ export async function exportarPdf(rel: RelatorioListas) {
     });
 
     // Posicao final da tabela (o autoTable ja pagina sozinho quando precisa)
-    y = ((doc as any).lastAutoTable?.finalY ?? y + 30) + 14;
+    return ((doc as any).lastAutoTable?.finalY ?? y + 30) + 14;
+  };
+
+  // Garante espaco para a faixa + um pedaco da tabela; se nao couber, abre
+  // uma pagina nova (usado no modo "por empresa", em que as secoes fluem).
+  const garantirEspaco = (yAtual: number, minimo = 42): number => {
+    if (altura - margem - yAtual < minimo) {
+      doc.addPage();
+      return 24;
+    }
+    return yAtual;
+  };
+
+  // No PDF impresso entram apenas "Recebidos" e "Pagos" (nenhuma lista de
+  // "A Receber"/"A Pagar" e nenhum card de Resultado).
+  if (rel.empresa === "todas") {
+    // -------------------------------------------------------------------
+    // Visao "Todas": um BLOCO por empresa. Cada empresa comeca numa pagina
+    // nova (a primeira continua na pagina 1, logo apos os cards) e as
+    // secoes dela FLUEM: Faturamento, Recebidos e Pagos ficam na mesma
+    // folha enquanto ainda houver espaco.
+    // -------------------------------------------------------------------
+    const grupos = agruparPorEmpresa(rel);
+    for (let i = 0; i < grupos.length; i++) {
+      const g = grupos[i];
+      if (i > 0) {
+        doc.addPage();
+        y = 24;
+      }
+
+      // Faixa da empresa: nome + resumo dos totais dela
+      const totalRecebidas = g.recebidas.reduce((s, t) => s + (Number(t.valor) || 0), 0);
+      const totalPagos = g.pagos.reduce((s, t) => s + (Number(t.valor) || 0), 0);
+      const resumo = [
+        `Faturamento ${formatarValor(g.faturamento.total)}`,
+        `Recebidos ${formatarValor(totalRecebidas)}`,
+        `Pagos ${formatarValor(totalPagos)}`,
+      ].join("     ");
+      doc.setFillColor(15, 23, 42);
+      doc.rect(margem, y - 5, largura - margem * 2, 9, "F");
+      doc.setTextColor(255);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text(g.nome, margem + 4, y + 1);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(203, 213, 225);
+      doc.text(resumo, largura - margem - 4, y + 1, { align: "right" });
+      doc.setTextColor(0);
+      y += 10;
+
+      // Secoes da empresa (fluem na mesma pagina enquanto houver espaco)
+      if (g.faturamento.porDia.length > 0) {
+        y = garantirEspaco(y);
+        y = secaoFaturamento(g.faturamento, y);
+      }
+      for (const item of ROTULOS_PDF) {
+        const lista = item.chave === "recebidas" ? g.recebidas : g.pagos;
+        if (lista.length === 0) continue;
+        y = garantirEspaco(y);
+        y = secaoTitulos(item, lista, y);
+      }
+    }
+  } else {
+    // -------------------------------------------------------------------
+    // Empresa unica: paginacao fixa (Faturamento na MESMA pagina do
+    // cabecalho/cards; cada secao seguinte numa PAGINA NOVA).
+    // -------------------------------------------------------------------
+    if (fat.porDia.length > 0) {
+      y = secaoFaturamento(fat, y);
+    }
+
+    for (const item of ROTULOS_PDF) {
+      const lista = rel[item.chave] ?? [];
+      // Cada seção de títulos começa em uma PÁGINA NOVA, imediatamente após o
+      // fim da seção anterior (Recebidos -> Pagos).
+      doc.addPage();
+      y = 24;
+      y = secaoTitulos(item, lista, y);
+    }
   }
 
   // Rodape com paginacao

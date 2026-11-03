@@ -71,7 +71,7 @@ export const getFaturamento = createServerFn({ method: "GET" })
       data,
     }): Promise<{
       total: number;
-      porDia: { data: string; total: number; clientes: { nome: string; total: number }[] }[];
+      porDia: { data: string; total: number; clientes: { nome: string; total: number; empresa?: string }[] }[];
       meses_sem_planilha: string[];
     }> => {
       try {

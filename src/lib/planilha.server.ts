@@ -244,7 +244,7 @@ export async function buscarFaturamentoPlanilha(
   empresa: string,
 ): Promise<{
   total: number;
-  porDia: { data: string; total: number; clientes: { nome: string; total: number }[] }[];
+  porDia: { data: string; total: number; clientes: { nome: string; total: number; empresa?: string }[] }[];
   meses_sem_planilha: string[];
 }> {
   const filtro = filtroDaEmpresa(empresa);
@@ -271,12 +271,12 @@ export async function buscarFaturamentoPlanilha(
   await Promise.all(Array.from({ length: Math.min(CONCORRENCIA, dias.length) }, worker));
 
   // Detalhamento por dia e por cliente + total do periodo
-  const porDia: { data: string; total: number; clientes: { nome: string; total: number }[] }[] = [];
+  const porDia: { data: string; total: number; clientes: { nome: string; total: number; empresa?: string }[] }[] = [];
   const mesesSemPlanilha = new Set<string>();
   let total = 0;
   for (let i = 0; i < dias.length; i++) {
     const porRemetente = totaisPorDia[i];
-    const clientes: { nome: string; total: number }[] = [];
+    const clientes: { nome: string; total: number; empresa?: string }[] = [];
     let dia = 0;
     if (porRemetente === null) {
       // Mes sem planilha cadastrada: registra para o aviso no dashboard.
@@ -285,7 +285,9 @@ export async function buscarFaturamentoPlanilha(
       for (const [remetente, valor] of Object.entries(porRemetente)) {
         const dono = EMPRESA_POR_REMETENTE[remetente] ?? "OUTROS";
         if (filtro !== null && dono !== filtro) continue;
-        clientes.push({ nome: nomeExibicao.get(remetente) ?? remetente, total: valor });
+        // "empresa" = chave da empresa dona (JUVENAL/ROSANGELA/ALVARENGA/OUTROS).
+        // Permite separar o Faturamento por empresa no relatorio de "Todas".
+        clientes.push({ nome: nomeExibicao.get(remetente) ?? remetente, total: valor, empresa: dono });
         dia += valor;
       }
     }
