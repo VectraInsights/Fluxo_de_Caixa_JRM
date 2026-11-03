@@ -1,6 +1,6 @@
-// Exportacao das listas de titulos (A Receber, A Pagar, Pagos) para PDF e XLSX.
-// Tudo roda no navegador: as libs sao carregadas sob demanda (import dinamico),
-// para nao pesar no bundle inicial nem quebrar o SSR.
+// Exportacao das listas de titulos (A Receber, A Pagar, Pagos, Recebidos) para
+// PDF e XLSX. Tudo roda no navegador: as libs sao carregadas sob demanda
+// (import dinamico), para nao pesar no bundle inicial nem quebrar o SSR.
 
 import type { TituloDetalhe } from "./contaazul.functions";
 
@@ -24,11 +24,12 @@ export type RelatorioListas = {
   receber: LinhaExport[];
   pagar: LinhaExport[];
   pagos: LinhaExport[];
+  recebidas: LinhaExport[];
   faturamento: FaturamentoExport;
 };
 
 const ROTULOS: {
-  chave: "receber" | "pagar" | "pagos";
+  chave: "receber" | "pagar" | "pagos" | "recebidas";
   titulo: string;
   cor: [number, number, number];
   // Rotulo da coluna de terceiro: quem paga/recebe em "A Receber" e quem
@@ -38,7 +39,15 @@ const ROTULOS: {
   { chave: "receber", titulo: "A Receber", cor: [22, 163, 74], rotuloTerceiro: "Cliente" },
   { chave: "pagar", titulo: "A Pagar", cor: [220, 38, 38], rotuloTerceiro: "Fornecedor" },
   { chave: "pagos", titulo: "Pagos", cor: [220, 38, 38], rotuloTerceiro: "Fornecedor" },
+  { chave: "recebidas", titulo: "Recebidos", cor: [22, 163, 74], rotuloTerceiro: "Cliente" },
 ];
+
+// No PDF impresso entram apenas "Faturamento", "Recebidos" e "Pagos" (sem A
+// Receber, sem A Pagar e sem o card de Resultado), nessa ordem. O XLSX exporta
+// todas as listas (inclusive A Receber e A Pagar) e mantem o Resultado no Resumo.
+const ROTULOS_PDF = (["recebidas", "pagos"] as const)
+  .map((chave) => ROTULOS.find((item) => item.chave === chave))
+  .filter((item): item is (typeof ROTULOS)[number] => !!item);
 
 // Resultado do periodo: A Receber - A Pagar. Considera APENAS as listas de
 // titulos em aberto (Faturamento e Pagos ficam de fora do calculo).
@@ -558,43 +567,9 @@ export async function exportarPdf(rel: RelatorioListas) {
   // Cabecalho
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
-  doc.text("Fluxo de Caixa", margem, 15);
+  doc.text("Fluxo de Caixa", margem, 16);
 
-  // ---- Card do Resultado no topo a direita, na MESMA linha do titulo ----
-  // Resultado = A Receber - A Pagar (Faturamento e Pagos nao entram).
-  // Verde quando >= 0, vermelho quando < 0.
-  const resultado = calcularResultado(rel);
-  const corResultado: [number, number, number] = resultado >= 0 ? [22, 163, 74] : [220, 38, 38];
-  const rotuloResultado = "Resultado (A receber - A pagar)";
-  const valorResultado = formatarValor(resultado);
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(7.5);
-  const larguraRotuloResultado = doc.getTextWidth(rotuloResultado);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(12);
-  const larguraValorResultado = doc.getTextWidth(valorResultado);
-  const larguraCardResultado = Math.max(larguraRotuloResultado, larguraValorResultado) + 8;
-
-  const xCardResultado = largura - margem - larguraCardResultado;
-  const yCardResultado = 7;
-  const alturaCardResultado = 14;
-  doc.setFillColor(248, 250, 252);
-  doc.setDrawColor(...corResultado);
-  doc.setLineWidth(0.6);
-  doc.rect(xCardResultado, yCardResultado, larguraCardResultado, alturaCardResultado, "FD");
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(7.5);
-  doc.setTextColor(110);
-  doc.text(rotuloResultado, xCardResultado + 3, yCardResultado + 5);
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(12);
-  doc.setTextColor(30);
-  doc.text(valorResultado, xCardResultado + 3, yCardResultado + 12.5);
-
-  // Periodo / empresa (abaixo do titulo e do card do Resultado)
+  // Periodo / empresa
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
   doc.setTextColor(100);
@@ -603,15 +578,15 @@ export async function exportarPdf(rel: RelatorioListas) {
       rel.empresa === "todas" ? "Todas as Empresas" : rel.empresa
     }`,
     margem,
-    28,
+    23,
   );
   doc.setTextColor(0);
 
-  // ---- Cards de totais na linha de baixo (Faturamento, A Receber, A Pagar, Pagos) ----
+  // ---- Cards de totais no topo (so as secoes que entram no PDF) ----
   const fat = rel.faturamento ?? { total: 0, porDia: [] };
   const cards: { rotulo: string; valor: number; cor: [number, number, number] }[] = [
     { rotulo: "Faturamento", valor: fat.total, cor: [22, 163, 74] },
-    ...ROTULOS.map((item) => ({
+    ...ROTULOS_PDF.map((item) => ({
       rotulo: item.titulo,
       valor: ordenarTitulos(rel[item.chave]).reduce((s, t) => s + (Number(t.valor) || 0), 0),
       cor: item.cor,
@@ -724,12 +699,14 @@ export async function exportarPdf(rel: RelatorioListas) {
     y = ((doc as any).lastAutoTable?.finalY ?? y + 30) + 14;
   }
 
-  for (const item of ROTULOS) {
+  // No PDF impresso entram apenas "Recebidos" e "Pagos" (nenhuma lista de
+  // "A Receber"/"A Pagar" e nenhum card de Resultado).
+  for (const item of ROTULOS_PDF) {
     const lista = ordenarTitulosRelatorio(rel[item.chave]);
     const total = lista.reduce((s, t) => s + (Number(t.valor) || 0), 0);
 
     // Cada seção de títulos começa em uma PÁGINA NOVA, imediatamente após o
-    // fim da seção anterior (A Receber -> A Pagar -> Pagos).
+    // fim da seção anterior (Recebidos -> Pagos).
     doc.addPage();
     y = 24;
 

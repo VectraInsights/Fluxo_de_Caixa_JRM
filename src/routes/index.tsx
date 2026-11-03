@@ -518,6 +518,7 @@ function Dashboard() {
   const totalRecOutros = Math.max(0, totalRec - totalRecBoleto);
   const totalDesp = Math.abs(data?.resumo.total_desp || 0);
   const totalPagas = Math.abs(data?.resumo.total_pagas || 0);
+  const totalRecebidas = Math.abs(data?.resumo.total_recebidas || 0);
 
   const chartData = useMemo(() => {
     if (!data) return [];
@@ -536,20 +537,26 @@ function Dashboard() {
     const receber: (TituloDetalhe & { empresa: string })[] = [];
     const pagar: (TituloDetalhe & { empresa: string })[] = [];
     const pagos: (TituloDetalhe & { empresa: string })[] = [];
+    const recebidas: (TituloDetalhe & { empresa: string })[] = [];
     for (const eb of breakdown) {
       for (const t of eb.receber.titulos) receber.push({ ...t, empresa: eb.empresa });
       for (const t of eb.pagar.titulos) pagar.push({ ...t, empresa: eb.empresa });
       for (const t of eb.pagos?.titulos ?? []) pagos.push({ ...t, empresa: eb.empresa });
+      for (const t of eb.recebidas?.titulos ?? []) recebidas.push({ ...t, empresa: eb.empresa });
     }
     // Ordenacao cronologica (data), depois por valor e por descricao (alfabetica)
     return {
       receber: { total: round(receber.reduce((a, b) => a + b.valor, 0)), titulos: ordenarTitulos(receber) },
       pagar: { total: round(pagar.reduce((a, b) => a + b.valor, 0)), titulos: ordenarTitulos(pagar) },
       pagos: { total: round(pagos.reduce((a, b) => a + b.valor, 0)), titulos: ordenarTitulos(pagos) },
+      recebidas: {
+        total: round(recebidas.reduce((a, b) => a + b.valor, 0)),
+        titulos: ordenarTitulos(recebidas),
+      },
     };
   }, [breakdown]);
 
-  // Exporta as tres listas (A Receber, A Pagar, Pagos) para PDF ou XLSX
+  // Exporta as listas (A Receber, A Pagar, Pagos, Recebidos) para PDF ou XLSX
   async function exportar(formato: "pdf" | "xlsx") {
     if (!consolidado || exportando) return;
     setExportando(formato);
@@ -562,6 +569,7 @@ function Dashboard() {
         receber: consolidado.receber.titulos,
         pagar: consolidado.pagar.titulos,
         pagos: consolidado.pagos.titulos,
+        recebidas: consolidado.recebidas.titulos,
         faturamento: faturamento ?? { total: 0, porDia: [] },
       };
       if (formato === "pdf") await exportarPdf(relatorio);
@@ -1062,8 +1070,8 @@ function Dashboard() {
             </div>
           )}
 
-          {/* KPI cards: Faturamento, Entradas, Saídas, Pagos */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
+          {/* KPI cards: Faturamento, Entradas, Saídas, Recebidas, Pagos */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 mb-4">
             {faturamento === undefined && isFaturamentoFetching ? (
               <SkeletonCard />
             ) : (
@@ -1095,6 +1103,17 @@ function Dashboard() {
                 icon={<TrendingDown className="h-5 w-5" />}
                 gradient="from-destructive/30 via-destructive/10 to-transparent"
                 accent="text-destructive"
+              />
+            )}
+            {!data && isFetching ? (
+              <SkeletonCard />
+            ) : (
+              <KpiCard
+                label="Contas Recebidas"
+                valor={totalRecebidas}
+                icon={<TrendingUp className="h-5 w-5" />}
+                gradient="from-success/30 via-success/10 to-transparent"
+                accent="text-success"
               />
             )}
             {!data && isFetching ? (
@@ -1184,11 +1203,13 @@ function Dashboard() {
             </div>
           </div>
 
-          {/* Detalhamento consolidado: a receber / a pagar / pagos de todas as empresas */}
+          {/* Detalhamento consolidado: a receber / a pagar / pagos / recebidos de todas as empresas */}
           <div className="mt-6 rounded-2xl border border-border bg-card/60 backdrop-blur-xl p-6 shadow-xl">
             <div className="mb-5 flex items-start justify-between gap-4 flex-wrap">
               <div>
-                <h2 className="font-display text-lg font-semibold">A Receber, A Pagar e Pagos</h2>
+                <h2 className="font-display text-lg font-semibold">
+                  A Receber, A Pagar, Pagos e Recebidos
+                </h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {empresa === "todas"
                     ? "Todas as empresas consolidadas no período selecionado"
@@ -1229,13 +1250,14 @@ function Dashboard() {
             </div>
 
             {!breakdown ? (
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
+                <SkeletonCard />
                 <SkeletonCard />
                 <SkeletonCard />
                 <SkeletonCard />
               </div>
             ) : consolidado ? (
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-success">
@@ -1268,6 +1290,17 @@ function Dashboard() {
                     </span>
                   </div>
                   <TitulosLista itens={consolidado.pagos.titulos} accent="text-destructive" />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-success">
+                      Recebidos
+                    </span>
+                    <span className="text-sm font-bold tabular-nums text-success">
+                      {fmt(consolidado.recebidas.total)}
+                    </span>
+                  </div>
+                  <TitulosLista itens={consolidado.recebidas.titulos} accent="text-success" />
                 </div>
               </div>
             ) : (

@@ -1437,6 +1437,185 @@ async function processarPagasResposta(
   return { dados: brutos, ok: true };
 }
 
+// ------------------- Contas efetivamente recebidas (baixadas) -------------------
+// Espelho do buscarPagas, mas do lado do RECEBIMENTO: titulos de contas a
+// receber quitados (recebidos) no periodo. A API pode atender por dois
+// endpoints e o status de baixa pode vir como ACQUITTED ou PAGO, entao
+// testamos as combinacoes em ordem e ficamos com a primeira que responder 200.
+// O filtro de data e refeito no cliente: alguns endpoints/status ignoram o
+// parametro de data da API.
+
+const ENDPOINTS_RECEBIDAS = [
+  "/v1/financeiro/contas-a-receber",
+  "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar",
+];
+
+const STATUS_RECEBIDAS = ["ACQUITTED", "PAGO"];
+
+// Extrai a data de recebimento/baixa de um titulo (varias estruturas possiveis)
+function extrairDataRecebimento(i: any): string | null {
+  const candidatos = [
+    i?.data_recebimento,
+    i?.data_pagamento,
+    i?.data_baixa,
+    i?.data_quitacao,
+    i?.baixas?.[0]?.data_recebimento,
+    i?.baixas?.[0]?.data_pagamento,
+    i?.baixas?.[0]?.data_baixa,
+    i?.baixas?.[0]?.data_quitacao,
+    i?.baixas?.[0]?.data,
+    i?.parcelas?.[0]?.data_recebimento,
+    i?.parcelas?.[0]?.data_pagamento,
+    i?.parcelas?.[0]?.data_baixa,
+  ];
+  for (const c of candidatos) {
+    if (typeof c === "string" && c.trim()) return c.slice(0, 10);
+  }
+  return null;
+}
+
+// Converte os itens da API em titulos recebidos, mantendo SO os que tem
+// data de recebimento dentro do periodo. Funcao pura (testavel sem API).
+export function processarRecebidas(
+  itens: any[],
+  dataInicio: string,
+  dataFim: string,
+): ItemLancamento[] {
+  const brutos: ItemLancamento[] = [];
+  for (const i of itens) {
+    const recebido = (i.pago as number) || 0;
+    const total = (i.total as number) || 0;
+    // "pago" e o valor efetivamente recebido (no contas a receber, o campo
+    // "pago" e quanto ja foi recebido do titulo).
+    const valor = recebido > 0 ? recebido : total;
+    if (!i.id || valor <= 0) continue;
+    const data =
+      extrairDataRecebimento(i) ||
+      // Ultimo recurso: a API ja filtrou por data_pagamento; se o titulo nao
+      // trouxer a data de recebimento, usamos o vencimento como aproximacao.
+      (i.data_vencimento ? String(i.data_vencimento).slice(0, 10) : null);
+    if (!data) continue;
+    // Data no formato YYYY-MM-DD: comparacao por string funciona.
+    if (data < dataInicio || data > dataFim) continue;
+    brutos.push({
+      data,
+      valor,
+      metodo: null,
+      conta_id: i.conta_financeira_id || i.conta_id || undefined,
+      descricao: extrairDescricao(i),
+      terceiro: extrairTerceiro(i),
+      categoria: extrairCategoria(i),
+    });
+  }
+  return brutos;
+}
+
+export async function buscarRecebidas(
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
+  const cacheKey = `recebidas:${empresa}:${dataInicio}:${dataFim}`;
+  const r = await lerOuCriar(
+    listCache,
+    cacheKey,
+    LIST_TTL_MS,
+    () => buscarRecebidasInterna(empresa, dataInicio, dataFim),
+    (x) => x.ok,
+  );
+  return { dados: r.dados, ok: r.ok };
+}
+
+async function buscarRecebidasInterna(
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
+  const tokenInicial = await obterToken(empresa);
+  if (!tokenInicial) {
+    log("warn", `buscarRecebidas sem token: ${empresa}`);
+    return { dados: [], ok: false };
+  }
+  const tokenRef = { token: tokenInicial };
+
+  // Janela de vencimento de 12 meses: a API exige data_vencimento_de/_ate
+  // mesmo quando o filtro real e por data de recebimento.
+  const vencInicio = new Date(dataInicio + "T00:00:00Z");
+  vencInicio.setUTCDate(vencInicio.getUTCDate() - 365);
+  const vencFim = new Date(dataFim + "T00:00:00Z");
+  vencFim.setUTCDate(vencFim.getUTCDate() + 30);
+  const venc = {
+    data_vencimento_de: vencInicio.toISOString().slice(0, 10),
+    data_vencimento_ate: vencFim.toISOString().slice(0, 10),
+  };
+
+  for (const endpoint of ENDPOINTS_RECEBIDAS) {
+    for (const status of STATUS_RECEBIDAS) {
+      const brutos: ItemLancamento[] = [];
+      let ok = false;
+      let pagina = 1;
+
+      // Pagina ate a API nao devolver mais itens (maximo 20 paginas).
+      while (pagina <= 20) {
+        const params = new URLSearchParams({
+          ...venc,
+          data_pagamento_de: dataInicio,
+          data_pagamento_ate: dataFim,
+          status,
+          tamanho_pagina: "100",
+          pagina: String(pagina),
+        });
+        const url = `https://api-v2.contaazul.com${endpoint}?${params}`;
+        let res = await fetchComRetry(
+          url,
+          { headers: { Authorization: `Bearer ${tokenRef.token}` } },
+          2,
+        );
+
+        if (res.status === 401) {
+          const novo = await renovarToken(empresa);
+          if (novo) {
+            tokenRef.token = novo;
+            res = await fetchComRetry(
+              url,
+              { headers: { Authorization: `Bearer ${novo}` } },
+              1,
+            );
+          }
+        }
+
+        if (!res.ok) {
+          log(
+            "warn",
+            `buscarRecebidas ${empresa} ${endpoint} status=${res.status} (filtro status=${status})`,
+          );
+          ok = false;
+          break;
+        }
+
+        const j: any = await res.json();
+        const itens: any[] = j.itens || (Array.isArray(j) ? j : []);
+        ok = true;
+        brutos.push(...processarRecebidas(itens, dataInicio, dataFim));
+        if (itens.length < 100) break;
+        pagina++;
+      }
+
+      if (ok) {
+        const total = brutos.reduce((a, b) => a + b.valor, 0);
+        log(
+          "info",
+          `buscarRecebidas ${empresa} [${endpoint} status=${status}]: ${brutos.length} titulos recebidos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)})`,
+        );
+        return { dados: brutos, ok: true };
+      }
+    }
+  }
+
+  log("warn", `buscarRecebidas ${empresa}: nenhuma combinacao de endpoint/status respondeu`);
+  return { dados: [], ok: false };
+}
+
 // Inspeciona o detalhe de N itens — usado pelo painel de debug pra ver o JSON cru.
 export async function inspecionarPrimeirosRecebimentos(
   empresa: string,

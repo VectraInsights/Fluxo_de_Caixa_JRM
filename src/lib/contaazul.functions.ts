@@ -9,6 +9,7 @@ import {
   buscarSaldos,
   buscarV2,
   buscarPagas,
+  buscarRecebidas,
   removerAcentos,
   getLogs,
   limparLogs,
@@ -290,6 +291,7 @@ export type DashboardData = {
     total_desp: number;
     total_rec_boleto: number;
     total_pagas: number;
+    total_recebidas: number;
     saldo_final: number;
   };
   avisos: string[];
@@ -340,9 +342,9 @@ export const getDashboard = createServerFn({ method: "GET" })
             `${emp}: sem token válido — reconecte a empresa na Conta Azul.`,
           );
           empresasComProblema.add(emp);
-          return { empresa: emp, bancos: [], rec: [], desp: [], pagas: [] };
+          return { empresa: emp, bancos: [], rec: [], desp: [], pagas: [], recebidas: [] };
         }
-        const [sal, rec, desp, pagas] = await Promise.all([
+        const [sal, rec, desp, pagas, recebidas] = await Promise.all([
           buscarSaldos(emp, token),
           buscarV2(
             emp,
@@ -357,6 +359,7 @@ export const getDashboard = createServerFn({ method: "GET" })
             data.data_fim,
           ),
           buscarPagas(emp, data.data_inicio, data.data_fim),
+          buscarRecebidas(emp, data.data_inicio, data.data_fim),
         ]);
         const contasComFalha = sal.todas.filter((c) => c.erro);
         if (!sal.ok) {
@@ -377,14 +380,16 @@ export const getDashboard = createServerFn({ method: "GET" })
           avisos.push(`${emp}: falha ao buscar contas a pagar.`);
           empresasComProblema.add(emp);
         }
-        // Nota: falha em buscarPagas NAO vira aviso/erro de sincronizacao —
-        // e um card complementar; o token ruim ja e detectado por rec/desp.
+        // Nota: falha em buscarPagas/buscarRecebidas NAO vira aviso/erro de
+        // sincronizacao — e um card complementar; o token ruim ja e detectado
+        // por rec/desp.
         return {
           empresa: emp,
           bancos: sal.lista,
           rec: rec.dados,
           desp: desp.dados,
           pagas: pagas.dados,
+          recebidas: recebidas.dados,
         };
       }),
     );
@@ -436,6 +441,12 @@ export const getDashboard = createServerFn({ method: "GET" })
       for (const i of r.pagas) totalPagas += i.valor;
     }
 
+    // Total de contas EFETIVAMENTE recebidas no periodo (baixa registrada)
+    let totalRecebidas = 0;
+    for (const r of resultados) {
+      for (const i of r.recebidas) totalRecebidas += i.valor;
+    }
+
     const receitas: number[] = [];
     const receitas_boleto: number[] = [];
     const despesas: number[] = [];
@@ -472,6 +483,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         total_desp: Math.round(total_desp * 100) / 100,
         total_rec_boleto: Math.round(total_rec_boleto * 100) / 100,
         total_pagas: Math.round(totalPagas * 100) / 100,
+        total_recebidas: Math.round(totalRecebidas * 100) / 100,
         saldo_final: saldo.length ? saldo[saldo.length - 1] : Math.round(totalBanco * 100) / 100,
       },
       avisos,
@@ -495,6 +507,7 @@ export type EmpresaBreakdown = {
   receber: { total: number; titulos: TituloDetalhe[] };
   pagar: { total: number; titulos: TituloDetalhe[] };
   pagos: { total: number; titulos: TituloDetalhe[] };
+  recebidas: { total: number; titulos: TituloDetalhe[] };
 };
 
 export const getEmpresaBreakdown = createServerFn({ method: "GET" })
@@ -535,18 +548,21 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
             receber: { total: 0, titulos: [] },
             pagar: { total: 0, titulos: [] },
             pagos: { total: 0, titulos: [] },
+            recebidas: { total: 0, titulos: [] },
           };
         }
-        const [rec, desp, pagas] = await Promise.all([
+        const [rec, desp, pagas, recebidas] = await Promise.all([
           buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar", data.data_inicio, data.data_fim),
           buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar", data.data_inicio, data.data_fim),
           buscarPagas(emp, data.data_inicio, data.data_fim),
+          buscarRecebidas(emp, data.data_inicio, data.data_fim),
         ]);
         return {
           empresa: emp,
           receber: montar(rec.dados),
           pagar: montar(desp.dados),
           pagos: montar(pagas.dados),
+          recebidas: montar(recebidas.dados),
         };
       }),
     );
