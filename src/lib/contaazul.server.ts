@@ -1693,15 +1693,15 @@ async function enriquecerPagasComValorLiquido(
   tokenRef: { token: string },
 ): Promise<ItemLancamento[]> {
   const CONCORRENCIA = 4;
-  // Apenas titulos sem valor_pago_* e que tenham baixa_id ou parcela_id precisam de consulta
-  const pendentes = brutos.filter(
-    (b) => !b.valor_pago && (b.baixa_id || b.parcela_id),
-  );
+  // Consulta a baixa para todos os titulos que tenham baixa_id ou parcela_id,
+  // para garantir que o valor liquido (valor_bruto - desconto + juros + multa)
+  // seja usado mesmo quando a listagem ja retorna valor_pago preenchido (bruto).
+  const pendentes = brutos.filter((b) => b.baixa_id || b.parcela_id);
   if (!pendentes.length) return brutos;
 
   log(
     "info",
-    `enriquecerPagasComValorLiquido ${empresa}: ${pendentes.length} titulos sem valor_pago_* consultando baixa`,
+    `enriquecerPagasComValorLiquido ${empresa}: ${pendentes.length} titulos com baixa/parcela consultando valor_composicao`,
   );
 
   const resultado = [...brutos];
@@ -1745,26 +1745,28 @@ async function enriquecerPagasComValorLiquido(
     }
 
     const vc = j.valor_composicao ?? {};
-    const desconto = typeof vc.desconto === "number" ? vc.desconto : (vc.desconto ? Number(vc.desconto) : 0);
-    const juros = typeof vc.juros === "number" ? vc.juros : (vc.juros ? Number(vc.juros) : 0);
-    const multa = typeof vc.multa === "number" ? vc.multa : (vc.multa ? Number(vc.multa) : 0);
-    const valorPagoCampo = extrairNumero(j, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa", "valor_pagamento");
-
-    const pago = item._pago ?? 0;
-    const total = item._total ?? 0;
+    const desconto = Number(vc.desconto || 0);
+    const juros = Number(vc.juros || 0);
+    const multa = Number(vc.multa || 0);
+    const valorBruto = Number(vc.valor_bruto || 0);
 
     let valor: number;
-    if (valorPagoCampo > 0) {
-      valor = valorPagoCampo;
-    } else if (pago > 0) {
+
+    if (valorBruto > 0) {
+      // Valor liquido definitivo conforme documentacao: valor_bruto - desconto + juros + multa
+      valor = valorBruto - desconto + juros + multa;
+    } else {
+      // Fallback quando a baixa nao retorna valor_bruto: usa os valores da listagem
+      const pago = item._pago ?? 0;
+      const total = item._total ?? 0;
       const ehBruto = Math.abs(pago - total) < 0.01;
       if (ehBruto && desconto > 0) {
         valor = pago - desconto + juros + multa;
-      } else {
+      } else if (pago > 0) {
         valor = pago + juros + multa;
+      } else {
+        valor = total;
       }
-    } else {
-      valor = total;
     }
 
     // Atualiza o item no resultado pelo indice
@@ -1776,7 +1778,6 @@ async function enriquecerPagasComValorLiquido(
         desconto: desconto || undefined,
         juros: juros || undefined,
         multa: multa || undefined,
-        valor_pago: valorPagoCampo || undefined,
       };
     }
   }
