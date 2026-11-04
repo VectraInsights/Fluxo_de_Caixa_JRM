@@ -769,12 +769,14 @@ export async function exportarPdf(rel: RelatorioListas) {
     autoTable(doc, {
       startY: y,
       head: [["Data", "Cliente", "Faturamento (R$)"]],
-      body: linhasFat.map((l) => [l.data, l.cliente, l.valor]),
-      foot: [["", "TOTAL", formatarValor(f.total)]],
+      body: [
+        ...linhasFat.map((l) => [l.data, l.cliente, l.valor]),
+        // Total apenas na última linha da planilha (não no rodapé de cada página).
+        ["", "TOTAL", formatarValor(f.total)],
+      ],
       theme: "grid",
       styles: { fontSize: 8, cellPadding: 2, overflow: "linebreak" },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
-      footStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: "bold" },
       // Linha de total do dia em negrito e com fundo claro
       didParseCell: (data: any) => {
         if (data.section === "body" && linhasFat[data.row.index]?.ehTotalDia) {
@@ -843,36 +845,35 @@ export async function exportarPdf(rel: RelatorioListas) {
         ? [...base, t.metodo || "", formatarValor(t.valor)]
         : [...base, formatarValor(t.valor)];
     });
-    const foot = [
-      ["", "TOTAL", ...(temMetodo ? ["", ""] : [""]), formatarValor(total)],
-    ];
-    // Larguras automaticas com teto de quebra do texto (evita estourar a pagina).
-    // "maxWidth" existe no runtime do jspdf-autotable, mas nao nos tipos da v5.
-    const columnStyles = temMetodo
-      ? ({
-          0: { maxWidth: 18 },
-          1: { maxWidth: 60 },
-          2: { maxWidth: 46 },
-          3: { maxWidth: 24 },
-          4: { maxWidth: 30, halign: "right" },
-        } as any)
-      : ({
-          0: { maxWidth: 18 },
-          1: { maxWidth: 64 },
-          2: { maxWidth: 50 },
-          3: { maxWidth: 32, halign: "right" },
-        } as any);
+    // Total apenas na última linha da planilha (não no rodapé de cada página).
+    body.push([
+      "",
+      "TOTAL",
+      ...(temMetodo ? ["", ""] : [""]),
+      formatarValor(total),
+    ]);
 
     autoTable(doc, {
       startY: y,
       head,
       body,
-      foot,
       theme: "grid",
       styles: { fontSize: 8, cellPadding: 2, overflow: "linebreak" },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
-      footStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: "bold" },
-      columnStyles,
+      columnStyles: temMetodo
+        ? ({
+            0: { maxWidth: 18 },
+            1: { maxWidth: 60 },
+            2: { maxWidth: 46 },
+            3: { maxWidth: 24 },
+            4: { maxWidth: 30, halign: "right" },
+          } as any)
+        : ({
+            0: { maxWidth: 18 },
+            1: { maxWidth: 64 },
+            2: { maxWidth: 50 },
+            3: { maxWidth: 32, halign: "right" },
+          } as any),
       margin: { top: 30, bottom: 16, left: margem, right: margem },
     });
 
