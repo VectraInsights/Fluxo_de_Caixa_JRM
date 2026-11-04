@@ -471,14 +471,30 @@ export const getDashboard = createServerFn({ method: "GET" })
 
     // Total de contas EFETIVAMENTE pagas no periodo (baixa registrada na Conta Azul)
     let totalPagas = 0;
+    let totalDescontoPagas = 0;
+    let totalJurosPagas = 0;
+    let totalMultaPagas = 0;
     for (const r of resultados) {
-      for (const i of r.pagas) totalPagas += i.valor;
+      for (const i of r.pagas) {
+        totalPagas += i.valor;
+        totalDescontoPagas += i.desconto || 0;
+        totalJurosPagas += i.juros || 0;
+        totalMultaPagas += i.multa || 0;
+      }
     }
 
     // Total de contas EFETIVAMENTE recebidas no periodo (baixa registrada)
     let totalRecebidas = 0;
+    let totalDescontoRecebidas = 0;
+    let totalJurosRecebidas = 0;
+    let totalMultaRecebidas = 0;
     for (const r of resultados) {
-      for (const i of r.recebidas) totalRecebidas += i.valor;
+      for (const i of r.recebidas) {
+        totalRecebidas += i.valor;
+        totalDescontoRecebidas += i.desconto || 0;
+        totalJurosRecebidas += i.juros || 0;
+        totalMultaRecebidas += i.multa || 0;
+      }
     }
 
     const receitas: number[] = [];
@@ -556,7 +572,13 @@ export const getDashboard = createServerFn({ method: "GET" })
         total_desp: Math.round(total_desp * 100) / 100,
         total_rec_boleto: Math.round(total_rec_boleto * 100) / 100,
         total_pagas: Math.round(totalPagas * 100) / 100,
+        total_desconto_pagas: Math.round(totalDescontoPagas * 100) / 100,
+        total_juros_pagas: Math.round(totalJurosPagas * 100) / 100,
+        total_multa_pagas: Math.round(totalMultaPagas * 100) / 100,
         total_recebidas: Math.round(totalRecebidas * 100) / 100,
+        total_desconto_recebidas: Math.round(totalDescontoRecebidas * 100) / 100,
+        total_juros_recebidas: Math.round(totalJurosRecebidas * 100) / 100,
+        total_multa_recebidas: Math.round(totalMultaRecebidas * 100) / 100,
         saldo_final: saldo.length ? saldo[saldo.length - 1] : Math.round(totalBanco * 100) / 100,
       },
       avisos,
