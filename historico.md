@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `d986f21` | fix: desconto aplicado corretamente - detecta se pago eh bruto (pago ~= total) ou liquido (pago ~= total - desconto) comparando com o total da parcela | 03/11/2026 |
 | `89bab13` | fix: desconto ja vem no pago da Conta Azul (valor liquido) - nao subtrair duas vezes; usa pago/valorPagoCampo diretamente e soma apenas juros/multa separados | 03/11/2026 |
 | `5bb74c3` | fix: desconto/juros/multa busca em valor_composicao / composicao_valor (baixas e parcelas) da Conta Azul para nao perder lancamentos com desconto | 03/11/2026 |
 | `99c103e` | fix: extração recursiva de desconto/juros/multa em qualquer nível do JSON da Conta Azul (inclui valor_composicao serializado como string) + log via gravarLogEvento quando desconto é detectado | 03/11/2026 |
