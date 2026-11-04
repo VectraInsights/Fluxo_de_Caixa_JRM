@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `b4c3e3e` | fix: corrige os erros de tipagem que quebravam o build apos o pull do remoto (campos de desconto/juros no resumo, nivel "debug" no log, id do titulo) e o regex de Estorno/Estornado no PDF | 04/11/2026 |
 | `d986f21` | fix: desconto aplicado corretamente - detecta se pago eh bruto (pago ~= total) ou liquido (pago ~= total - desconto) comparando com o total da parcela | 03/11/2026 |
 | `89bab13` | fix: desconto ja vem no pago da Conta Azul (valor liquido) - nao subtrair duas vezes; usa pago/valorPagoCampo diretamente e soma apenas juros/multa separados | 03/11/2026 |
 | `5bb74c3` | fix: desconto/juros/multa busca em valor_composicao / composicao_valor (baixas e parcelas) da Conta Azul para nao perder lancamentos com desconto | 03/11/2026 |
@@ -553,6 +554,43 @@ devolve o vinculo com o banco e se o filtro esta pegando.
 > (em `contaazul.functions.ts`) eram **codigo morto** — declarados e nunca
 > usados. O `mapaContaBanco` ainda nao podia funcionar (os objetos de conta
 > nao tinham `id`). Ambos foram removidos/substituidos por este filtro.
+
+---
+
+## 3.10 Correcoes de tipagem e categorias de estorno no PDF
+
+Apos o `pull` do historico remoto (31 commits sobre desconto/juros/multa),
+o **HEAD remoto nao compilava** — `npx tsc --noEmit` acusava **14 erros de
+TypeScript**. Todos estavam no codigo novo de desconto/juros (nao nos
+arquivos do filtro por bancos nem na separacao por empresa do PDF).
+
+**Correcoes aplicadas (commit `b4c3e3e`):**
+
+| Erro | Correcao |
+|------|----------|
+| `total_desconto_pagas` (e `total_juros_*`, `total_multa_*`, `total_desconto_recebidas`, `total_juros_recebidas`, `total_multa_recebidas`) nao existiam no tipo `DashboardData["resumo"]`, mas eram retornados pelo handler | campos adicionados ao tipo do `resumo` em `contaazul.functions.ts` |
+| `log("debug", ...)` — o nivel `"debug"` nao existia em `LogEntry["nivel"]` (aceitava so `"info" \| "warn" \| "error"`) | nivel `"debug"` incluido no tipo e no espelhamento para o console |
+| `item.id` nao existia em `ItemLancamento`, mas era usado nos logs de enriquecimento da baixa | campo `id?: string` adicionado ao tipo e preenchido em **Pagas** e **Recebidos** (`id: String(i.id)`) |
+| `KpiCard.sub` nao aceitava `null`, mas o card de Contas Recebidas passava `null` quando nao havia desconto/juros/multa | `sub?: string \| null` |
+
+Nenhuma alteracao de **comportamento** — so tipagem e a correcao do regex
+abaixo.
+
+**Categorias de estorno no PDF:** o remoto havia escrito o regex
+`/estorn(a|ado)\b/i`, que **nao pega "Estorno"** (a categoria mais comum) —
+so casava "Estorna" e "Estornado", apesar do comentario dizer
+"estorno/estornado". Como **nao existe a categoria "Estorna"**, o regex correto
+e:
+
+```ts
+/estorn(o|ado)\b/i
+```
+
+Casos cobertos: `Estorno`, `estorno`, `ESTORNO`, `Estornado`, `estornado`,
+`Estornado Parcial` — e **nao** casa `Estornos`, `Estornamento`, `Vendas`,
+`Combustivel`. Como a coluna Categoria foi removida do PDF impresso, a
+categoria de estorno continua sendo anexada **a descricao** do titulo
+(ex.: `Titulo (Estorno)`).
 
 ---
 
