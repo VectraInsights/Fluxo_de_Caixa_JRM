@@ -1443,8 +1443,8 @@ async function buscarPagasInterna(
     let ok = false;
     let pagina = 1;
 
-    // Pagina ate a API nao devolver mais itens (maximo 20 paginas).
-    while (pagina <= 20) {
+    // Pagina ate a API nao devolver mais itens (sem limite de paginas).
+    while (true) {
       const params = new URLSearchParams({
         ...venc,
         data_pagamento_de: dataInicio,
@@ -1687,8 +1687,8 @@ async function buscarRecebidasInterna(
       let ok = false;
       let pagina = 1;
 
-      // Pagina ate a API nao devolver mais itens (maximo 20 paginas).
-      while (pagina <= 20) {
+      // Pagina ate a API nao devolver mais itens (sem limite de paginas).
+      while (true) {
         const params = new URLSearchParams({
           ...venc,
           data_pagamento_de: dataInicio,
