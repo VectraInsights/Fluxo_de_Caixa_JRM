@@ -1477,8 +1477,7 @@ async function buscarPagasInterna(
           "warn",
           `buscarPagas ${empresa} status=${res.status} (filtro status=${status}) pg=${pagina}`,
         );
-        ok = false;
-        break;
+        break; // interrompe, mas mantem os itens ja coletados
       }
 
       const j: any = await res.json();
@@ -1489,7 +1488,7 @@ async function buscarPagasInterna(
       pagina++;
     }
 
-    if (ok && brutos.length > 0) {
+    if (brutos.length > 0) {
       const total = brutos.reduce((a, b) => a + b.valor, 0);
       log(
         "info",
@@ -1721,8 +1720,7 @@ async function buscarRecebidasInterna(
             "warn",
             `buscarRecebidas ${empresa} ${endpoint} status=${res.status} (filtro status=${status})`,
           );
-          ok = false;
-          break;
+          break; // interrompe, mas mantem os itens ja coletados
         }
 
         const j: any = await res.json();
@@ -1733,7 +1731,7 @@ async function buscarRecebidasInterna(
         pagina++;
       }
 
-      if (ok) {
+      if (brutos.length > 0) {
         const total = brutos.reduce((a, b) => a + b.valor, 0);
         log(
           "info",
