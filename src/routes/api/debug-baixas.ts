@@ -203,7 +203,12 @@ export const Route = createFileRoute("/api/debug-baixas")({
           "/v1/financeiro/eventos-financeiros/baixas",
           "/v1/financeiro/eventos-financeiros/baixas/buscar",
           "/v1/financeiro/contas-a-pagar/baixas",
+          "/v1/financeiro/contas-a-pagar/baixas/buscar",
           "/v1/financeiro/eventos-financeiros/contas-a-pagar/baixas/buscar",
+          "/v1/financeiro/eventos-financeiros/parcelas/baixas",
+          "/v1/financeiro/parcelas/baixas",
+          "/v1/financeiro/baixas/buscar",
+          "/v1/financeiro/eventos-financeiros/baixas/todas",
         ];
         for (const c of emLote) {
           const params = new URLSearchParams({
@@ -220,6 +225,92 @@ export const Route = createFileRoute("/api/debug-baixas")({
           });
         }
 
+        // 5) A listagem aceita algum parametro que traga as baixas (ou o
+        //    desconto) junto? Se sim, o desconto vem em uma unica chamada.
+        const variantes: any[] = [];
+        const parametros = [
+          "",
+          "incluir_baixas=true",
+          "incluir=baixas",
+          "expand=baixas",
+          "com_baixas=true",
+          "trazer_baixas=true",
+          "incluir_parcelas=true",
+          "com_parcelas=true",
+          "detalhado=true",
+          "detalhes=true",
+          "completo=true",
+        ];
+        const basesListagem = [
+          "/v1/financeiro/contas-a-pagar",
+          "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar",
+        ];
+        const primeiroTitulo = selecionados[0];
+        for (const b of basesListagem) {
+          for (const extra of parametros) {
+            const params = new URLSearchParams({
+              data_vencimento_de: vencInicio.toISOString().slice(0, 10),
+              data_vencimento_ate: vencFim.toISOString().slice(0, 10),
+              data_pagamento_de: dataInicio,
+              data_pagamento_ate: dataFim,
+              status: "ACQUITTED",
+              tamanho_pagina: "3",
+              pagina: "1",
+            });
+            if (extra) {
+              for (const [k, v] of new URLSearchParams(extra)) params.set(k, v);
+            }
+            const r = await chamar(`${BASE}${b}?${params}`);
+            const j = tentarJson(r.texto);
+            const item = j?.itens?.[0] ?? (Array.isArray(j) ? j[0] : null);
+            variantes.push({
+              url: `${BASE}${b}?${params}`,
+              http_status: r.status,
+              chaves: item ? Object.keys(item) : null,
+              tem_baixas: !!item?.baixas,
+              tem_parcelas: !!item?.parcelas,
+              tem_desconto:
+                item?.desconto !== undefined ||
+                item?.valor_desconto !== undefined ||
+                item?.valor_composicao !== undefined,
+            });
+          }
+        }
+
+        // 6) Detalhe de um titulo: /contas-a-pagar/{id} pode trazer as baixas.
+        const detalheTitulo: any[] = [];
+        for (const t of selecionados.slice(0, 2)) {
+          const id = String(t.id);
+          for (const caminho of [
+            `/v1/financeiro/contas-a-pagar/${id}`,
+            `/v1/financeiro/eventos-financeiros/${id}`,
+            `/v1/financeiro/eventos-financeiros/${id}/parcelas`,
+          ]) {
+            const r = await chamar(`${BASE}${caminho}`);
+            const j = tentarJson(r.texto);
+            const item = Array.isArray(j) ? j[0] : j;
+            detalheTitulo.push({
+              caminho,
+              http_status: r.status,
+              chaves: item && typeof item === "object" ? Object.keys(item) : null,
+              numeros: acharNumeros(j, [
+                "desconto",
+                "valor_desconto",
+                "juros",
+                "valor_juros",
+                "multa",
+                "valor_multa",
+                "valor_bruto",
+                "valor_pago",
+                "valor_liquido",
+                "total",
+                "pago",
+              ]).slice(0, 40),
+              preview: cortar(r.texto, 700),
+            });
+          }
+        }
+
         return new Response(
           JSON.stringify(
             {
@@ -231,6 +322,8 @@ export const Route = createFileRoute("/api/debug-baixas")({
               selecionados: selecionados.length,
               detalhes,
               candidatos_em_lote: candidatos,
+              variantes_listagem: variantes,
+              detalhe_titulo: detalheTitulo,
             },
             null,
             2,
