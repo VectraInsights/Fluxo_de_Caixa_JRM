@@ -256,6 +256,12 @@ export type ItemLancamento = {
   multa?: number;
   desconto?: number;
   valor_pago?: number;
+  // IDs para consulta de baixa (valor liquido real via valor_composicao da Conta Azul)
+  baixa_id?: string;
+  parcela_id?: string;
+  // Valores originais brutos da API (usados internamente na enriquecimento de baixa)
+  _pago?: number;
+  _total?: number;
 };
 
 type EntradaCache<T> = { promessa: Promise<T>; exp: number };
@@ -1562,12 +1568,16 @@ async function buscarPagasInterna(
     }
 
     if (brutos.length > 0) {
-      const total = brutos.reduce((a, b) => a + b.valor, 0);
+      // Enriquece titulos sem valor_pago_* consultando o endpoint de baixa para
+      // obter o valor_composicao.desconto real e garantir que o card mostre o
+      // valor liquido (total - desconto + juros + multa).
+      const enriquecidos = await enriquecerPagasComValorLiquido(empresa, brutos, tokenRef);
+      const total = enriquecidos.reduce((a, b) => a + b.valor, 0);
       log(
         "info",
         `buscarPagas ${empresa} [status=${status}]: ${brutos.length} titulos pagos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)})`,
       );
-      return { dados: brutos, ok: true };
+      return { dados: enriquecidos, ok: true };
     }
   }
   return { dados: [], ok: false };
@@ -1643,6 +1653,9 @@ async function processarPagasResposta(
       (i.data_pagamento ? String(i.data_pagamento).slice(0, 10) : null) ||
       (i.data_vencimento ? String(i.data_vencimento).slice(0, 10) : null);
     if (!data) continue;
+    // IDs da baixa/parcela para consulta do valor_composicao (desconto real)
+    const baixaId = i.baixas?.[0]?.id ?? i.baixa_id;
+    const parcelaId = i.parcelas?.[0]?.id ?? i.parcela_id;
     brutos.push({
       data,
       valor,
@@ -1655,9 +1668,126 @@ async function processarPagasResposta(
       multa: multa || undefined,
       desconto: desconto || undefined,
       valor_pago: valorPagoCampo || undefined,
+      ...(baixaId ? { baixa_id: String(baixaId) } : {}),
+      ...(parcelaId ? { parcela_id: String(parcelaId) } : {}),
+      _pago: pago,
+      _total: total,
     });
   }
   return brutos;
+}
+
+/**
+ * Para titulos pagos que nao tiveram `valor_pago_*` na resposta da listagem,
+ * consulta o endpoint de baixa da Conta Azul para obter o
+ * `valor_composicao.desconto` / `juros` / `multa` real e recalcula o valor
+ * liquido (pago - desconto + juros + multa).
+ *
+ * Endpoints:
+ *   GET /v1/financeiro/eventos-financeiros/parcelas/baixa/{baixa_id}
+ *   GET /v1/financeiro/eventos-financeiros/parcelas/{parcela_id}/baixa
+ */
+async function enriquecerPagasComValorLiquido(
+  empresa: string,
+  brutos: ItemLancamento[],
+  tokenRef: { token: string },
+): Promise<ItemLancamento[]> {
+  const CONCORRENCIA = 4;
+  // Apenas titulos sem valor_pago_* e que tenham baixa_id ou parcela_id precisam de consulta
+  const pendentes = brutos.filter(
+    (b) => !b.valor_pago && (b.baixa_id || b.parcela_id),
+  );
+  if (!pendentes.length) return brutos;
+
+  log(
+    "info",
+    `enriquecerPagasComValorLiquido ${empresa}: ${pendentes.length} titulos sem valor_pago_* consultando baixa`,
+  );
+
+  const resultado = [...brutos];
+
+  async function processarUm(item: ItemLancamento): Promise<void> {
+    const baixaId = item.baixa_id;
+    const parcelaId = item.parcela_id;
+    const url = baixaId
+      ? `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/baixa/${baixaId}`
+      : `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/${parcelaId}/baixa`;
+
+    let res: Response;
+    try {
+      res = await fetchComRetry(url, {
+        headers: { Authorization: `Bearer ${tokenRef.token}` },
+      }, 2);
+    } catch {
+      return;
+    }
+
+    if (res.status === 401) {
+      const novo = await renovarToken(empresa);
+      if (!novo) return;
+      tokenRef.token = novo;
+      try {
+        res = await fetchComRetry(url, {
+          headers: { Authorization: `Bearer ${novo}` },
+        }, 1);
+      } catch {
+        return;
+      }
+    }
+
+    if (!res.ok) return;
+
+    let j: any;
+    try {
+      j = await res.json();
+    } catch {
+      return;
+    }
+
+    const vc = j.valor_composicao ?? {};
+    const desconto = typeof vc.desconto === "number" ? vc.desconto : (vc.desconto ? Number(vc.desconto) : 0);
+    const juros = typeof vc.juros === "number" ? vc.juros : (vc.juros ? Number(vc.juros) : 0);
+    const multa = typeof vc.multa === "number" ? vc.multa : (vc.multa ? Number(vc.multa) : 0);
+    const valorPagoCampo = extrairNumero(j, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa", "valor_pagamento");
+
+    const pago = item._pago ?? 0;
+    const total = item._total ?? 0;
+
+    let valor: number;
+    if (valorPagoCampo > 0) {
+      valor = valorPagoCampo;
+    } else if (pago > 0) {
+      const ehBruto = Math.abs(pago - total) < 0.01;
+      if (ehBruto && desconto > 0) {
+        valor = pago - desconto + juros + multa;
+      } else {
+        valor = pago + juros + multa;
+      }
+    } else {
+      valor = total;
+    }
+
+    // Atualiza o item no resultado pelo indice
+    const idx = brutos.indexOf(item);
+    if (idx !== -1) {
+      resultado[idx] = {
+        ...resultado[idx],
+        valor,
+        desconto: desconto || undefined,
+        juros: juros || undefined,
+        multa: multa || undefined,
+        valor_pago: valorPagoCampo || undefined,
+      };
+    }
+  }
+
+  // Executa em lotes de CONCORRENCIA para nao saturar a API
+  for (let i = 0; i < pendentes.length; i += CONCORRENCIA) {
+    const lote = pendentes.slice(i, i + CONCORRENCIA);
+    await Promise.all(lote.map(processarUm));
+  }
+
+  return resultado;
 }
 
 // ------------------- Contas efetivamente recebidas (baixadas) -------------------
@@ -1767,6 +1897,10 @@ export function processarRecebidas(
       multa: multa || undefined,
       desconto: desconto || undefined,
       valor_pago: valorPagoCampo || undefined,
+      ...(i.baixas?.[0]?.id ? { baixa_id: String(i.baixas[0].id) } : {}),
+      ...(i.parcelas?.[0]?.id ? { parcela_id: String(i.parcelas[0].id) } : {}),
+      _pago: recebido,
+      _total: total,
     });
   }
   return brutos;
@@ -1863,12 +1997,15 @@ async function buscarRecebidasInterna(
       }
 
       if (brutos.length > 0) {
-        const total = brutos.reduce((a, b) => a + b.valor, 0);
+        // Enriquece titulos sem valor_pago_* consultando o endpoint de baixa para
+        // obter o valor_composicao.desconto real e garantir valor liquido no card.
+        const enriquecidos = await enriquecerPagasComValorLiquido(empresa, brutos, tokenRef);
+        const total = enriquecidos.reduce((a, b) => a + b.valor, 0);
         log(
           "info",
           `buscarRecebidas ${empresa} [${endpoint} status=${status}]: ${brutos.length} titulos recebidos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)})`,
         );
-        return { dados: brutos, ok: true };
+        return { dados: enriquecidos, ok: true };
       }
     }
   }
