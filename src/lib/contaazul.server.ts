@@ -1770,11 +1770,28 @@ async function enriquecerPagasComValorLiquido(
     const vcBaixa = dadosBaixa.valor_composicao ?? {};
     const vcParcela = dadosParcela?.valor_composicao ?? {};
 
+    // DEBUG: loga o que a API retornou para cada fonte
+    log(
+      "debug",
+      `enriquecerPagas ${empresa} id=${String(item.id).slice(0,8)} ` +
+      `baixaId=${baixaId ?? "-"} parcelaId=${parcelaId ?? "-"} ` +
+      `dadosBaixa=${JSON.stringify(dadosBaixa).slice(0,500)} ` +
+      `dadosParcela=${JSON.stringify(dadosParcela).slice(0,500)}`,
+    );
+
     // Prioriza o desconto da parcela se o da baixa estiver zerado (e vice-versa)
     const desconto = Number(vcBaixa.desconto || vcParcela.desconto || 0);
     const juros = Number(vcBaixa.juros || vcParcela.juros || 0);
     const multa = Number(vcBaixa.multa || vcParcela.multa || 0);
     const valorBruto = Number(vcBaixa.valor_bruto || vcParcela.valor_bruto || 0);
+
+    log(
+      "debug",
+      `enriquecerPagas ${empresa} id=${String(item.id).slice(0,8)} ` +
+      `vcBaixa.desconto=${vcBaixa.desconto} vcParcela.desconto=${vcParcela.desconto} ` +
+      `vcBaixa.valor_bruto=${vcBaixa.valor_bruto} vcParcela.valor_bruto=${vcParcela.valor_bruto} ` +
+      `desconto=${desconto} juros=${juros} multa=${multa} valorBruto=${valorBruto}`,
+    );
 
     let valor: number;
 
@@ -1794,6 +1811,13 @@ async function enriquecerPagasComValorLiquido(
         valor = total;
       }
     }
+
+    log(
+      "debug",
+      `enriquecerPagas ${empresa} id=${String(item.id).slice(0,8)} ` +
+      `pago=${item._pago} total=${item._total} valor_final=${valor} ` +
+      `desconto_aplicado=${desconto} juros_aplicado=${juros} multa_aplicado=${multa}`,
+    );
 
     // Atualiza o item no resultado pelo indice
     const idx = brutos.indexOf(item);
