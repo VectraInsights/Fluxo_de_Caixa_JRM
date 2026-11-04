@@ -1749,8 +1749,7 @@ async function enriquecerPagasComValorLiquido(
     const dadosBaixa = Array.isArray(j) ? j[0] : j;
     if (!dadosBaixa) return;
 
-    // Tenta pegar os dados da Parcela também para garantir o desconto original
-    // (desconto lançado na emissão/edição da conta, antes do pagamento).
+    // Busca os detalhes da Parcela (para pegar valor_composicao e o evento pai)
     let dadosParcela: any = null;
     if (parcelaId) {
       try {
@@ -1763,12 +1762,17 @@ async function enriquecerPagasComValorLiquido(
           dadosParcela = Array.isArray(jParcela) ? jParcela[0] : jParcela;
         }
       } catch {
-        // falha silenciosa: segue com o que vier da baixa
+        // falha silenciosa
       }
     }
 
-    const vcBaixa = dadosBaixa.valor_composicao ?? {};
-    const vcParcela = dadosParcela?.valor_composicao ?? {};
+    // Helper defensivo: a API varia entre valor_composicao, composicao_valor e detalhe_valor
+    const getVC = (obj: any) =>
+      obj?.valor_composicao || obj?.composicao_valor || obj?.detalhe_valor || {};
+
+    const vcB = getVC(dadosBaixa);
+    const vcP = getVC(dadosParcela);
+    const vcE = getVC(dadosParcela?.evento); // desconto pode estar no evento pai
 
     // DEBUG: loga o que a API retornou para cada fonte
     log(
@@ -1776,21 +1780,21 @@ async function enriquecerPagasComValorLiquido(
       `enriquecerPagas ${empresa} id=${String(item.id).slice(0,8)} ` +
       `baixaId=${baixaId ?? "-"} parcelaId=${parcelaId ?? "-"} ` +
       `dadosBaixa=${JSON.stringify(dadosBaixa).slice(0,500)} ` +
-      `dadosParcela=${JSON.stringify(dadosParcela).slice(0,500)}`,
+      `dadosParcela=${JSON.stringify(dadosParcela).slice(0,500)} ` +
+      `evento=${JSON.stringify(dadosParcela?.evento ?? null).slice(0,300)}`,
     );
 
-    // Prioriza o desconto da parcela se o da baixa estiver zerado (e vice-versa)
-    const desconto = Number(vcBaixa.desconto || vcParcela.desconto || 0);
-    const juros = Number(vcBaixa.juros || vcParcela.juros || 0);
-    const multa = Number(vcBaixa.multa || vcParcela.multa || 0);
-    const valorBruto = Number(vcBaixa.valor_bruto || vcParcela.valor_bruto || 0);
+    // Prioriza desconto/juros/multa nas 3 camadas: baixa > parcela > evento pai
+    const desconto = Number(vcB.desconto || vcP.desconto || vcE.desconto || 0);
+    const juros = Number(vcB.juros || vcP.juros || vcE.juros || 0);
+    const multa = Number(vcB.multa || vcP.multa || vcE.multa || 0);
+    const valorBruto = Number(vcB.valor_bruto || vcP.valor_bruto || vcE.valor_bruto || item._total || 0);
 
     log(
       "debug",
       `enriquecerPagas ${empresa} id=${String(item.id).slice(0,8)} ` +
-      `vcBaixa.desconto=${vcBaixa.desconto} vcParcela.desconto=${vcParcela.desconto} ` +
-      `vcBaixa.valor_bruto=${vcBaixa.valor_bruto} vcParcela.valor_bruto=${vcParcela.valor_bruto} ` +
-      `desconto=${desconto} juros=${juros} multa=${multa} valorBruto=${valorBruto}`,
+      `vcB.desconto=${vcB.desconto} vcP.desconto=${vcP.desconto} vcE.desconto=${vcE.desconto} ` +
+      `valorBruto=${valorBruto} desconto=${desconto} juros=${juros} multa=${multa}`,
     );
 
     let valor: number;
