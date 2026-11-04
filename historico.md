@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `9414151` | fix: busca de pagas agora pagina todas as paginas da API (antes so trazia a primeira pagina de 100, faltando titulos) | 03/11/2026 |
 | `7209c1e` | fix: categoria estorno/estornado anexada a descricao no PDF (coluna Categoria removida do impresso) e inclusao de juros/multa/desconto no valor de pagas e recebidos (campo pago/total nao traz acrescimos) | 03/11/2026 |
 | `2e59959` | chore: remove a constante morta BANCOS_PERMITIDOS e documenta o filtro por bancos | 03/11/2026 |
 | `f190684` | feat: filtra os titulos (A Receber, A Pagar, Pagos e Recebidos) pelos bancos exibidos no painel — lista de bancos compartilhada entre frontend e backend | 03/11/2026 |
