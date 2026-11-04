@@ -431,6 +431,103 @@ async function fetchPaginaRobusta(
   return null;
 }
 
+// Busca TODAS as paginas de uma listagem em PARALELO.
+//
+// A primeira pagina devolve `itens_totais`, que informa quantas paginas
+// existem. Antes as paginas eram buscadas uma a uma (com 150 ms de espera
+// entre elas): no periodo de outubro, com ~660 titulos pagos da LGP, isso
+// levava ~7 s so de listagem. Agora as paginas restantes sao buscadas 3 por
+// vez, cortando esse tempo pela metade ou mais.
+//
+// Mantem o retry robusto por pagina (fetchPaginaRobusta): erro transitorio
+// (429/5xx/rede) devolve `falhou` para o chamador reiniciar a paginacao
+// inteira; erro definitivo (4xx fora de 401/429) devolve `erroDefinitivo`.
+const TAMANHO_PAGINA_LISTAGEM = 100;
+
+async function listarTodasPaginas(
+  empresa: string,
+  urlDaPagina: (pagina: number) => string,
+  tokenRef: { token: string },
+): Promise<{ itens: any[]; falhou: boolean; erroDefinitivo: boolean; paginas: number }> {
+  const CONCORRENCIA = 3;
+
+  async function buscarPagina(pagina: number) {
+    const res = await fetchPaginaRobusta(empresa, urlDaPagina(pagina), tokenRef);
+    if (res === null) {
+      return { pagina, itens: [] as any[], itensTotais: 0, falhou: true, erroDefinitivo: false };
+    }
+    if (!res.ok) {
+      return { pagina, itens: [] as any[], itensTotais: 0, falhou: false, erroDefinitivo: true };
+    }
+    try {
+      const j: any = await res.json();
+      const itensPagina: any[] = j.itens || (Array.isArray(j) ? j : []);
+      return {
+        pagina,
+        itens: itensPagina,
+        itensTotais: Number(j.itens_totais || 0),
+        falhou: false,
+        erroDefinitivo: false,
+      };
+    } catch {
+      return { pagina, itens: [] as any[], itensTotais: 0, falhou: true, erroDefinitivo: false };
+    }
+  }
+
+  const primeira = await buscarPagina(1);
+  if (primeira.falhou) return { itens: [], falhou: true, erroDefinitivo: false, paginas: 0 };
+  if (primeira.erroDefinitivo) return { itens: [], falhou: false, erroDefinitivo: true, paginas: 0 };
+
+  const itens: any[] = [...primeira.itens];
+  let falhou = false;
+  let erroDefinitivo = false;
+  let ultimaPagina = 1;
+  let ultimaQtd = primeira.itens.length;
+
+  // Quantas paginas existem: `itens_totais` da primeira resposta.
+  const paginasPrevistas =
+    primeira.itensTotais > 0 ? Math.ceil(primeira.itensTotais / TAMANHO_PAGINA_LISTAGEM) : 1;
+
+  // Busca as paginas restantes EM PARALELO (3 por vez).
+  const restantes: number[] = [];
+  for (let p = 2; p <= paginasPrevistas; p++) restantes.push(p);
+
+  for (let i = 0; i < restantes.length; i += CONCORRENCIA) {
+    const lote = restantes.slice(i, i + CONCORRENCIA);
+    const respostas = await Promise.all(lote.map((p) => buscarPagina(p)));
+    // Promise.all preserva a ordem do lote: os titulos continuam em ordem de
+    // pagina (cronologica, como a API devolve).
+    for (const r of respostas) {
+      if (r.falhou) falhou = true;
+      if (r.erroDefinitivo) erroDefinitivo = true;
+      itens.push(...r.itens);
+      ultimaPagina = Math.max(ultimaPagina, r.pagina);
+      ultimaQtd = r.itens.length;
+    }
+    if (falhou || erroDefinitivo) break;
+  }
+
+  // Cauda adaptativa: so entra quando a API NAO informa `itens_totais` —
+  // nesse caso a unica fonte de verdade e a pagina que vem incompleta.
+  // (quando o total e informado, buscar paginas extras alem dele traria
+  // duplicatas, porque a API repete a ultima pagina em vez de devolver uma
+  // pagina vazia).
+  if (primeira.itensTotais === 0 && !falhou && !erroDefinitivo) {
+    let extras = 0;
+    while (ultimaQtd >= TAMANHO_PAGINA_LISTAGEM && extras < 50) {
+      extras++;
+      const r = await buscarPagina(ultimaPagina + 1);
+      // Pagina fora do range: a API responde vazio ou com erro — fim da lista.
+      if (r.falhou || r.erroDefinitivo || r.itens.length === 0) break;
+      itens.push(...r.itens);
+      ultimaPagina = r.pagina;
+      ultimaQtd = r.itens.length;
+    }
+  }
+
+  return { itens, falhou, erroDefinitivo, paginas: ultimaPagina };
+}
+
 // Deduplica refreshes concorrentes por empresa (evita invalidar refresh_token rotacionado)
 const refreshEmAndamento = new Map<string, Promise<string | null>>();
 
@@ -1376,11 +1473,11 @@ async function buscarV2Interna(
     terceiro?: string | null;
     categoria?: string | null;
   }[] = [];
-  let pagina = 1;
-  let tentativasReauth = 0;
   const ehReceber = endpoint.includes("contas-a-receber");
 
-  while (true) {
+  // Paginas em PARALELO (3 por vez) a partir do `itens_totais` da primeira
+  // pagina: a lista de titulos em aberto era buscada uma a uma e demorava.
+  const urlDaPagina = (pagina: number) => {
     const params = new URLSearchParams({
       data_vencimento_de: dataInicio,
       data_vencimento_ate: dataFim,
@@ -1388,49 +1485,34 @@ async function buscarV2Interna(
       tamanho_pagina: "100",
       pagina: String(pagina),
     });
-    const url = `https://api-v2.contaazul.com${endpoint}?${params}`;
-    const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+    return `https://api-v2.contaazul.com${endpoint}?${params}`;
+  };
 
-    if (res.status === 401 && tentativasReauth < 1) {
-      const novo = await renovarToken(empresa);
-      if (!novo) {
-        teveErroGeral = true;
-        break;
-      }
-      tokenRef.token = novo;
-      tentativasReauth++;
-      continue;
-    }
-    if (!res.ok) {
-      log("warn", `buscarV2 ${empresa} pg=${pagina} status=${res.status}`);
-      teveErroGeral = true;
-      break;
-    }
+  const listagem = await listarTodasPaginas(empresa, urlDaPagina, tokenRef);
+  if (listagem.falhou || listagem.erroDefinitivo) {
+    log(
+      "warn",
+      `buscarV2 ${empresa} paginacao falhou (transitorio=${listagem.falhou} definitivo=${listagem.erroDefinitivo})`,
+    );
+    teveErroGeral = true;
+  }
 
-    const j: any = await res.json();
-    const itens: any[] = j.itens || [];
-    if (!itens.length) break;
-
-    for (const i of itens) {
-      const dv = i.data_vencimento ? String(i.data_vencimento).slice(0, 10) : null;
-      const aberto = (i.total || 0) - (i.pago || 0);
-      if (dv && aberto > 0 && i.id) {
-        const metodoInicial = extrairMetodo(i);
-        brutos.push({ 
-          id: String(i.id), 
-          data: dv, 
-          valor: aberto,
-          metodo: metodoInicial,
-          conta_id: extrairContaId(i),
-          descricao: extrairDescricao(i),
-          terceiro: extrairTerceiro(i),
-          categoria: extrairCategoria(i),
-        });
-      }
+  for (const i of listagem.itens) {
+    const dv = i.data_vencimento ? String(i.data_vencimento).slice(0, 10) : null;
+    const aberto = (i.total || 0) - (i.pago || 0);
+    if (dv && aberto > 0 && i.id) {
+      const metodoInicial = extrairMetodo(i);
+      brutos.push({
+        id: String(i.id),
+        data: dv,
+        valor: aberto,
+        metodo: metodoInicial,
+        conta_id: extrairContaId(i),
+        descricao: extrairDescricao(i),
+        terceiro: extrairTerceiro(i),
+        categoria: extrairCategoria(i),
+      });
     }
-    if (itens.length < 100) break;
-    pagina++;
-    tentativasReauth = 0;
   }
 
   if (!ehReceber) {
@@ -1612,16 +1694,18 @@ async function buscarPagasInterna(
     const brutos: ItemLancamento[] = [];
     let falhaTransitoria = false;
 
-    // Pagina ate a API nao devolver mais itens (sem limite de paginas). Se uma
-    // pagina falhar no meio (rate limit), a paginacao RECOMECA do zero — a
-    // versao anterior parava ali e devolvia so os itens ja lidos, que era
-    // exatamente o total menor visto no carregamento automatico.
+    // Pagina ate a API nao devolver mais itens (sem limite de paginas). As
+    // paginas sao buscadas em PARALELO (3 por vez) a partir do
+    // `itens_totais` da primeira pagina: no periodo com ~660 titulos pagos
+    // isso economiza varios segundos de carregamento.
+    // Se uma pagina falhar no meio (rate limit), a paginacao RECOMECA do
+    // zero — a versao anterior parava ali e devolvia so os itens ja lidos,
+    // que era exatamente o total menor visto no carregamento automatico.
     for (let passe = 1; passe <= MAX_PASSES_PAGINACAO; passe++) {
       brutos.length = 0;
       falhaTransitoria = false;
-      let pagina = 1;
 
-      while (true) {
+      const urlDaPagina = (pagina: number) => {
         const params = new URLSearchParams({
           ...venc,
           data_pagamento_de: dataInicio,
@@ -1630,46 +1714,39 @@ async function buscarPagasInterna(
           tamanho_pagina: "100",
           pagina: String(pagina),
         });
-        const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar?${params}`;
-        const res = await fetchPaginaRobusta(empresa, url, tokenRef);
+        return `https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar?${params}`;
+      };
 
-        if (res === null) {
-          // Erro transitório persistente: reinicia a paginacao inteira.
-          falhaTransitoria = true;
-          break;
-        }
+      const r = await listarTodasPaginas(empresa, urlDaPagina, tokenRef);
 
-        if (!res.ok) {
-          // Erro definitivo (ex.: status nao aceito por esta conta): nao adianta
-          // repetir — pula para o proximo status.
-          log(
-            "warn",
-            `buscarPagas ${empresa} pg=${pagina} status=${res.status} (filtro status=${status}) — seguindo para outro status`,
-          );
-          falhaTransitoria = false;
-          break;
-        }
-
-        let j: any;
-        try {
-          j = await res.json();
-        } catch {
-          falhaTransitoria = true;
-          break;
-        }
-        const itens: any[] = j.itens || (Array.isArray(j) ? j : []);
-        brutos.push(...(await processarPagasResposta(itens, empresa, dataInicio, dataFim, status)));
-        if (itens.length < 100) break; // ultima pagina: paginacao completa
-        pagina++;
-        await sleep(150); // respiro entre paginas para nao estourar o rate limit
+      if (r.falhou) {
+        // Erro transitorio persistente: reinicia a paginacao inteira.
+        falhaTransitoria = true;
+        brutos.push(
+          ...(await processarPagasResposta(r.itens, empresa, dataInicio, dataFim, status)),
+        );
+        log(
+          "warn",
+          `buscarPagas ${empresa} [status=${status}] paginacao falhou — reiniciando (passe ${passe}/${MAX_PASSES_PAGINACAO})`,
+        );
+        await sleep(1500 * passe); // espera a API liberar antes de recomecar
+        continue;
       }
 
-      if (!falhaTransitoria) break; // paginacao concluida para este status
-      log(
-        "warn",
-        `buscarPagas ${empresa} [status=${status}] parou na pagina ${pagina} — reiniciando (passe ${passe}/${MAX_PASSES_PAGINACAO})`,
+      if (r.erroDefinitivo) {
+        // Erro definitivo (ex.: status nao aceito por esta conta): nao adianta
+        // repetir — pula para o proximo status.
+        log(
+          "warn",
+          `buscarPagas ${empresa} (filtro status=${status}) — seguindo para outro status`,
+        );
+        break;
+      }
+
+      brutos.push(
+        ...(await processarPagasResposta(r.itens, empresa, dataInicio, dataFim, status)),
       );
-      await sleep(1500 * passe); // espera a API liberar antes de recomeçar
+      break; // paginacao concluida
     }
 
     if (falhaTransitoria) {
@@ -1720,61 +1797,56 @@ async function processarPagasResposta(
   status: string,
 ): Promise<ItemLancamento[]> {
   const brutos: ItemLancamento[] = [];
+  let comDesconto = 0;
+  let comJuros = 0;
+  let somaDesconto = 0;
   for (const i of itens) {
-    const pago = (i.pago as number) || 0;
-    const total = (i.total as number) || 0;
-    // Juros / multa / desconto podem vir em campos separados da API. O campo
-    // "pago" costuma trazer o valor original do titulo sem os acrescimos, entao
-    // somamos quando disponivel. Se a API tiver um campo de valor efetivo pago,
-    // usamos ele diretamente.
-    const juros = extrairNumero(i, "juros", "valor_juros", "acrescimos", "juros_multa", "valor_acrescimo");
-    const multa = extrairNumero(i, "multa", "valor_multa", "valor_multa_mora");
-    const desconto = extrairNumero(i, "desconto", "valor_desconto", "abatimento", "valor_desconto_concedido", "desconto_concedido", "valor_desconto_baixa", "desconto_baixa");
+    // CONTA AZUL — semantica dos campos da listagem (confirmada nas baixas
+    // reais, 16/16 titulos):
+    //   pago  = valor_composicao.valor_bruto  (valor CHEIO, sem desconto)
+    //   total = valor_composicao.valor_liquido (bruto - desconto + juros + multa)
+    // Exemplo real: "1/3 - Compra de produto 1922" -> pago 1.127,69 (bruto) e
+    // total 1.127,66 (liquido, ja com o desconto de R$ 0,03).
+    // Por isso o valor exibido tem de ser o `total`: usar o `pago` mostrava o
+    // titulo SEM o desconto (era a reclamacao do usuario).
+    const bruto = (i.pago as number) || 0;
+    const liquido = (i.total as number) || 0;
+    // Pagamento parcial (nao_pago > 0): aqui o `total` e o valor CHEIO do
+    // titulo, nao o valor pago — nesse caso vale o que foi pago.
+    const parcial = ((i.nao_pago as number) || 0) > 0.005;
 
-    // Valor efetivamente pago. A Conta Azul retorna o valor líquido (já com
-    // desconto aplicado) no campo "pago" ou em campos de valor_pago/valor_liquido.
-    // Usamos o primeiro que encontrar > 0.
+    // Juros / multa / desconto: a listagem normalmente NAO traz (o desconto so
+    // existe na baixa), mas o `total` ja e o valor liquido.
+    let juros = extrairNumero(i, "juros", "valor_juros", "acrescimos", "juros_multa", "valor_acrescimo");
+    let multa = extrairNumero(i, "multa", "valor_multa", "valor_multa_mora");
+    let desconto = extrairNumero(i, "desconto", "valor_desconto", "abatimento", "valor_desconto_concedido", "desconto_concedido", "valor_desconto_baixa", "desconto_baixa");
+
+    // Campo de valor efetivo pago, quando a API disponibiliza.
     const valorPagoCampo = extrairNumero(i, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa", "valor_pagamento", "valor_pago_liquido", "valor_pago_final", "valor_pago_efetivo");
 
-    // Log de debug quando houver desconto ou acrescimos: ajuda a identificar
-    // qual campo a API da Conta Azul esta retornando para cada titulo.
-    if (desconto > 0 || juros > 0 || multa > 0 || valorPagoCampo > 0) {
-      log(
-        "info",
-        `detalhe pagamento ${empresa} id=${String(i.id).slice(0, 8)} pago=${pago} total=${total} juros=${juros} multa=${multa} desconto=${desconto} valorPagoCampo=${valorPagoCampo} campos=${JSON.stringify({ juros: i.juros, multa: i.multa, desconto: i.desconto, valor_pago: i.valor_pago, valor_liquido: i.valor_liquido, valor_efetivo: i.valor_efetivo, valor_baixa: i.valor_baixa, valor_desconto: i.valor_desconto, abatimento: i.abatimento, baixas_desconto: i.baixas?.[0]?.desconto, baixas_valor_desconto: i.baixas?.[0]?.valor_desconto, parcelas_desconto: i.parcelas?.[0]?.desconto, parcelas_valor_desconto: i.parcelas?.[0]?.valor_desconto })}`,
-      );
-      await gravarLogEvento({
-        empresa,
-        evento: "desconto_detectado_pagamento",
-        erro: null,
-        detalhe: `titulo id=${String(i.id).slice(0, 8)} pago=${pago} total=${total} juros=${juros} multa=${multa} desconto=${desconto} valorPagoCampo=${valorPagoCampo}`,
-        acao_necessaria: null,
-      });
+    // A listagem nao traz o desconto, mas a diferenca entre bruto e liquido e
+    // exatamente o desconto (liquido menor) ou os juros/multa (liquido maior).
+    // Isso rotula o titulo (e o card) sem nenhuma chamada extra a API.
+    const diferenca = bruto - liquido;
+    if (!parcial && desconto <= 0 && juros <= 0 && multa <= 0) {
+      if (diferenca > 0.005) desconto = diferenca;
+      else if (diferenca < -0.005) juros = -diferenca;
     }
+    if (desconto > 0) {
+      comDesconto++;
+      somaDesconto += desconto;
+    }
+    if (juros > 0) comJuros++;
 
-    // Regra de ouro: o campo "pago" da Conta Azul pode vir como valor bruto
-    // (sem desconto) ou valor liquido (com desconto ja aplicado).
-    // - Se tem campo valorPagoCampo > 0: usa ele direto (valor liquido real).
-    // - Se pagamento > 0 e desconto > 0 e pagamento ~= total: pagamento e bruto,
-    //   entao subtrai o desconto: pagamento - desconto + juros + multa.
-    // - Se pagamento > 0 e (desconto == 0 ou pagamento ~= total - desconto):
-    //   pagamento ja e liquido, entao so soma juros/multa.
-    // - Senao: usa total.
+    // Valor do titulo: o LIQUIDO (`total`), que ja tem o desconto aplicado.
+    // O `pago` (bruto) era o que mostrava o titulo SEM o desconto.
     let valor: number;
-    if (valorPagoCampo > 0) {
-      valor = valorPagoCampo; // valor efetivamente pago (ja inclui juros/multa/desconto)
-    } else if (pago > 0) {
-      const ehLiquido = Math.abs(pago - (total - desconto)) < 0.01;
-      const ehBruto = Math.abs(pago - total) < 0.01;
-      if (ehBruto && desconto > 0) {
-        // pagamento e bruto: aplica o desconto
-        valor = pago - desconto + juros + multa;
-      } else {
-        // pagamento ja e liquido (ou sem desconto): soma apenas acrescimos
-        valor = pago + juros + multa;
-      }
+    if (parcial) {
+      valor = valorPagoCampo > 0 ? valorPagoCampo : bruto;
+    } else if (liquido > 0) {
+      valor = liquido;
     } else {
-      valor = total;
+      valor = valorPagoCampo > 0 ? valorPagoCampo : bruto;
     }
     if (!i.id || valor <= 0) continue;
     const data =
@@ -1800,9 +1872,15 @@ async function processarPagasResposta(
       valor_pago: valorPagoCampo || undefined,
       ...(baixaId ? { baixa_id: String(baixaId) } : {}),
       ...(parcelaId ? { parcela_id: String(parcelaId) } : {}),
-      _pago: pago,
-      _total: total,
+      _pago: bruto,
+      _total: liquido,
     });
+  }
+  if (comDesconto || comJuros) {
+    log(
+      "info",
+      `buscarPagas ${empresa} [status=${status}]: ${comDesconto} titulo(s) com desconto (R$ ${somaDesconto.toFixed(2)}) e ${comJuros} com juros — valor exibido ja e o liquido (com desconto)`,
+    );
   }
   return brutos;
 }
@@ -2021,45 +2099,39 @@ export function processarRecebidas(
 ): ItemLancamento[] {
   const brutos: ItemLancamento[] = [];
   for (const i of itens) {
-    const recebido = (i.pago as number) || 0;
-    const total = (i.total as number) || 0;
+    // CONTA AZUL — mesmo tratamento das pagas: `pago` e o valor BRUTO
+    // recebido e `total` e o LIQUIDO (ja com o desconto). Confirmado nas
+    // listagens reais de contas a receber (status ACQUITTED, nao_pago = 0).
+    const bruto = (i.pago as number) || 0;
+    const liquido = (i.total as number) || 0;
+    // Recebimento parcial (nao_pago > 0): o `total` e o valor CHEIO do titulo,
+    // nao o valor recebido — nesse caso vale o que foi recebido.
+    const parcial = ((i.nao_pago as number) || 0) > 0.005;
+
     // Mesmo tratamento de juros/multa/desconto das pagas, aplicado aos recebidos.
-    const juros = extrairNumero(i, "juros", "valor_juros", "acrescimos", "juros_multa", "valor_acrescimo");
-    const multa = extrairNumero(i, "multa", "valor_multa", "valor_multa_mora");
-    const desconto = extrairNumero(i, "desconto", "valor_desconto", "abatimento", "valor_desconto_concedido", "desconto_concedido", "valor_desconto_baixa", "desconto_baixa");
+    let juros = extrairNumero(i, "juros", "valor_juros", "acrescimos", "juros_multa", "valor_acrescimo");
+    let multa = extrairNumero(i, "multa", "valor_multa", "valor_multa_mora");
+    let desconto = extrairNumero(i, "desconto", "valor_desconto", "abatimento", "valor_desconto_concedido", "desconto_concedido", "valor_desconto_baixa", "desconto_baixa");
     const valorPagoCampo = extrairNumero(i, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa", "valor_pagamento", "valor_pago_liquido", "valor_pago_final");
 
-    // Log de debug quando houver desconto ou acrescimos.
-    if (desconto > 0 || juros > 0 || multa > 0 || valorPagoCampo > 0) {
-      log(
-        "info",
-        `detalhe recebimento id=${String(i.id).slice(0, 8)} recebido=${recebido} total=${total} juros=${juros} multa=${multa} desconto=${desconto} valorPagoCampo=${valorPagoCampo} campos=${JSON.stringify({ juros: i.juros, multa: i.multa, desconto: i.desconto, valor_pago: i.valor_pago, valor_liquido: i.valor_liquido, valor_efetivo: i.valor_efetivo, valor_baixa: i.valor_baixa, valor_desconto: i.valor_desconto, abatimento: i.abatimento, baixas_desconto: i.baixas?.[0]?.desconto, baixas_valor_desconto: i.baixas?.[0]?.valor_desconto, parcelas_desconto: i.parcelas?.[0]?.desconto, parcelas_valor_desconto: i.parcelas?.[0]?.valor_desconto })}`,
-      );
+    // A diferenca entre bruto e liquido e o desconto (liquido menor) ou os
+    // juros/multa (liquido maior). A listagem nao traz esses campos, mas a
+    // diferenca permite rotular o titulo e o card.
+    const diferenca = bruto - liquido;
+    if (!parcial && desconto <= 0 && juros <= 0 && multa <= 0) {
+      if (diferenca > 0.005) desconto = diferenca;
+      else if (diferenca < -0.005) juros = -diferenca;
     }
 
-    // Regra de ouro: o campo "recebido" da Conta Azul pode vir como valor bruto
-    // (sem desconto) ou valor liquido (com desconto ja aplicado).
-    // - Se tem campo valorPagoCampo > 0: usa ele direto (valor liquido real).
-    // - Se recebido > 0 e desconto > 0 e recebido ~= total: recebido e bruto,
-    //   entao subtrai o desconto: recebido - desconto + juros + multa.
-    // - Se recebido > 0 e (desconto == 0 ou recebido ~= total - desconto):
-    //   recebido ja e liquido, entao so soma juros/multa.
-    // - Senao: usa total.
+    // Valor recebido: o LIQUIDO (`total`), que ja tem o desconto aplicado.
+    // O `pago` (bruto) era o que mostrava o titulo SEM o desconto.
     let valor: number;
-    if (valorPagoCampo > 0) {
-      valor = valorPagoCampo; // valor efetivamente recebido (ja inclui juros/multa/desconto)
-    } else if (recebido > 0) {
-      const ehLiquido = Math.abs(recebido - (total - desconto)) < 0.01;
-      const ehBruto = Math.abs(recebido - total) < 0.01;
-      if (ehBruto && desconto > 0) {
-        // recebido e bruto: aplica o desconto
-        valor = recebido - desconto + juros + multa;
-      } else {
-        // recebido ja e liquido (ou sem desconto): soma apenas acrescimos
-        valor = recebido + juros + multa;
-      }
+    if (parcial) {
+      valor = valorPagoCampo > 0 ? valorPagoCampo : bruto;
+    } else if (liquido > 0) {
+      valor = liquido;
     } else {
-      valor = total;
+      valor = valorPagoCampo > 0 ? valorPagoCampo : bruto;
     }
     if (!i.id || valor <= 0) continue;
     const data =
@@ -2085,8 +2157,8 @@ export function processarRecebidas(
       valor_pago: valorPagoCampo || undefined,
       ...(i.baixas?.[0]?.id ? { baixa_id: String(i.baixas[0].id) } : {}),
       ...(i.parcelas?.[0]?.id ? { parcela_id: String(i.parcelas[0].id) } : {}),
-      _pago: recebido,
-      _total: total,
+      _pago: bruto,
+      _total: liquido,
     });
   }
   return brutos;
@@ -2144,15 +2216,15 @@ async function buscarRecebidasInterna(
       const brutos: ItemLancamento[] = [];
       let falhaTransitoria = false;
 
-      // Pagina ate a API nao devolver mais itens (sem limite de paginas). Se
-      // uma pagina falhar no meio (rate limit), a paginacao RECOMECA do zero
-      // em vez de devolver os itens ja lidos como se fossem todos.
+      // Paginas em PARALELO (3 por vez) a partir do `itens_totais` da
+      // primeira: economiza segundos no periodo com muitos titulos.
+      // Se uma pagina falhar no meio (rate limit), a paginacao RECOMECA do
+      // zero em vez de devolver os itens ja lidos como se fossem todos.
       for (let passe = 1; passe <= MAX_PASSES_PAGINACAO; passe++) {
         brutos.length = 0;
         falhaTransitoria = false;
-        let pagina = 1;
 
-        while (true) {
+        const urlDaPagina = (pagina: number) => {
           const params = new URLSearchParams({
             ...venc,
             data_pagamento_de: dataInicio,
@@ -2161,45 +2233,35 @@ async function buscarRecebidasInterna(
             tamanho_pagina: "100",
             pagina: String(pagina),
           });
-          const url = `https://api-v2.contaazul.com${endpoint}?${params}`;
-          const res = await fetchPaginaRobusta(empresa, url, tokenRef);
+          return `https://api-v2.contaazul.com${endpoint}?${params}`;
+        };
 
-          if (res === null) {
-            // Erro transitório persistente: reinicia a paginacao inteira.
-            falhaTransitoria = true;
-            break;
-          }
+        const r = await listarTodasPaginas(empresa, urlDaPagina, tokenRef);
 
-          if (!res.ok) {
-            // Erro definitivo (4xx fora de 401/429): nao adianta repetir —
-            // pula para a proxima combinacao de endpoint/status.
-            log(
-              "warn",
-              `buscarRecebidas ${empresa} ${endpoint} status=${res.status} (filtro status=${status}) — seguindo para outra combinacao`,
-            );
-            break;
-          }
-
-          let j: any;
-          try {
-            j = await res.json();
-          } catch {
-            falhaTransitoria = true;
-            break;
-          }
-          const itens: any[] = j.itens || (Array.isArray(j) ? j : []);
-          brutos.push(...processarRecebidas(itens, dataInicio, dataFim));
-          if (itens.length < 100) break; // ultima pagina: paginacao completa
-          pagina++;
-          await sleep(150); // respiro entre paginas para nao estourar o rate limit
+        if (r.falhou) {
+          // Erro transitorio persistente: reinicia a paginacao inteira.
+          falhaTransitoria = true;
+          brutos.push(...processarRecebidas(r.itens, dataInicio, dataFim));
+          log(
+            "warn",
+            `buscarRecebidas ${empresa} [${endpoint} status=${status}] paginacao falhou — reiniciando (passe ${passe}/${MAX_PASSES_PAGINACAO})`,
+          );
+          await sleep(1500 * passe); // espera a API liberar antes de recomecar
+          continue;
         }
 
-        if (!falhaTransitoria) break; // paginacao concluida
-        log(
-          "warn",
-          `buscarRecebidas ${empresa} [${endpoint} status=${status}] parou na pagina ${pagina} — reiniciando (passe ${passe}/${MAX_PASSES_PAGINACAO})`,
-        );
-        await sleep(1500 * passe); // espera a API liberar antes de recomeçar
+        if (r.erroDefinitivo) {
+          // Erro definitivo (4xx fora de 401/429): nao adianta repetir —
+          // pula para a proxima combinacao de endpoint/status.
+          log(
+            "warn",
+            `buscarRecebidas ${empresa} ${endpoint} (filtro status=${status}) — seguindo para outra combinacao`,
+          );
+          break;
+        }
+
+        brutos.push(...processarRecebidas(r.itens, dataInicio, dataFim));
+        break; // paginacao concluida
       }
 
       if (falhaTransitoria) {
@@ -2399,7 +2461,10 @@ export async function buscarBaixaPorParcela(
   }
 
   const j: any = await res.json();
-  const item = j ?? {};
+  // O endpoint /parcelas/{parcela_id}/baixa devolve um ARRAY de baixas (o
+  // /baixa/{baixa_id} devolve um objeto). Sem desembrulhar o array o
+  // `valor_composicao` nunca era encontrado e o desconto ficava sempre vazio.
+  const item = Array.isArray(j) ? (j[0] ?? {}) : (j ?? {});
   const vc = item.valor_composicao ?? {};
 
   return {
