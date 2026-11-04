@@ -1910,3 +1910,290 @@ export async function inspecionarPrimeirosRecebimentos(
   }));
   return { lista_amostra: j.itens?.[0] || null, detalhes };
 }
+
+// ============================================================================
+// Consultas de Baixa — Conforme documentação técnica:
+//   GET /v1/financeiro/eventos-financeiros/parcelas/baixa/{baixa_id}
+//   GET /v1/financeiro/eventos-financeiros/parcelas/{parcela_id}/baixa
+// O valor de desconto/juros está em valor_composicao.desconto / valor_composicao.juros.
+// ============================================================================
+
+export type ValorComposicao = {
+  desconto?: number;
+  juros?: number;
+  multa?: number;
+  valor_bruto?: number;
+};
+
+export type BaixaDetalhe = {
+  id: string;
+  data_pagamento?: string | null;
+  valor_composicao: ValorComposicao;
+  metodo?: string | null;
+  terceiro?: string | null;
+  descricao?: string | null;
+  valor_pago?: number | null;
+};
+
+/**
+ * Consulta os detalhes de uma baixa pelo ID da baixa.
+ * Endpoint: GET /v1/financeiro/eventos-financeiros/parcelas/baixa/{baixa_id}
+ */
+export async function buscarBaixaPorId(
+  empresa: string,
+  baixaId: string,
+): Promise<{ dados: BaixaDetalhe | null; ok: boolean }> {
+  const tokenInicial = await obterToken(empresa);
+  if (!tokenInicial) {
+    log("warn", `buscarBaixaPorId sem token: ${empresa}`);
+    return { dados: null, ok: false };
+  }
+  const tokenRef = { token: tokenInicial };
+
+  const url = `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/baixa/${baixaId}`;
+  let res = await fetchComRetry(url, {
+    headers: { Authorization: `Bearer ${tokenRef.token}` },
+  }, 2);
+
+  if (res.status === 401) {
+    const novo = await renovarToken(empresa);
+    if (novo) {
+      tokenRef.token = novo;
+      res = await fetchComRetry(url, {
+        headers: { Authorization: `Bearer ${novo}` },
+      }, 1);
+    } else {
+      return { dados: null, ok: false };
+    }
+  }
+
+  if (!res.ok) {
+    log("warn", `buscarBaixaPorId ${empresa} baixaId=${baixaId} status=${res.status}`);
+    return { dados: null, ok: false };
+  }
+
+  const j: any = await res.json();
+  const item = j ?? {};
+  const vc = item.valor_composicao ?? {};
+
+  return {
+    dados: {
+      id: String(item.id ?? baixaId),
+      data_pagamento: item.data_pagamento ?? null,
+      valor_composicao: {
+        desconto: typeof vc.desconto === "number" ? vc.desconto : (vc.desconto ? Number(vc.desconto) : undefined),
+        juros: typeof vc.juros === "number" ? vc.juros : (vc.juros ? Number(vc.juros) : undefined),
+        multa: typeof vc.multa === "number" ? vc.multa : (vc.multa ? Number(vc.multa) : undefined),
+        valor_bruto: typeof vc.valor_bruto === "number" ? vc.valor_bruto : (vc.valor_bruto ? Number(vc.valor_bruto) : undefined),
+      },
+      metodo: extrairMetodo(item) ?? null,
+      terceiro: extrairTerceiro(item) ?? null,
+      descricao: extrairDescricao(item) ?? null,
+      valor_pago: item.valor_pago ?? item.pago ?? null,
+    },
+    ok: true,
+  };
+}
+
+/**
+ * Consulta os detalhes de uma baixa pelo ID da parcela.
+ * Endpoint: GET /v1/financeiro/eventos-financeiros/parcelas/{parcela_id}/baixa
+ */
+export async function buscarBaixaPorParcela(
+  empresa: string,
+  parcelaId: string,
+): Promise<{ dados: BaixaDetalhe | null; ok: boolean }> {
+  const tokenInicial = await obterToken(empresa);
+  if (!tokenInicial) {
+    log("warn", `buscarBaixaPorParcela sem token: ${empresa}`);
+    return { dados: null, ok: false };
+  }
+  const tokenRef = { token: tokenInicial };
+
+  const url = `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/${parcelaId}/baixa`;
+  let res = await fetchComRetry(url, {
+    headers: { Authorization: `Bearer ${tokenRef.token}` },
+  }, 2);
+
+  if (res.status === 401) {
+    const novo = await renovarToken(empresa);
+    if (novo) {
+      tokenRef.token = novo;
+      res = await fetchComRetry(url, {
+        headers: { Authorization: `Bearer ${novo}` },
+      }, 1);
+    } else {
+      return { dados: null, ok: false };
+    }
+  }
+
+  if (!res.ok) {
+    log("warn", `buscarBaixaPorParcela ${empresa} parcelaId=${parcelaId} status=${res.status}`);
+    return { dados: null, ok: false };
+  }
+
+  const j: any = await res.json();
+  const item = j ?? {};
+  const vc = item.valor_composicao ?? {};
+
+  return {
+    dados: {
+      id: String(item.id ?? parcelaId),
+      data_pagamento: item.data_pagamento ?? null,
+      valor_composicao: {
+        desconto: typeof vc.desconto === "number" ? vc.desconto : (vc.desconto ? Number(vc.desconto) : undefined),
+        juros: typeof vc.juros === "number" ? vc.juros : (vc.juros ? Number(vc.juros) : undefined),
+        multa: typeof vc.multa === "number" ? vc.multa : (vc.multa ? Number(vc.multa) : undefined),
+        valor_bruto: typeof vc.valor_bruto === "number" ? vc.valor_bruto : (vc.valor_bruto ? Number(vc.valor_bruto) : undefined),
+      },
+      metodo: extrairMetodo(item) ?? null,
+      terceiro: extrairTerceiro(item) ?? null,
+      descricao: extrairDescricao(item) ?? null,
+      valor_pago: item.valor_pago ?? item.pago ?? null,
+    },
+    ok: true,
+  };
+}
+
+/**
+ * Atualiza retroativamente o desconto e/ou juros de uma baixa já realizada.
+ * Endpoint: PATCH /v1/financeiro/eventos-financeiros/parcelas/baixa/{baixa_id}
+ * Requer a versão atual do registro (campo `versao` no body).
+ */
+export type AtualizarBaixaInput = {
+  baixaId: string;
+  desconto?: number;
+  juros?: number;
+  multa?: number;
+  versao: string | number;
+};
+
+export async function atualizarBaixa(
+  empresa: string,
+  input: AtualizarBaixaInput,
+): Promise<{ ok: boolean; erro?: string; dados?: any }> {
+  const tokenInicial = await obterToken(empresa);
+  if (!tokenInicial) {
+    log("warn", `atualizarBaixa sem token: ${empresa}`);
+    return { ok: false, erro: "sem_token" };
+  }
+
+  const url = `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/baixa/${input.baixaId}`;
+
+  const body: any = { versao: input.versao };
+  if (input.desconto !== undefined) body.desconto = input.desconto;
+  if (input.juros !== undefined) body.juros = input.juros;
+  if (input.multa !== undefined) body.multa = input.multa;
+
+  let res = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${tokenInicial}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (res.status === 401) {
+    const novo = await renovarToken(empresa);
+    if (novo) {
+      res = await fetch(url, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${novo}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    } else {
+      return { ok: false, erro: "token_invalido" };
+    }
+  }
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    log("warn", `atualizarBaixa ${empresa} baixaId=${input.baixaId} status=${res.status} ${txt.slice(0, 300)}`);
+    return { ok: false, erro: `http_${res.status}`, dados: txt };
+  }
+
+  try {
+    const dados = await res.json();
+    log("info", `atualizarBaixa ${empresa} baixaId=${input.baixaId} ok`);
+    return { ok: true, dados };
+  } catch {
+    return { ok: true };
+  }
+}
+
+/**
+ * Lista transferências e extrai os juros da conta de destino.
+ * Endpoint: GET /v1/financeiro/transferencias
+ * Caminho no JSON: itens[].destino.composicao_valor.juros
+ */
+export type TransferenciaJuros = {
+  id: string;
+  data?: string | null;
+  destino_nome?: string | null;
+  banco_destino?: string | null;
+  juros_destino: number;
+  valor?: number | null;
+};
+
+export async function buscarTransferenciasJuros(
+  empresa: string,
+  dataInicio?: string,
+  dataFim?: string,
+): Promise<{ dados: TransferenciaJuros[]; ok: boolean }> {
+  const tokenInicial = await obterToken(empresa);
+  if (!tokenInicial) {
+    log("warn", `buscarTransferenciasJuros sem token: ${empresa}`);
+    return { dados: [], ok: false };
+  }
+
+  const params = new URLSearchParams();
+  if (dataInicio) params.set("data_de", dataInicio);
+  if (dataFim) params.set("data_ate", dataFim);
+
+  const url = `https://api-v2.contaazul.com/v1/financeiro/transferencias${params.toString() ? "?" + params.toString() : ""}`;
+  let res = await fetchComRetry(url, {
+    headers: { Authorization: `Bearer ${tokenInicial}` },
+  }, 2);
+
+  if (res.status === 401) {
+    const novo = await renovarToken(empresa);
+    if (novo) {
+      res = await fetchComRetry(url, {
+        headers: { Authorization: `Bearer ${novo}` },
+      }, 1);
+    } else {
+      return { dados: [], ok: false };
+    }
+  }
+
+  if (!res.ok) {
+    log("warn", `buscarTransferenciasJuros ${empresa} status=${res.status}`);
+    return { dados: [], ok: false };
+  }
+
+  const j: any = await res.json();
+  const itens: any[] = Array.isArray(j) ? j : (j.itens || []);
+
+  const dados: TransferenciaJuros[] = itens.map((t) => {
+    const destino = t.destino ?? {};
+    const composicao = destino.composicao_valor ?? {};
+    const juros = typeof composicao.juros === "number"
+      ? composicao.juros
+      : (composicao.juros ? Number(composicao.juros) : 0);
+
+    return {
+      id: String(t.id ?? ""),
+      data: t.data ?? t.data_transferencia ?? null,
+      destino_nome: destino.nome ?? destino.titular ?? null,
+      banco_destino: destino.banco ?? destino.conta_bancaria ?? null,
+      juros_destino: juros,
+      valor: t.valor ?? null,
+    };
+  });
+
+  return { dados, ok: true };
+}

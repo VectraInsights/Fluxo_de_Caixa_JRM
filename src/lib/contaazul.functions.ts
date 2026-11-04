@@ -20,6 +20,13 @@ import {
   enviarAlertaSlack,
   gravarLogEvento,
   cronSecret,
+  buscarBaixaPorId,
+  buscarBaixaPorParcela,
+  atualizarBaixa,
+  buscarTransferenciasJuros,
+  type BaixaDetalhe,
+  type TransferenciaJuros,
+  type AtualizarBaixaInput,
 } from "./contaazul.server";
 import { buscarFaturamentoPlanilha, limparCachePlanilha, lerTituloPlanilha, mesDoTitulo } from "./planilha.server";
 import { bancosPermitidosDaEmpresa } from "./bancos";
@@ -513,6 +520,10 @@ export const getDashboard = createServerFn({ method: "GET" })
           descricao: i.descricao ?? null,
           terceiro: i.terceiro ?? null,
           categoria: i.categoria ?? null,
+          juros: i.juros,
+          multa: i.multa,
+          desconto: i.desconto,
+          valor_pago: i.valor_pago,
         })),
       });
       detalhamento.recebidas.push({
@@ -524,6 +535,10 @@ export const getDashboard = createServerFn({ method: "GET" })
           descricao: i.descricao ?? null,
           terceiro: i.terceiro ?? null,
           categoria: i.categoria ?? null,
+          juros: i.juros,
+          multa: i.multa,
+          desconto: i.desconto,
+          valor_pago: i.valor_pago,
         })),
       });
     }
@@ -559,6 +574,12 @@ export type TituloDetalhe = {
   descricao: string | null;
   terceiro: string | null; // cliente (receber) ou fornecedor (pagar)
   categoria: string | null; // categoria financeira da Conta Azul
+  // Valores acessorios do pagamento/baixa (conforme documentacao tecnica):
+  // desconto e juros estao em valor_composicao.desconto / valor_composicao.juros
+  juros?: number;
+  multa?: number;
+  desconto?: number;
+  valor_pago?: number;
 };
 
 export type EmpresaBreakdown = {
@@ -591,6 +612,10 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
           descricao: i.descricao ?? null,
           terceiro: i.terceiro ?? null,
           categoria: i.categoria ?? null,
+          juros: i.juros,
+          multa: i.multa,
+          desconto: i.desconto,
+          valor_pago: i.valor_pago,
         }))
         .sort((a, b) => a.data.localeCompare(b.data));
       const total = titulos.reduce((a, b) => a + b.valor, 0);
@@ -631,4 +656,75 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
         };
       }),
     );
+  });
+
+// ============================================================================
+// Server functions: consulta de Baixa (conforme documentacao tecnica)
+//   GET /v1/financeiro/eventos-financeiros/parcelas/baixa/{baixa_id}
+//   GET /v1/financeiro/eventos-financeiros/parcelas/{parcela_id}/baixa
+//   PATCH /v1/financeiro/eventos-financeiros/parcelas/baixa/{baixa_id}
+//   GET /v1/financeiro/transferencias (juros da conta de destino)
+// ============================================================================
+
+export const getBaixaDetalhe = createServerFn({ method: "GET" })
+  .validator((d) =>
+    z
+      .object({
+        empresa: z.string(),
+        baixa_id: z.string(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }): Promise<{ dados: BaixaDetalhe | null; ok: boolean }> => {
+    return buscarBaixaPorId(data.empresa, data.baixa_id);
+  });
+
+export const getBaixaDetalheParcela = createServerFn({ method: "GET" })
+  .validator((d) =>
+    z
+      .object({
+        empresa: z.string(),
+        parcela_id: z.string(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }): Promise<{ dados: BaixaDetalhe | null; ok: boolean }> => {
+    return buscarBaixaPorParcela(data.empresa, data.parcela_id);
+  });
+
+export const atualizarBaixaDetalhe = createServerFn({ method: "POST" })
+  .validator((d) =>
+    z
+      .object({
+        empresa: z.string(),
+        baixa_id: z.string(),
+        desconto: z.number().optional(),
+        juros: z.number().optional(),
+        multa: z.number().optional(),
+        versao: z.union([z.string(), z.number()]),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }): Promise<{ ok: boolean; erro?: string; dados?: any }> => {
+    return atualizarBaixa(data.empresa, {
+      baixaId: data.baixa_id,
+      desconto: data.desconto,
+      juros: data.juros,
+      multa: data.multa,
+      versao: data.versao,
+    });
+  });
+
+export const getTransferenciasJuros = createServerFn({ method: "GET" })
+  .validator((d) =>
+    z
+      .object({
+        empresa: z.string(),
+        data_inicio: z.string().optional(),
+        data_fim: z.string().optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }): Promise<{ dados: TransferenciaJuros[]; ok: boolean }> => {
+    return buscarTransferenciasJuros(data.empresa, data.data_inicio ?? undefined, data.data_fim ?? undefined);
   });
