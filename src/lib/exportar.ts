@@ -660,25 +660,32 @@ export async function exportarPdf(rel: RelatorioListas) {
   const { default: autoTable } = await import("jspdf-autotable");
 
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  // Entrelinha mais curta: cada linha da tabela ocupa menos altura -> mais
+  // titulos por folha (o autoTable usa o fator do jsPDF).
+  doc.setLineHeightFactor(1.08);
   const largura = doc.internal.pageSize.getWidth();
   const altura = doc.internal.pageSize.getHeight();
-  const margem = 14;
+  // Margem apertada + largura util CHEIA da pagina: antes as colunas tinham
+  // maxWidth somando ~164 mm numa pagina de 297 mm, entao a descricao quebrava
+  // em varias linhas e o PDF saia com o dobro de folhas.
+  const margem = 10;
+  const larguraUtil = largura - margem * 2;
 
   // Cabecalho
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(16);
-  doc.text("Fluxo de Caixa", margem, 16);
+  doc.setFontSize(15);
+  doc.text("Fluxo de Caixa", margem, 13);
 
   // Periodo / empresa
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(10);
+  doc.setFontSize(9);
   doc.setTextColor(100);
   doc.text(
     `Período: ${formatarDataBR(rel.dataInicio)} a ${formatarDataBR(rel.dataFim)}    |    Empresa: ${
       rel.empresa === "todas" ? "Todas as Empresas" : rel.empresa
     }`,
     margem,
-    23,
+    19,
   );
   doc.setTextColor(0);
 
@@ -693,10 +700,10 @@ export async function exportarPdf(rel: RelatorioListas) {
     })),
   ];
 
-  const alturaCard = 17;
-  const gapCard = 4;
-  const larguraCard = (largura - margem * 2 - gapCard * (cards.length - 1)) / cards.length;
-  const yCard = 34;
+  const alturaCard = 15;
+  const gapCard = 3;
+  const larguraCard = (larguraUtil - gapCard * (cards.length - 1)) / cards.length;
+  const yCard = 27;
   let xCard = margem;
   for (const c of cards) {
     // Fundo claro com moldura na cor da relacao
@@ -707,13 +714,13 @@ export async function exportarPdf(rel: RelatorioListas) {
 
     // Rotulo pequeno em cima
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
+    doc.setFontSize(7.5);
     doc.setTextColor(110);
-    doc.text(c.rotulo, xCard + 3, yCard + 6);
+    doc.text(c.rotulo, xCard + 3, yCard + 5.5);
 
     // Valor em negrito (fonte encolhe se nao couber no card)
     const valorTxt = formatarValor(c.valor);
-    let fs = 12;
+    let fs = 11.5;
     doc.setFont("helvetica", "bold");
     doc.setFontSize(fs);
     while (fs > 7 && doc.getTextWidth(valorTxt) > larguraCard - 6) {
@@ -721,14 +728,14 @@ export async function exportarPdf(rel: RelatorioListas) {
       doc.setFontSize(fs);
     }
     doc.setTextColor(30);
-    doc.text(valorTxt, xCard + 3, yCard + 14);
+    doc.text(valorTxt, xCard + 3, yCard + 12.5);
 
     xCard += larguraCard + gapCard;
   }
   doc.setDrawColor(0);
   doc.setTextColor(0);
 
-  let y = yCard + alturaCard + 10;
+  let y = yCard + alturaCard + 8;
 
   // ---------------------------------------------------------------------
   // Desenho das secoes (faixa colorida + tabela). Cada funcao devolve a nova
@@ -775,7 +782,11 @@ export async function exportarPdf(rel: RelatorioListas) {
         ["", "TOTAL", formatarValor(f.total)],
       ],
       theme: "grid",
-      styles: { fontSize: 8, cellPadding: 2, overflow: "linebreak" },
+      styles: {
+        fontSize: 7.2,
+        cellPadding: 0.9,
+        overflow: "linebreak",
+      },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
       // Linha de total do dia em negrito e com fundo claro
       didParseCell: (data: any) => {
@@ -784,17 +795,19 @@ export async function exportarPdf(rel: RelatorioListas) {
           data.cell.styles.fillColor = [240, 240, 240];
         }
       },
+      // Larguras fixas somando a largura util da pagina: a descricao quebra em
+      // menos linhas e o PDF sai com menos folhas.
       columnStyles: {
-        0: { maxWidth: 24 },
-        1: { maxWidth: 60 },
-        2: { maxWidth: 30, halign: "right" },
+        0: { cellWidth: 22 },
+        1: { cellWidth: larguraUtil - 22 - 40 },
+        2: { cellWidth: 40, halign: "right" },
       } as any,
-      margin: { top: 30, bottom: 16, left: margem, right: margem },
+      margin: { top: 12, bottom: 12, left: margem, right: margem },
     });
 
     // Posicao final da tabela do Faturamento (o autoTable ja pagina sozinho
     // quando o conteudo nao cabe).
-    return ((doc as any).lastAutoTable?.finalY ?? y + 30) + 14;
+    return ((doc as any).lastAutoTable?.finalY ?? y + 30) + 10;
   };
 
   const secaoTitulos = (
@@ -858,35 +871,42 @@ export async function exportarPdf(rel: RelatorioListas) {
       head,
       body,
       theme: "grid",
-      styles: { fontSize: 8, cellPadding: 2, overflow: "linebreak" },
+      styles: {
+        fontSize: 7.2,
+        cellPadding: 0.9,
+        overflow: "linebreak",
+      },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
+      // Colunas com largura FIXA somando a largura util da pagina (antes o
+      // maxWidth somava ~164 mm numa pagina de 297 mm: sobrava espaco vazio e
+      // a descricao quebrava em mais linhas -> mais folhas para imprimir).
       columnStyles: temMetodo
         ? ({
-            0: { maxWidth: 18 },
-            1: { maxWidth: 60 },
-            2: { maxWidth: 46 },
-            3: { maxWidth: 24 },
-            4: { maxWidth: 30, halign: "right" },
+            0: { cellWidth: 18 },
+            1: { cellWidth: larguraUtil - 18 - 80 - 32 - 38 },
+            2: { cellWidth: 80 },
+            3: { cellWidth: 32 },
+            4: { cellWidth: 38, halign: "right" },
           } as any)
         : ({
-            0: { maxWidth: 18 },
-            1: { maxWidth: 64 },
-            2: { maxWidth: 50 },
-            3: { maxWidth: 32, halign: "right" },
+            0: { cellWidth: 18 },
+            1: { cellWidth: larguraUtil - 18 - 95 - 38 },
+            2: { cellWidth: 95 },
+            3: { cellWidth: 38, halign: "right" },
           } as any),
-      margin: { top: 30, bottom: 16, left: margem, right: margem },
+      margin: { top: 12, bottom: 12, left: margem, right: margem },
     });
 
     // Posicao final da tabela (o autoTable ja pagina sozinho quando precisa)
-    return ((doc as any).lastAutoTable?.finalY ?? y + 30) + 14;
+    return ((doc as any).lastAutoTable?.finalY ?? y + 30) + 10;
   };
 
   // Garante espaco para a faixa + um pedaco da tabela; se nao couber, abre
-  // uma pagina nova (usado no modo "por empresa", em que as secoes fluem).
-  const garantirEspaco = (yAtual: number, minimo = 42): number => {
+  // uma pagina nova (as secoes fluem, entao so muda quando nao ha espaco).
+  const garantirEspaco = (yAtual: number, minimo = 34): number => {
     if (altura - margem - yAtual < minimo) {
       doc.addPage();
-      return 24;
+      return 20;
     }
     return yAtual;
   };
@@ -905,7 +925,7 @@ export async function exportarPdf(rel: RelatorioListas) {
       const g = grupos[i];
       if (i > 0) {
         doc.addPage();
-        y = 24;
+        y = 20;
       }
 
       // Faixa da empresa: nome + resumo dos totais dela
@@ -943,19 +963,19 @@ export async function exportarPdf(rel: RelatorioListas) {
     }
   } else {
     // -------------------------------------------------------------------
-    // Empresa unica: paginacao fixa (Faturamento na MESMA pagina do
-    // cabecalho/cards; cada secao seguinte numa PAGINA NOVA).
+    // Empresa unica: as secoes FLUEM na mesma folha (Faturamento -> Recebidos
+    // -> Pagos). Antes cada secao comecava numa pagina nova, o que gastava
+    // folhas vazias no meio do relatorio.
     // -------------------------------------------------------------------
     if (fat.porDia.length > 0) {
+      y = garantirEspaco(y);
       y = secaoFaturamento(fat, y);
     }
 
     for (const item of ROTULOS_PDF) {
       const lista = rel[item.chave] ?? [];
-      // Cada seção de títulos começa em uma PÁGINA NOVA, imediatamente após o
-      // fim da seção anterior (Recebidos -> Pagos).
-      doc.addPage();
-      y = 24;
+      if (!lista.length) continue;
+      y = garantirEspaco(y);
       y = secaoTitulos(item, lista, y);
     }
   }
@@ -969,7 +989,7 @@ export async function exportarPdf(rel: RelatorioListas) {
     doc.text(
       `Gerado em ${new Date().toLocaleString("pt-BR")}    |    Página ${i} de ${paginas}`,
       largura - margem,
-      altura - 8,
+      altura - 6.5,
       { align: "right" },
     );
   }

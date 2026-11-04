@@ -290,6 +290,40 @@ const saldoCache = new Map<
 >();
 const SALDO_TTL_MS = 2 * 60 * 1000; // 2 minutos de cache para saldos
 
+// ------------------- Baixa da parcela: data REAL do pagamento -------------------
+// A listagem de contas a pagar/receber traz apenas o VENCIMENTO do titulo
+// (data_vencimento) — a data em que o dinheiro saiu/entrou aparece so na BAIXA
+// da parcela:
+//   GET /v1/financeiro/eventos-financeiros/parcelas/{parcela_id}/baixa
+// A baixa traz `data_pagamento` (data real do caixa) e o `valor_composicao`
+// (valor_bruto / desconto / juros / multa / valor_liquido).
+//
+// A baixa e imutavel depois de lancada, entao o resultado fica em cache por 30
+// minutos: em um mes com centenas de titulos isso evita repetir centenas de
+// chamadas a cada recarga do dashboard.
+
+type DadosBaixa = {
+  data_pagamento: string | null;
+  desconto: number;
+  juros: number;
+  multa: number;
+  valor_bruto: number;
+  valor_liquido: number;
+  valor_pago: number;
+};
+
+const baixaCache = new Map<string, { exp: number; dados: DadosBaixa | null }>();
+const BAIXA_TTL_MS = 30 * 60 * 1000; // 30 minutos: a baixa nao muda
+const BAIXA_TTL_MS_VAZIO = 60 * 1000; // erro/404 nao fica 30 min no cache
+
+// Modo de exibicao do valor do titulo:
+//   "face"   = valor cheio do titulo (valor_bruto da baixa)
+//   "liquido" = o que saiu/entrou no caixa (valor_bruto - desconto + juros + multa)
+// Confirmado pelo usuario: o card e o PDF usam o valor LIQUIDO (com o desconto
+// da Conta Azul aplicado) tanto nas contas pagas quanto nas recebidas.
+const VALOR_PAGAS: "face" | "liquido" = "liquido";
+const VALOR_RECEBIDAS: "face" | "liquido" = "liquido";
+
 // Lê o cache ou dispara a criação; chamadas concorrentes recebem a MESMA promise.
 // Resultados marcados como não utilizáveis (ok=false / erro=true) são removidos.
 function lerOuCriar<T>(
@@ -1762,10 +1796,16 @@ async function buscarPagasInterna(
         if (brutos.length > parcial.length) parcial = brutos;
         continue;
       }
-      // Enriquece titulos sem valor_pago_* consultando o endpoint de baixa para
-      // obter o valor_composicao.desconto real e garantir que o card mostre o
-      // valor liquido (total - desconto + juros + multa).
-      const enriquecidos = await enriquecerPagasComValorLiquido(empresa, brutos, tokenRef);
+      // Enriquece os titulos com a BAIXA da parcela: data real do pagamento e
+      // valor (face ou liquido, conforme VALOR_PAGAS).
+      const enriquecidos = await enriquecerComBaixas(
+        empresa,
+        brutos,
+        tokenRef,
+        dataInicio,
+        dataFim,
+        VALOR_PAGAS,
+      );
       const total = enriquecidos.reduce((a, b) => a + b.valor, 0);
       log(
         "info",
@@ -1803,16 +1843,15 @@ async function processarPagasResposta(
   for (const i of itens) {
     // CONTA AZUL — semantica dos campos da listagem (confirmada nas baixas
     // reais, 16/16 titulos):
-    //   pago  = valor_composicao.valor_bruto  (valor CHEIO, sem desconto)
+    //   pago  = valor_composicao.valor_bruto  (valor CHEIO do titulo)
     //   total = valor_composicao.valor_liquido (bruto - desconto + juros + multa)
-    // Exemplo real: "1/3 - Compra de produto 1922" -> pago 1.127,69 (bruto) e
+    // Exemplo real: "1/3 - Compra de produto 1922" -> pago 1.127,69 (cheio) e
     // total 1.127,66 (liquido, ja com o desconto de R$ 0,03).
-    // Por isso o valor exibido tem de ser o `total`: usar o `pago` mostrava o
-    // titulo SEM o desconto (era a reclamacao do usuario).
+    // No card de PAGOS o valor exibido e o CHEIO do titulo (o `pago`); o
+    // desconto/juros/multa sao apenas rotulos da composicao do pagamento.
     const bruto = (i.pago as number) || 0;
     const liquido = (i.total as number) || 0;
-    // Pagamento parcial (nao_pago > 0): aqui o `total` e o valor CHEIO do
-    // titulo, nao o valor pago — nesse caso vale o que foi pago.
+    // Pagamento parcial (nao_pago > 0): o `pago` ja e o que foi pago.
     const parcial = ((i.nao_pago as number) || 0) > 0.005;
 
     // Juros / multa / desconto: a listagem normalmente NAO traz (o desconto so
@@ -1838,15 +1877,15 @@ async function processarPagasResposta(
     }
     if (juros > 0) comJuros++;
 
-    // Valor do titulo: o LIQUIDO (`total`), que ja tem o desconto aplicado.
-    // O `pago` (bruto) era o que mostrava o titulo SEM o desconto.
+    // Valor do titulo: o valor CHEIO (face). Em pagamento parcial o `pago` ja
+    // e somente o que foi pago, entao o mesmo campo serve para os dois casos.
     let valor: number;
     if (parcial) {
       valor = valorPagoCampo > 0 ? valorPagoCampo : bruto;
-    } else if (liquido > 0) {
-      valor = liquido;
+    } else if (bruto > 0) {
+      valor = bruto;
     } else {
-      valor = valorPagoCampo > 0 ? valorPagoCampo : bruto;
+      valor = liquido > 0 ? liquido : valorPagoCampo;
     }
     if (!i.id || valor <= 0) continue;
     const data =
@@ -1879,178 +1918,212 @@ async function processarPagasResposta(
   if (comDesconto || comJuros) {
     log(
       "info",
-      `buscarPagas ${empresa} [status=${status}]: ${comDesconto} titulo(s) com desconto (R$ ${somaDesconto.toFixed(2)}) e ${comJuros} com juros — valor exibido ja e o liquido (com desconto)`,
+      `buscarPagas ${empresa} [status=${status}]: ${comDesconto} titulo(s) com desconto (R$ ${somaDesconto.toFixed(2)}) e ${comJuros} com juros — valor exibido e o valor cheio do titulo`,
     );
   }
   return brutos;
 }
 
 /**
- * Para titulos pagos que nao tiveram `valor_pago_*` na resposta da listagem,
- * consulta o endpoint de baixa da Conta Azul para obter o
- * `valor_composicao.desconto` / `juros` / `multa` real e recalcula o valor
- * liquido (pago - desconto + juros + multa).
+ * Enriquece os titulos com a BAIXA da parcela: data real do pagamento e a
+ * composicao real do valor (desconto / juros / multa).
  *
- * Endpoints:
- *   GET /v1/financeiro/eventos-financeiros/parcelas/baixa/{baixa_id}
+ * A listagem (contas-a-pagar / contas-a-receber) traz so o VENCIMENTO do
+ * titulo; a data em que o dinheiro saiu/entrou esta na baixa da parcela:
  *   GET /v1/financeiro/eventos-financeiros/parcelas/{parcela_id}/baixa
+ *
+ * O id devolvido pela listagem E o id da parcela (confirmado na API), entao
+ * uma chamada por titulo traz tudo o que precisa: data_pagamento + composicao.
  */
-async function enriquecerPagasComValorLiquido(
+export function extrairDadosBaixa(
+  baixas: any[],
+  dataInicio: string,
+  dataFim: string,
+): DadosBaixa | null {
+  const validas = (baixas || []).filter((b) => b && typeof b === "object");
+  if (!validas.length) return null;
+
+  const dataDe = (b: any): string =>
+    typeof b?.data_pagamento === "string" ? b.data_pagamento.slice(0, 10) : "";
+
+  // Baixas lancadas dentro do periodo pedido (o filtro de data_pagamento da
+  // listagem ja restringe os titulos ao periodo).
+  const noPeriodo = validas.filter((b) => {
+    const d = dataDe(b);
+    return d && d >= dataInicio && d <= dataFim;
+  });
+
+  // A data exibida e a da ultima baixa dentro do periodo (quando existe).
+  const datas = (noPeriodo.length ? noPeriodo : validas)
+    .map(dataDe)
+    .filter(Boolean)
+    .sort();
+  const dataPagamento = datas.length ? datas[datas.length - 1] : null;
+
+  // A composicao e a do titulo inteiro (todas as baixas da parcela).
+  let desconto = 0;
+  let juros = 0;
+  let multa = 0;
+  let valorBruto = 0;
+  let valorLiquido = 0;
+  let valorPago = 0;
+  for (const b of validas) {
+    const vc = b?.valor_composicao || b?.composicao_valor || b?.detalhe_valor || {};
+    desconto += Number(vc.desconto || 0);
+    juros += Number(vc.juros || 0);
+    multa += Number(vc.multa || 0);
+    valorBruto += Number(vc.valor_bruto || b?.valor_bruto || 0);
+    valorLiquido += Number(vc.valor_liquido || 0);
+    valorPago += Number(b?.valor_pago || 0);
+  }
+  if (valorBruto <= 0) valorBruto = valorPago;
+  if (valorLiquido <= 0) valorLiquido = valorBruto - desconto + juros + multa;
+
+  return {
+    data_pagamento: dataPagamento,
+    desconto,
+    juros,
+    multa,
+    valor_bruto: valorBruto,
+    valor_liquido: valorLiquido,
+    valor_pago: valorPago,
+  };
+}
+
+/**
+ * Busca (com cache) a baixa de uma parcela.
+ */
+async function buscarBaixaDaParcela(
   empresa: string,
-  brutos: ItemLancamento[],
+  parcelaId: string,
   tokenRef: { token: string },
+  dataInicio: string,
+  dataFim: string,
+): Promise<DadosBaixa | null> {
+  const chave = `${empresa}:${parcelaId}`;
+  const agora = Date.now();
+  const cached = baixaCache.get(chave);
+  if (cached && cached.exp > agora) return cached.dados;
+
+  const url = `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/${parcelaId}/baixa`;
+
+  const guardar = (dados: DadosBaixa | null) => {
+    baixaCache.set(chave, {
+      exp: Date.now() + (dados ? BAIXA_TTL_MS : BAIXA_TTL_MS_VAZIO),
+      dados,
+    });
+    return dados;
+  };
+
+  let res: Response;
+  try {
+    res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
+  } catch {
+    return guardar(null);
+  }
+
+  if (res.status === 401) {
+    const novo = await renovarToken(empresa);
+    if (novo) {
+      tokenRef.token = novo;
+      try {
+        res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${novo}` } }, 1);
+      } catch {
+        return guardar(null);
+      }
+    }
+  }
+
+  if (!res.ok) return guardar(null);
+
+  let j: any;
+  try {
+    j = await res.json();
+  } catch {
+    return guardar(null);
+  }
+
+  const lista: any[] = Array.isArray(j) ? j : j ? [j] : [];
+  return guardar(extrairDadosBaixa(lista, dataInicio, dataFim));
+}
+
+/**
+ * Enriquece a lista de titulos (pagos ou recebidos) com a baixa da parcela:
+ * data REAL do pagamento e valor (face ou liquido, conforme o modo).
+ *
+ * O titulo continua na lista mesmo se a baixa nao responder (falha de rede /
+ * rate limit): nesse caso mantem o valor e a data que vieram da listagem.
+ */
+export async function enriquecerComBaixas(
+  empresa: string,
+  itens: ItemLancamento[],
+  tokenRef: { token: string },
+  dataInicio: string,
+  dataFim: string,
+  modo: "face" | "liquido",
 ): Promise<ItemLancamento[]> {
-  const CONCORRENCIA = 4;
-  // Consulta a baixa para todos os titulos que tenham baixa_id ou parcela_id,
-  // para garantir que o valor liquido (valor_bruto - desconto + juros + multa)
-  // seja usado mesmo quando a listagem ja retorna valor_pago preenchido (bruto).
-  const pendentes = brutos.filter((b) => b.baixa_id || b.parcela_id);
-  if (!pendentes.length) return brutos;
+  const comId = itens.filter((i) => i.id);
+  if (!comId.length) return itens;
+
+  const CONCORRENCIA_BAIXAS = 16;
+  const t0 = Date.now();
+  let comBaixa = 0;
+  let semBaixa = 0;
+
+  let idx = 0;
+  async function worker() {
+    while (true) {
+      const meu = idx++;
+      if (meu >= comId.length) return;
+      const item = comId[meu];
+
+      const baixa = await buscarBaixaDaParcela(
+        empresa,
+        String(item.id),
+        tokenRef,
+        dataInicio,
+        dataFim,
+      );
+      if (!baixa) {
+        semBaixa++;
+        continue;
+      }
+      comBaixa++;
+
+      // Data: a data REAL do pagamento/recebimento (a listagem so traz o
+      // vencimento do titulo).
+      if (baixa.data_pagamento) item.data = baixa.data_pagamento;
+
+      // Composicao real do pagamento.
+      item.desconto = baixa.desconto > 0 ? baixa.desconto : undefined;
+      item.juros = baixa.juros > 0 ? baixa.juros : undefined;
+      item.multa = baixa.multa > 0 ? baixa.multa : undefined;
+      if (baixa.valor_pago > 0) item.valor_pago = baixa.valor_pago;
+
+      // Valor do titulo.
+      const face = baixa.valor_bruto > 0 ? baixa.valor_bruto : (item._pago ?? 0);
+      const liquido =
+        baixa.valor_liquido > 0
+          ? baixa.valor_liquido
+          : face - baixa.desconto + baixa.juros + baixa.multa;
+      if (face > 0 || liquido > 0) {
+        item.valor = modo === "face" ? (face > 0 ? face : liquido) : liquido;
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(CONCORRENCIA_BAIXAS, comId.length) }, () => worker()),
+  );
 
   log(
     "info",
-    `enriquecerPagasComValorLiquido ${empresa}: ${pendentes.length} titulos com baixa/parcela consultando valor_composicao`,
+    `enriquecerComBaixas ${empresa}: ${comBaixa}/${comId.length} titulos com baixa (${semBaixa} sem) em ${(
+      (Date.now() - t0) /
+      1000
+    ).toFixed(1)}s`,
   );
-
-  const resultado = [...brutos];
-
-  async function processarUm(item: ItemLancamento): Promise<void> {
-    const baixaId = item.baixa_id;
-    const parcelaId = item.parcela_id;
-    const url = baixaId
-      ? `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/baixa/${baixaId}`
-      : `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/${parcelaId}/baixa`;
-
-    let res: Response;
-    try {
-      res = await fetchComRetry(url, {
-        headers: { Authorization: `Bearer ${tokenRef.token}` },
-      }, 2);
-    } catch {
-      return;
-    }
-
-    if (res.status === 401) {
-      const novo = await renovarToken(empresa);
-      if (!novo) return;
-      tokenRef.token = novo;
-      try {
-        res = await fetchComRetry(url, {
-          headers: { Authorization: `Bearer ${novo}` },
-        }, 1);
-      } catch {
-        return;
-      }
-    }
-
-    if (!res.ok) return;
-
-    let j: any;
-    try {
-      j = await res.json();
-    } catch {
-      return;
-    }
-
-    // O endpoint /parcelas/{parcela_id}/baixa retorna um ARRAY de baixas.
-    // O endpoint /baixa/{baixa_id} retorna um objeto unico.
-    const dadosBaixa = Array.isArray(j) ? j[0] : j;
-    if (!dadosBaixa) return;
-
-    // Busca os detalhes da Parcela (para pegar valor_composicao e o evento pai)
-    let dadosParcela: any = null;
-    if (parcelaId) {
-      try {
-        const urlParcela = `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/${parcelaId}`;
-        const resParcela = await fetchComRetry(urlParcela, {
-          headers: { Authorization: `Bearer ${tokenRef.token}` },
-        }, 1);
-        if (resParcela.ok) {
-          const jParcela = await resParcela.json();
-          dadosParcela = Array.isArray(jParcela) ? jParcela[0] : jParcela;
-        }
-      } catch {
-        // falha silenciosa
-      }
-    }
-
-    // Helper defensivo: a API varia entre valor_composicao, composicao_valor e detalhe_valor
-    const getVC = (obj: any) =>
-      obj?.valor_composicao || obj?.composicao_valor || obj?.detalhe_valor || {};
-
-    const vcB = getVC(dadosBaixa);
-    const vcP = getVC(dadosParcela);
-    const vcE = getVC(dadosParcela?.evento); // desconto pode estar no evento pai
-
-    // DEBUG: loga o que a API retornou para cada fonte
-    log(
-      "debug",
-      `enriquecerPagas ${empresa} id=${String(item.id).slice(0,8)} ` +
-      `baixaId=${baixaId ?? "-"} parcelaId=${parcelaId ?? "-"} ` +
-      `dadosBaixa=${JSON.stringify(dadosBaixa).slice(0,500)} ` +
-      `dadosParcela=${JSON.stringify(dadosParcela).slice(0,500)} ` +
-      `evento=${JSON.stringify(dadosParcela?.evento ?? null).slice(0,300)}`,
-    );
-
-    // Prioriza desconto/juros/multa nas 3 camadas: baixa > parcela > evento pai
-    const desconto = Number(vcB.desconto || vcP.desconto || vcE.desconto || 0);
-    const juros = Number(vcB.juros || vcP.juros || vcE.juros || 0);
-    const multa = Number(vcB.multa || vcP.multa || vcE.multa || 0);
-    const valorBruto = Number(vcB.valor_bruto || vcP.valor_bruto || vcE.valor_bruto || item._total || 0);
-
-    log(
-      "debug",
-      `enriquecerPagas ${empresa} id=${String(item.id).slice(0,8)} ` +
-      `vcB.desconto=${vcB.desconto} vcP.desconto=${vcP.desconto} vcE.desconto=${vcE.desconto} ` +
-      `valorBruto=${valorBruto} desconto=${desconto} juros=${juros} multa=${multa}`,
-    );
-
-    let valor: number;
-
-    if (valorBruto > 0) {
-      // Valor liquido definitivo: valor_bruto - desconto + juros + multa
-      valor = valorBruto - desconto + juros + multa;
-    } else {
-      // Fallback quando nenhuma fonte retorna valor_bruto: usa os valores da listagem
-      const pago = item._pago ?? 0;
-      const total = item._total ?? 0;
-      const ehBruto = Math.abs(pago - total) < 0.01;
-      if (ehBruto && desconto > 0) {
-        valor = pago - desconto + juros + multa;
-      } else if (pago > 0) {
-        valor = pago + juros + multa;
-      } else {
-        valor = total;
-      }
-    }
-
-    log(
-      "debug",
-      `enriquecerPagas ${empresa} id=${String(item.id).slice(0,8)} ` +
-      `pago=${item._pago} total=${item._total} valor_final=${valor} ` +
-      `desconto_aplicado=${desconto} juros_aplicado=${juros} multa_aplicado=${multa}`,
-    );
-
-    // Atualiza o item no resultado pelo indice
-    const idx = brutos.indexOf(item);
-    if (idx !== -1) {
-      resultado[idx] = {
-        ...resultado[idx],
-        valor,
-        desconto: desconto || undefined,
-        juros: juros || undefined,
-        multa: multa || undefined,
-      };
-    }
-  }
-
-  // Executa em lotes de CONCORRENCIA para nao saturar a API
-  for (let i = 0; i < pendentes.length; i += CONCORRENCIA) {
-    const lote = pendentes.slice(i, i + CONCORRENCIA);
-    await Promise.all(lote.map(processarUm));
-  }
-
-  return resultado;
+  return itens;
 }
 
 // ------------------- Contas efetivamente recebidas (baixadas) -------------------
@@ -2099,13 +2172,14 @@ export function processarRecebidas(
 ): ItemLancamento[] {
   const brutos: ItemLancamento[] = [];
   for (const i of itens) {
-    // CONTA AZUL — mesmo tratamento das pagas: `pago` e o valor BRUTO
-    // recebido e `total` e o LIQUIDO (ja com o desconto). Confirmado nas
+    // CONTA AZUL — mesmo tratamento das pagas: `pago` e o valor CHEIO do
+    // titulo e `total` e o LIQUIDO (ja com o desconto). Confirmado nas
     // listagens reais de contas a receber (status ACQUITTED, nao_pago = 0).
+    // Exemplo real: "FAT. 1666" -> pago 29.000,00 (cheio) e total 8.339,00
+    // (o valor efetivamente recebido, ja com o desconto do cliente).
     const bruto = (i.pago as number) || 0;
     const liquido = (i.total as number) || 0;
-    // Recebimento parcial (nao_pago > 0): o `total` e o valor CHEIO do titulo,
-    // nao o valor recebido — nesse caso vale o que foi recebido.
+    // Recebimento parcial (nao_pago > 0): o `pago` e o que foi recebido.
     const parcial = ((i.nao_pago as number) || 0) > 0.005;
 
     // Mesmo tratamento de juros/multa/desconto das pagas, aplicado aos recebidos.
@@ -2134,14 +2208,19 @@ export function processarRecebidas(
       valor = valorPagoCampo > 0 ? valorPagoCampo : bruto;
     }
     if (!i.id || valor <= 0) continue;
+    // Data: a listagem so traz o VENCIMENTO do titulo; a data real do
+    // recebimento chega no enriquecimento com a baixa da parcela.
+    const dataReal = extrairDataRecebimento(i);
     const data =
-      extrairDataRecebimento(i) ||
-      // Ultimo recurso: a API ja filtrou por data_pagamento; se o titulo nao
-      // trouxer a data de recebimento, usamos o vencimento como aproximacao.
+      dataReal ||
+      // Ultimo recurso: se o titulo nao trouxer a data de recebimento, usamos o
+      // vencimento como aproximacao (a baixa corrige depois).
       (i.data_vencimento ? String(i.data_vencimento).slice(0, 10) : null);
     if (!data) continue;
-    // Data no formato YYYY-MM-DD: comparacao por string funciona.
-    if (data < dataInicio || data > dataFim) continue;
+    // So descarta o titulo quando a propria API traz a data REAL de recebimento
+    // e ela esta fora do periodo. Descartar pelo VENCIMENTO perdia dinheiro que
+    // entrou no periodo (ex.: titulo vencido em 29/07 e recebido em 13/10).
+    if (dataReal && (dataReal < dataInicio || dataReal > dataFim)) continue;
     brutos.push({
       data,
       valor,
@@ -2277,9 +2356,16 @@ async function buscarRecebidasInterna(
           if (brutos.length > parcial.length) parcial = brutos;
           continue;
         }
-        // Enriquece titulos sem valor_pago_* consultando o endpoint de baixa para
-        // obter o valor_composicao.desconto real e garantir valor liquido no card.
-        const enriquecidos = await enriquecerPagasComValorLiquido(empresa, brutos, tokenRef);
+        // Enriquece os titulos com a BAIXA da parcela: data real do recebimento
+        // e valor (face ou liquido, conforme VALOR_RECEBIDAS).
+        const enriquecidos = await enriquecerComBaixas(
+          empresa,
+          brutos,
+          tokenRef,
+          dataInicio,
+          dataFim,
+          VALOR_RECEBIDAS,
+        );
         const total = enriquecidos.reduce((a, b) => a + b.valor, 0);
         log(
           "info",
