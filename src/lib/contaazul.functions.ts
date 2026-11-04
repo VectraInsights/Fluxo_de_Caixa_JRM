@@ -299,6 +299,13 @@ export type DashboardData = {
   };
   avisos: string[];
   empresas_com_problema: string[];
+  // Títulos detalhados de Pagos e Recebidas por empresa (fonte única da verdade
+  // para as listas — evita divergência entre o card do dashboard e a lista,
+  // que antes eram buscadas por server functions separadas).
+  detalhamento: {
+    pagos: { empresa: string; titulos: TituloDetalhe[] }[];
+    recebidas: { empresa: string; titulos: TituloDetalhe[] }[];
+  };
 };
 
 function dateRange(inicio: string, fim: string): string[] {
@@ -490,6 +497,37 @@ export const getDashboard = createServerFn({ method: "GET" })
     const total_rec_boleto = receitas_boleto.reduce((a, b) => a + b, 0);
     const total_desp = despesas.reduce((a, b) => a + b, 0);
 
+    // Detalhamento de Pagos e Recebidas por empresa — fonte única da verdade
+    // para as listas, evitando divergência com o card do dashboard.
+    const detalhamento = {
+      pagos: [] as { empresa: string; titulos: TituloDetalhe[] }[],
+      recebidas: [] as { empresa: string; titulos: TituloDetalhe[] }[],
+    };
+    for (const r of resultados) {
+      detalhamento.pagos.push({
+        empresa: r.empresa,
+        titulos: r.pagas.map((i) => ({
+          data: i.data,
+          valor: i.valor,
+          metodo: i.metodo ?? null,
+          descricao: i.descricao ?? null,
+          terceiro: i.terceiro ?? null,
+          categoria: i.categoria ?? null,
+        })),
+      });
+      detalhamento.recebidas.push({
+        empresa: r.empresa,
+        titulos: r.recebidas.map((i) => ({
+          data: i.data,
+          valor: i.valor,
+          metodo: i.metodo ?? null,
+          descricao: i.descricao ?? null,
+          terceiro: i.terceiro ?? null,
+          categoria: i.categoria ?? null,
+        })),
+      });
+    }
+
     return {
       labels,
       receitas,
@@ -508,6 +546,7 @@ export const getDashboard = createServerFn({ method: "GET" })
       },
       avisos,
       empresas_com_problema: Array.from(empresasComProblema),
+      detalhamento,
     };
   });
 

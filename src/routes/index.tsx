@@ -518,17 +518,28 @@ function Dashboard() {
 
   // Todos os títulos de todas as empresas do filtro atual, consolidados numa lista só
   const consolidado = useMemo(() => {
-    if (!breakdown?.length) return null;
+    if (!data) return null;
     const round = (n: number) => Math.round(n * 100) / 100;
     const receber: (TituloDetalhe & { empresa: string })[] = [];
     const pagar: (TituloDetalhe & { empresa: string })[] = [];
     const pagos: (TituloDetalhe & { empresa: string })[] = [];
     const recebidas: (TituloDetalhe & { empresa: string })[] = [];
-    for (const eb of breakdown) {
-      for (const t of eb.receber.titulos) receber.push({ ...t, empresa: eb.empresa });
-      for (const t of eb.pagar.titulos) pagar.push({ ...t, empresa: eb.empresa });
-      for (const t of eb.pagos?.titulos ?? []) pagos.push({ ...t, empresa: eb.empresa });
-      for (const t of eb.recebidas?.titulos ?? []) recebidas.push({ ...t, empresa: eb.empresa });
+    // Receber e Pagar vêm do breakdown (server function separada)
+    if (breakdown?.length) {
+      for (const eb of breakdown) {
+        for (const t of eb.receber.titulos) receber.push({ ...t, empresa: eb.empresa });
+        for (const t of eb.pagar.titulos) pagar.push({ ...t, empresa: eb.empresa });
+      }
+    }
+    // Pagos e Recebidas vêm do detalhamento do getDashboard — fonte única da
+    // verdade, garante que a lista bate exatamente com o card do dashboard.
+    if (data.detalhamento) {
+      for (const d of data.detalhamento.pagos) {
+        for (const t of d.titulos) pagos.push({ ...t, empresa: d.empresa });
+      }
+      for (const d of data.detalhamento.recebidas) {
+        for (const t of d.titulos) recebidas.push({ ...t, empresa: d.empresa });
+      }
     }
     // Ordenacao cronologica (data), depois por valor e por descricao (alfabetica)
     return {
@@ -540,7 +551,7 @@ function Dashboard() {
         titulos: ordenarTitulos(recebidas),
       },
     };
-  }, [breakdown]);
+  }, [data, breakdown]);
 
   // Exporta as listas (A Receber, A Pagar, Pagos, Recebidos) para PDF ou XLSX
   async function exportar(formato: "pdf" | "xlsx") {
