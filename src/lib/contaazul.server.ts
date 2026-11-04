@@ -1439,46 +1439,75 @@ async function buscarPagasInterna(
   // PAGO fica como fallback para contas que usem o valor antigo.
   const statusTentativas = ["ACQUITTED", "PAGO"];
   for (const status of statusTentativas) {
-    const params = new URLSearchParams({
-      ...venc,
-      data_pagamento_de: dataInicio,
-      data_pagamento_ate: dataFim,
-      status,
-      tamanho_pagina: "100",
-      pagina: "1",
-    });
-    const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar?${params}`;
-    const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
+    const brutos: ItemLancamento[] = [];
+    let ok = false;
+    let pagina = 1;
 
-    if (res.status === 401) {
-      const novo = await renovarToken(empresa);
-      if (novo) {
-        const res2 = await fetchComRetry(url, { headers: { Authorization: `Bearer ${novo}` } }, 1);
-        const r = await processarPagasResposta(res2, empresa, dataInicio, dataFim, status);
-        if (r.ok) return r;
-        continue;
+    // Pagina ate a API nao devolver mais itens (maximo 20 paginas).
+    while (pagina <= 20) {
+      const params = new URLSearchParams({
+        ...venc,
+        data_pagamento_de: dataInicio,
+        data_pagamento_ate: dataFim,
+        status,
+        tamanho_pagina: "100",
+        pagina: String(pagina),
+      });
+      const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar?${params}`;
+      let res = await fetchComRetry(
+        url,
+        { headers: { Authorization: `Bearer ${tokenRef.token}` } },
+        2,
+      );
+
+      if (res.status === 401) {
+        const novo = await renovarToken(empresa);
+        if (novo) {
+          tokenRef.token = novo;
+          res = await fetchComRetry(
+            url,
+            { headers: { Authorization: `Bearer ${novo}` } },
+            1,
+          );
+        }
       }
+
+      if (!res.ok) {
+        log(
+          "warn",
+          `buscarPagas ${empresa} status=${res.status} (filtro status=${status}) pg=${pagina}`,
+        );
+        ok = false;
+        break;
+      }
+
+      const j: any = await res.json();
+      const itens: any[] = j.itens || (Array.isArray(j) ? j : []);
+      ok = true;
+      brutos.push(...(await processarPagasResposta(itens, empresa, dataInicio, dataFim, status)));
+      if (itens.length < 100) break;
+      pagina++;
     }
-    const r = await processarPagasResposta(res, empresa, dataInicio, dataFim, status);
-    if (r.ok) return r;
+
+    if (ok && brutos.length > 0) {
+      const total = brutos.reduce((a, b) => a + b.valor, 0);
+      log(
+        "info",
+        `buscarPagas ${empresa} [status=${status}]: ${brutos.length} titulos pagos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)})`,
+      );
+      return { dados: brutos, ok: true };
+    }
   }
   return { dados: [], ok: false };
 }
 
 async function processarPagasResposta(
-  res: Response,
+  itens: any[],
   empresa: string,
   dataInicio: string,
   dataFim: string,
   status: string,
-): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
-  if (!res.ok) {
-    log("warn", `buscarPagas ${empresa} status=${res.status} (filtro status=${status})`);
-    return { dados: [], ok: false };
-  }
-  const j: any = await res.json();
-  const itens: any[] = j.itens || (Array.isArray(j) ? j : []);
-
+): Promise<ItemLancamento[]> {
   const brutos: ItemLancamento[] = [];
   for (const i of itens) {
     const pago = (i.pago as number) || 0;
@@ -1521,13 +1550,7 @@ async function processarPagasResposta(
       valor_pago: valorPagoCampo || undefined,
     });
   }
-
-  const total = brutos.reduce((a, b) => a + b.valor, 0);
-  log(
-    "info",
-    `buscarPagas ${empresa}: ${brutos.length} titulos pagos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)})`,
-  );
-  return { dados: brutos, ok: true };
+  return brutos;
 }
 
 // ------------------- Contas efetivamente recebidas (baixadas) -------------------
