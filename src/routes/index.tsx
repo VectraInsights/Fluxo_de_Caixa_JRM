@@ -1527,9 +1527,18 @@ function TitulosLista({
                 <Barcode className="h-2.5 w-2.5" /> Boleto
               </span>
             )}
-            <span className={`text-xs font-semibold tabular-nums shrink-0 ${accent}`}>
-              {fmt(t.valor)}
-            </span>
+            <div className="flex flex-col items-end gap-0.5 shrink-0">
+              <span className={`text-xs font-semibold tabular-nums ${accent}`}>
+                {fmt(t.valor)}
+              </span>
+              {((t.desconto ?? 0) > 0 || (t.juros ?? 0) > 0 || (t.multa ?? 0) > 0) && (
+                <span className="text-[9px] text-muted-foreground tabular-nums leading-none">
+                  {t.desconto ? `Desc ${fmt(t.desconto)}` : ""}
+                  {t.juros ? ` Juros ${fmt(t.juros)}` : ""}
+                  {t.multa ? ` Multa ${fmt(t.multa)}` : ""}
+                </span>
+              )}
+            </div>
           </div>
         );
       })}
