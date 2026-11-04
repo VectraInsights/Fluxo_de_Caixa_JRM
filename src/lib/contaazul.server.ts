@@ -927,11 +927,12 @@ export function extrairCategoria(j: any): string | null {
 }
 
 // Extrai um numero de um dos campos candidatos (numerico ou string "1.234,56").
-// Busca tambem em estruturas aninhadas (evento, baixas, parcelas, rateio)
-// e dentro de valor_composicao / composicao_valor da Conta Azul.
+// Busca recursivamente em qualquer nivel aninhado do objeto (evento, baixas,
+// parcelas, rateio, valor_composicao, composicao_valor etc.).
 // Retorna 0 se nada for encontrado.
 function extrairNumero(j: any, ...campos: string[]): number {
   if (!j) return 0;
+
   // Campos raiz
   for (const c of campos) {
     const v = j[c];
@@ -941,31 +942,42 @@ function extrairNumero(j: any, ...campos: string[]): number {
       if (!isNaN(n)) return n;
     }
   }
-  // Estruturas aninhadas comuns da Conta Azul
-  const aninhados = [j.evento, j.baixas?.[0], j.baixas?.[1], j.parcelas?.[0], j.parcelas?.[1], j.rateio?.[0]].filter(Boolean);
-  for (const a of aninhados) {
+
+  // Busca recursiva em objetos aninhados (limite de profundidade para evitar loop)
+  const visitado = new Set<any>();
+  function buscar(obj: any, profundidade: number): number {
+    if (!obj || typeof obj !== "object" || profundidade > 6 || visitado.has(obj))
+      return 0;
+    visitado.add(obj);
+
     for (const c of campos) {
-      const v = a[c];
+      const v = obj[c];
       if (typeof v === "number" && !isNaN(v)) return v;
       if (typeof v === "string") {
         const n = Number(v.replace(/[^0-9,-]/g, "").replace(",", "."));
         if (!isNaN(n)) return n;
       }
     }
-    // valor_composicao / composicao_valor (Conta Azul): objeto { juros, desconto, multa, valor_bruto, taxa }
-    const comp = a.valor_composicao ?? a.composicao_valor ?? a.composicaoDeValor;
-    if (comp && typeof comp === "object") {
-      for (const c of campos) {
-        const v = comp[c];
-        if (typeof v === "number" && !isNaN(v)) return v;
-        if (typeof v === "string") {
-          const n = Number(v.replace(/[^0-9,-]/g, "").replace(",", "."));
-          if (!isNaN(n)) return n;
-        }
+
+    // Se for string, tenta interpretar como JSON (pode ser valor_composicao serializado)
+    if (typeof obj === "string") {
+      try {
+        const parse = JSON.parse(obj);
+        const r = buscar(parse, profundidade + 1);
+        if (r !== 0) return r;
+      } catch {
+        // nao e JSON valido, ignora
       }
     }
+
+    for (const k of Object.keys(obj)) {
+      const r = buscar(obj[k], profundidade + 1);
+      if (r !== 0) return r;
+    }
+    return 0;
   }
-  return 0;
+
+  return buscar(j, 0);
 }
 
 // Extrai o id da conta financeira (banco) do titulo. A API usa nomes
@@ -1588,6 +1600,13 @@ async function processarPagasResposta(
         "info",
         `detalhe pagamento ${empresa} id=${String(i.id).slice(0, 8)} pago=${pago} total=${total} juros=${juros} multa=${multa} desconto=${desconto} valorPagoCampo=${valorPagoCampo} campos=${JSON.stringify({ juros: i.juros, multa: i.multa, desconto: i.desconto, valor_pago: i.valor_pago, valor_liquido: i.valor_liquido, valor_efetivo: i.valor_efetivo, valor_baixa: i.valor_baixa, valor_desconto: i.valor_desconto, abatimento: i.abatimento, baixas_desconto: i.baixas?.[0]?.desconto, baixas_valor_desconto: i.baixas?.[0]?.valor_desconto, parcelas_desconto: i.parcelas?.[0]?.desconto, parcelas_valor_desconto: i.parcelas?.[0]?.valor_desconto })}`,
       );
+      await gravarLogEvento({
+        empresa,
+        evento: "desconto_detectado_pagamento",
+        erro: null,
+        detalhe: `titulo id=${String(i.id).slice(0, 8)} pago=${pago} total=${total} juros=${juros} multa=${multa} desconto=${desconto} valorPagoCampo=${valorPagoCampo}`,
+        acao_necessaria: null,
+      });
     }
 
     // Se o campo pago ja vem com desconto (valor liquido), nao subtrai de novo.
