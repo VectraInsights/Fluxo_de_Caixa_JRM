@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `1a398a2` | fix: remove a linha de Desc/Juros/Multa dos cards e do rodape (o valor ja vem com o desconto aplicado) | 04/11/2026 |
 | `9c6228e` | fix: titulos pagos/recebidos exibem o valor liquido (com desconto) e as paginas da listagem sao buscadas em paralelo | 04/11/2026 |
 | `6453fea` | feat: rota de diagnostico `/api/debug-baixas` que revela o JSON cru da baixa (desconto, juros, multa e valor pago real) para descobrir onde o desconto da Conta Azul e gravado | 04/11/2026 |
 | `76ced54` | fix: paginas de pagos/recebidos recusadas pela API (rate limit) viravam total parcial no carregamento automatico — paginacao que reinicia, resultado incompleto fora do cache e refetch automatica da tela | 04/11/2026 |
@@ -784,6 +785,18 @@ concorrencia 3, 4 chamadas) e a cauda adaptativa quando a API nao informa
    desconto sai da conta) e o subtitulo passa a mostrar o total do desconto.
 5. O carregamento deve ficar mais rapido: as paginas da listagem sao buscadas
    em paralelo (3 por vez) em vez de uma a uma.
+
+### Ajuste pedido pelo usuario (commit `1a398a2`)
+
+O usuario pediu para **tirar** a linha "Desc R$ ... · Juros R$ ... · Multa R$ ..."
+que aparecia abaixo dos cards **Contas Pagas** e **Contas Recebidas** (e o
+rotulo "Desc R$ ..." no rodape das listas de titulos). O desconto continua
+aplicado **no valor** do titulo — so o rotulo extra foi removido, para o painel
+ficar limpo.
+
+Arquivo alterado: `src/routes/index.tsx` (remocao do `sub` dos dois cards e do
+rotulo por titulo no rodape). Os dados `total_desconto_pagas` / `total_juros_*`
+continuam sendo calculados e devolvidos pela API (apenas nao sao exibidos).
 
 ### Como reverter (sem reescrever o historico ja publicado)
 
