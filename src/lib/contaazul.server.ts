@@ -927,7 +927,8 @@ export function extrairCategoria(j: any): string | null {
 }
 
 // Extrai um numero de um dos campos candidatos (numerico ou string "1.234,56").
-// Busca tambem em estruturas aninhadas (evento, baixas, parcelas).
+// Busca tambem em estruturas aninhadas (evento, baixas, parcelas, rateio)
+// e dentro de valor_composicao / composicao_valor da Conta Azul.
 // Retorna 0 se nada for encontrado.
 function extrairNumero(j: any, ...campos: string[]): number {
   if (!j) return 0;
@@ -941,7 +942,7 @@ function extrairNumero(j: any, ...campos: string[]): number {
     }
   }
   // Estruturas aninhadas comuns da Conta Azul
-  const aninhados = [j.evento, j.baixas?.[0], j.parcelas?.[0], j.rateio?.[0]].filter(Boolean);
+  const aninhados = [j.evento, j.baixas?.[0], j.baixas?.[1], j.parcelas?.[0], j.parcelas?.[1], j.rateio?.[0]].filter(Boolean);
   for (const a of aninhados) {
     for (const c of campos) {
       const v = a[c];
@@ -949,6 +950,18 @@ function extrairNumero(j: any, ...campos: string[]): number {
       if (typeof v === "string") {
         const n = Number(v.replace(/[^0-9,-]/g, "").replace(",", "."));
         if (!isNaN(n)) return n;
+      }
+    }
+    // valor_composicao / composicao_valor (Conta Azul): objeto { juros, desconto, multa, valor_bruto, taxa }
+    const comp = a.valor_composicao ?? a.composicao_valor ?? a.composicaoDeValor;
+    if (comp && typeof comp === "object") {
+      for (const c of campos) {
+        const v = comp[c];
+        if (typeof v === "number" && !isNaN(v)) return v;
+        if (typeof v === "string") {
+          const n = Number(v.replace(/[^0-9,-]/g, "").replace(",", "."));
+          if (!isNaN(n)) return n;
+        }
       }
     }
   }
@@ -1565,25 +1578,38 @@ async function processarPagasResposta(
     // usamos ele diretamente.
     const juros = extrairNumero(i, "juros", "valor_juros", "acrescimos", "juros_multa", "valor_acrescimo");
     const multa = extrairNumero(i, "multa", "valor_multa", "valor_multa_mora");
-    const desconto = extrairNumero(i, "desconto", "valor_desconto", "abatimento", "valor_desconto_concedido", "desconto_concedido");
-    const valorPagoCampo = extrairNumero(i, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa", "valor_pagamento", "valor_pago_liquido");
+    const desconto = extrairNumero(i, "desconto", "valor_desconto", "abatimento", "valor_desconto_concedido", "desconto_concedido", "valor_desconto_baixa", "desconto_baixa");
+    const valorPagoCampo = extrairNumero(i, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa", "valor_pagamento", "valor_pago_liquido", "valor_pago_final");
 
+    // Log de debug quando houver desconto ou acrescimos: ajuda a identificar
+    // qual campo a API da Conta Azul esta retornando para cada titulo.
+    if (desconto > 0 || juros > 0 || multa > 0) {
+      log(
+        "info",
+        `detalhe pagamento ${empresa} id=${String(i.id).slice(0, 8)} pago=${pago} total=${total} juros=${juros} multa=${multa} desconto=${desconto} valorPagoCampo=${valorPagoCampo} campos=${JSON.stringify({ juros: i.juros, multa: i.multa, desconto: i.desconto, valor_pago: i.valor_pago, valor_liquido: i.valor_liquido, valor_efetivo: i.valor_efetivo, valor_baixa: i.valor_baixa, valor_desconto: i.valor_desconto, abatimento: i.abatimento, baixas_desconto: i.baixas?.[0]?.desconto, baixas_valor_desconto: i.baixas?.[0]?.valor_desconto, parcelas_desconto: i.parcelas?.[0]?.desconto, parcelas_valor_desconto: i.parcelas?.[0]?.valor_desconto })}`,
+      );
+    }
+
+    // Se o campo pago ja vem com desconto (valor liquido), nao subtrai de novo.
+    // So usa desconto no calculo quando nao houver campo de valor efetivo pago
+    // e o pagamento parece ser o valor bruto do titulo.
     let valor: number;
     if (valorPagoCampo > 0) {
       valor = valorPagoCampo; // valor efetivamente pago (ja inclui juros/multa/desconto)
     } else if (desconto > 0 || juros > 0 || multa > 0) {
-      // O campo "pago" da API costuma trazer o valor original do titulo.
-      // Quando ha desconto, ele pode ja vir com o desconto aplicado (valor
-      // liquido) ou nao. Tentamos calcular com desconto, mas se o resultado
-      // for invalido, usamos apenas o pago (nao subtrai desconto duas vezes).
-      const calc = pago + juros + multa - desconto;
+      // paga ja pode vir com desconto aplicado. Se ha desconto mas paga > 0,
+      // assumimos que paga ja eh o valor liquido (com desconto) e usamos ele,
+      // somando apenas juros/multa se vierem separados.
+      const base = pago > 0 ? pago : total;
+      const acrescimos = juros + multa;
+      const calc = base + acrescimos;
       if (calc > 0) {
         valor = calc;
       } else {
-        valor = pago > 0 ? pago : total;
+        valor = base;
         log(
           "warn",
-          `valor invalido com desconto (pago=${pago} desconto=${desconto} juros=${juros} multa=${multa}), usando fallback ${valor}`,
+          `valor calculado invalido (pago=${pago} desconto=${desconto} juros=${juros} multa=${multa}), usando fallback ${valor}`,
         );
       }
     } else {
@@ -1663,15 +1689,29 @@ export function processarRecebidas(
     // Mesmo tratamento de juros/multa/desconto das pagas, aplicado aos recebidos.
     const juros = extrairNumero(i, "juros", "valor_juros", "acrescimos", "juros_multa", "valor_acrescimo");
     const multa = extrairNumero(i, "multa", "valor_multa", "valor_multa_mora");
-    const desconto = extrairNumero(i, "desconto", "valor_desconto", "abatimento", "valor_desconto_concedido", "desconto_concedido");
-    const valorPagoCampo = extrairNumero(i, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa", "valor_pagamento", "valor_pago_liquido");
+    const desconto = extrairNumero(i, "desconto", "valor_desconto", "abatimento", "valor_desconto_concedido", "desconto_concedido", "valor_desconto_baixa", "desconto_baixa");
+    const valorPagoCampo = extrairNumero(i, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa", "valor_pagamento", "valor_pago_liquido", "valor_pago_final");
+
+    // Log de debug quando houver desconto ou acrescimos.
+    if (desconto > 0 || juros > 0 || multa > 0) {
+      log(
+        "info",
+        `detalhe recebimento id=${String(i.id).slice(0, 8)} recebido=${recebido} total=${total} juros=${juros} multa=${multa} desconto=${desconto} valorPagoCampo=${valorPagoCampo} campos=${JSON.stringify({ juros: i.juros, multa: i.multa, desconto: i.desconto, valor_pago: i.valor_pago, valor_liquido: i.valor_liquido, valor_efetivo: i.valor_efetivo, valor_baixa: i.valor_baixa, valor_desconto: i.valor_desconto, abatimento: i.abatimento, baixas_desconto: i.baixas?.[0]?.desconto, baixas_valor_desconto: i.baixas?.[0]?.valor_desconto, parcelas_desconto: i.parcelas?.[0]?.desconto, parcelas_valor_desconto: i.parcelas?.[0]?.valor_desconto })}`,
+      );
+    }
 
     let valor: number;
     if (valorPagoCampo > 0) {
       valor = valorPagoCampo;
-    } else if (juros > 0 || multa > 0 || desconto > 0) {
-      valor = recebido + juros + multa - desconto;
-      if (valor <= 0) valor = recebido > 0 ? recebido : total;
+    } else if (desconto > 0 || juros > 0 || multa > 0) {
+      const base = recebido > 0 ? recebido : total;
+      const acrescimos = juros + multa;
+      const calc = base + acrescimos;
+      if (calc > 0) {
+        valor = calc;
+      } else {
+        valor = base;
+      }
     } else {
       valor = recebido > 0 ? recebido : total;
     }
