@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `6453fea` | feat: rota de diagnostico `/api/debug-baixas` que revela o JSON cru da baixa (desconto, juros, multa e valor pago real) para descobrir onde o desconto da Conta Azul e gravado | 04/11/2026 |
 | `76ced54` | fix: paginas de pagos/recebidos recusadas pela API (rate limit) viravam total parcial no carregamento automatico — paginacao que reinicia, resultado incompleto fora do cache e refetch automatica da tela | 04/11/2026 |
 | `b4c3e3e` | fix: corrige os erros de tipagem que quebravam o build apos o pull do remoto (campos de desconto/juros no resumo, nivel "debug" no log, id do titulo) e o regex de Estorno/Estornado no PDF | 04/11/2026 |
 | `d986f21` | fix: desconto aplicado corretamente - detecta se pago eh bruto (pago ~= total) ou liquido (pago ~= total - desconto) comparando com o total da parcela | 03/11/2026 |
@@ -651,6 +652,70 @@ simulados), 19 assercoes, todos passando:
 | 429 na pagina 2 e recuperacao | termina **COMPLETO**: 125 titulos, total 12.500 (pagina 2 tentada 5x) |
 | falha persistente na pagina 2 | `ok=false`, `incompleto=true`, parcial de 100 mantido e **nao cacheado**; a refetch seguinte traz os 125 titulos e o total 12.500 |
 | 400 no status ACQUITTED | erro definitivo **cai no PAGO** sem marcar incompleto (10 titulos) |
+
+---
+
+## 3.12 Valor do titulo pago sem o desconto (investigacao em andamento)
+
+**Sintoma (print do usuario):** no card **PAGOS** de 30/10 (empresa "todas",
+total R$ 168.991,59) os titulos aparecem pelo valor cheio, sem o desconto
+registrado na Conta Azul. Exemplos do print: **R$ 960,00** (empresa
+Juvenal Transportes) e **R$ 1.127,69** (descricao "1/3 - Compra de produto 1922
+(NFe 257866-110)", fornecedor CIA BRASILEIRA DIST AUTO S.A).
+
+**O que ja foi verificado na API real (producao):**
+
+1. A listagem de contas pagas (`GET /v1/financeiro/contas-a-pagar?status=ACQUITTED`)
+   e a listagem de eventos
+   (`GET /v1/financeiro/eventos-financeiros/contas-a-pagar/buscar`) devolvem
+   **apenas** estes campos por titulo:
+
+   ```
+   id, descricao, data_vencimento, status, status_traduzido,
+   total, nao_pago, pago, data_criacao, data_alteracao,
+   data_competencia, categorias, centros_de_custo, fornecedor
+   ```
+
+   Nao vem `desconto`, `valor_pago`, `baixas`, `parcelas` nem
+   `conta_financeira_id`. A listagem de **contas a receber** (`contas-a-receber` /
+   `eventos-financeiros/contas-a-receber/buscar`) e igual: `parcelas` e `baixas`
+   vem sempre `null`.
+
+2. Consequencia no codigo: `enriquecerPagasComValorLiquido()` filtra os titulos
+   por `baixa_id`/`parcela_id` — campos que a listagem nunca devolve — logo a
+   lista de "pendentes" fica **vazia** e a funcao **nunca roda**. Por isso
+   `total_desconto_pagas` e **sempre 0** no resumo e o subtitulo
+   "Desc R$ ... / Juros ..." nunca aparece no card.
+
+3. O unico lugar onde o desconto vive e a **baixa**. O endpoint
+   `GET /v1/financeiro/eventos-financeiros/parcelas/{parcela_id}/baixa` responde
+   **200** (mesmo para um id inexistente) devolvendo um **array** de baixas.
+   O helper `buscarBaixaPorParcela()` nao desembrulha esse array: ele le
+   `item.valor_composicao` do array (que nao existe), e por isso devolve sempre
+   `desconto/juros/multa/valor_bruto` = `undefined` e `ok: true` — tanto para um
+   titulo real quanto para um id garbage.
+
+4. O `id` da listagem **e** o `parcela_id` (o proprio endpoint de baixa
+   responde 200 para ele). A correcao, portanto, passa por:
+   (a) usar o `id` da listagem como `parcela_id`;
+   (b) desembrulhar o array de baixas;
+   (c) recalcular o valor como `valor_bruto - desconto + juros + multa`.
+
+**Rota de diagnostico criada (commit `6453fea`):**
+`GET /api/debug-baixas?empresa=NOME&inicio=YYYY-MM-DD&fim=YYYY-MM-DD&limite=N&ids=id1,id2`
+
+Ela lista os titulos pagos do periodo, **prioriza os que tem `pago != total`**
+(onde ha ajuste da propria API) e devolve, para cada um, o JSON cru da
+**baixa** (`/parcelas/{id}/baixa`) e da **parcela** (`/parcelas/{id}`), com os
+numeros de desconto/juros/multa/valor_bruto/valor_pago extraidos de qualquer
+nivel. Tambem testa se existe algum endpoint que devolva **todas as baixas do
+periodo em uma chamada** (candidatos em `/v1/financeiro/baixas`,
+`/v1/financeiro/eventos-financeiros/baixas`, etc.).
+
+**Situacao:** aguardando o **Redeploy** na Vercel para rodar a rota e confirmar
+a composicao real do valor antes de aplicar a correcao nos cards e nos relatorios.
+
+---
 | recebidos com 429 no meio | termina **COMPLETO**: 110 titulos, total 11.000 |
 
 ---
