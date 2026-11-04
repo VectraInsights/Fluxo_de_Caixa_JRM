@@ -1744,7 +1744,12 @@ async function enriquecerPagasComValorLiquido(
       return;
     }
 
-    const vc = j.valor_composicao ?? {};
+    // O endpoint /parcelas/{parcela_id}/baixa retorna um ARRAY de baixas.
+    // O endpoint /baixa/{baixa_id} retorna um objeto unico.
+    const dadosBaixa = Array.isArray(j) ? j[0] : j;
+    if (!dadosBaixa) return;
+
+    const vc = dadosBaixa.valor_composicao ?? {};
     const desconto = Number(vc.desconto || 0);
     const juros = Number(vc.juros || 0);
     const multa = Number(vc.multa || 0);
