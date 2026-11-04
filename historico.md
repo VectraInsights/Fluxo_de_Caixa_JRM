@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `7825474` | feat: aumenta as fontes do PDF impresso (tabelas 8,5 pt) mantendo o rodape em 8 pt | 04/11/2026 |
 | `9defc7a` | fix: listas de Pagos/Recebidos usam a data real do pagamento (baixa da parcela), recupera titulos recebidos descartados pelo vencimento e deixa o PDF mais compacto | 04/11/2026 |
 | `1a398a2` | fix: remove a linha de Desc/Juros/Multa dos cards e do rodape (o valor ja vem com o desconto aplicado) | 04/11/2026 |
 | `9c6228e` | fix: titulos pagos/recebidos exibem o valor liquido (com desconto) e as paginas da listagem sao buscadas em paralelo | 04/11/2026 |
@@ -905,10 +906,38 @@ e Pagos (e o XLSX completo, com "Resultado (A Receber - A Pagar)").
    min). O log `enriquecerComBaixas <empresa>: N/M titulos com baixa ... em Xs`
    mostra o tempo de cada listagem.
 
+### Ajuste pedido pelo usuario — fontes maiores no PDF (commit `7825474`)
+
+O usuario pediu para **aumentar as fontes** do PDF impresso (mantendo o
+**rodape em 8 pt**, como pedido). Tamanhos finais (fonte Helvetica do jsPDF):
+
+| Elemento | Antes | Agora |
+|----------|-------|-------|
+| Titulo "Fluxo de Caixa" | 15 pt | **16 pt** (bold) |
+| Periodo / Empresa | 9 pt | **10 pt** |
+| Card do topo — rotulo | 7,5 pt | **8,5 pt** |
+| Card do topo — valor | 11,5 pt | **13 pt** (encolhe ate 8 pt se nao couber) |
+| Faixa de secao (Faturamento / Recebidos / Pagos) | 11 pt | **12 pt** |
+| Faixa de empresa (relatorio "Todas") — nome | 12 pt | **13 pt** |
+| Faixa de empresa — resumo | 8 pt | **9 pt** |
+| Tabelas (autoTable) — cabecalho e corpo | 7,2 pt | **8,5 pt** (`cellPadding` 0,9 -> 1 mm) |
+| Rodape (paginação) | 8 pt | **8 pt (mantido)** |
+
+O card do topo tambem ficou um pouco mais alto (15 -> 16 mm) para caber a
+fonte maior do rotulo e do valor.
+
+Medicao (120 titulos, A4 paisagem): descricoes longas **4 -> 5 folhas** e
+descricoes curtas **4 -> 4 folhas** (antes da otimizacao de layout eram 9 e 6).
+
 ### Como reverter (sem reescrever o historico ja publicado)
 
 ```bash
+# reverter a correcao da data real + PDF compacto
 git revert --no-edit 9defc7a
+git push origin main
+
+# reverter apenas o aumento das fontes
+git revert --no-edit 7825474
 git push origin main
 ```
 
