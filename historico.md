@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `99c103e` | fix: extração recursiva de desconto/juros/multa em qualquer nível do JSON da Conta Azul (inclui valor_composicao serializado como string) + log via gravarLogEvento quando desconto é detectado | 03/11/2026 |
 | `5bb74c3` | fix: desconto/juros/multa busca em valor_composicao / composicao_valor (baixas e parcelas) da Conta Azul para nao perder lancamentos com desconto | 03/11/2026 |
 | `cf4712d` | fix: conta com desconto detecta mais campos (valor_desconto_concedido, valor_pago_liquido, etc.) e total no PDF so na ultima linha da planilha (nao no rodape de cada pagina) | 03/11/2026 |
 | `dcffce6` | fix: busca de saldos em lotes de 3 com retry e delay entre lotes para evitar rate limit da Conta Azul na primeira carga (erro 3039 / falha de sincronizacao) | 03/11/2026 |
