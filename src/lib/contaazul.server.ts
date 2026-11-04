@@ -1613,15 +1613,27 @@ async function processarPagasResposta(
       });
     }
 
-    // Regra de ouro: o campo "pago" da Conta Azul ja vem com desconto aplicado
-    // (valor liquido). Nao subtraimos desconto de novo. Usamos o primeiro campo
-    // de valor efetivo > 0; senao usamos "pago" + juros/multa (se vierem
-    // separados); senao apenas "pago" ou "total".
+    // Regra de ouro: o campo "pago" da Conta Azul pode vir como valor bruto
+    // (sem desconto) ou valor liquido (com desconto ja aplicado).
+    // - Se tem campo valorPagoCampo > 0: usa ele direto (valor liquido real).
+    // - Se pagamento > 0 e desconto > 0 e pagamento ~= total: pagamento e bruto,
+    //   entao subtrai o desconto: pagamento - desconto + juros + multa.
+    // - Se pagamento > 0 e (desconto == 0 ou pagamento ~= total - desconto):
+    //   pagamento ja e liquido, entao so soma juros/multa.
+    // - Senao: usa total.
     let valor: number;
     if (valorPagoCampo > 0) {
       valor = valorPagoCampo; // valor efetivamente pago (ja inclui juros/multa/desconto)
     } else if (pago > 0) {
-      valor = pago + juros + multa; // pago ja tem desconto; somamos apenas acrescimos
+      const ehLiquido = Math.abs(pago - (total - desconto)) < 0.01;
+      const ehBruto = Math.abs(pago - total) < 0.01;
+      if (ehBruto && desconto > 0) {
+        // pagamento e bruto: aplica o desconto
+        valor = pago - desconto + juros + multa;
+      } else {
+        // pagamento ja e liquido (ou sem desconto): soma apenas acrescimos
+        valor = pago + juros + multa;
+      }
     } else {
       valor = total;
     }
@@ -1710,15 +1722,27 @@ export function processarRecebidas(
       );
     }
 
-    // Regra de ouro: o campo "pago" da Conta Azul ja vem com desconto aplicado
-    // (valor liquido). Nao subtraimos desconto de novo. Usamos o primeiro campo
-    // de valor efetivo > 0; senao usamos "recebido" + juros/multa (se vierem
-    // separados); senao apenas "recebido" ou "total".
+    // Regra de ouro: o campo "recebido" da Conta Azul pode vir como valor bruto
+    // (sem desconto) ou valor liquido (com desconto ja aplicado).
+    // - Se tem campo valorPagoCampo > 0: usa ele direto (valor liquido real).
+    // - Se recebido > 0 e desconto > 0 e recebido ~= total: recebido e bruto,
+    //   entao subtrai o desconto: recebido - desconto + juros + multa.
+    // - Se recebido > 0 e (desconto == 0 ou recebido ~= total - desconto):
+    //   recebido ja e liquido, entao so soma juros/multa.
+    // - Senao: usa total.
     let valor: number;
     if (valorPagoCampo > 0) {
       valor = valorPagoCampo; // valor efetivamente recebido (ja inclui juros/multa/desconto)
     } else if (recebido > 0) {
-      valor = recebido + juros + multa; // recebido ja tem desconto; somamos apenas acrescimos
+      const ehLiquido = Math.abs(recebido - (total - desconto)) < 0.01;
+      const ehBruto = Math.abs(recebido - total) < 0.01;
+      if (ehBruto && desconto > 0) {
+        // recebido e bruto: aplica o desconto
+        valor = recebido - desconto + juros + multa;
+      } else {
+        // recebido ja e liquido (ou sem desconto): soma apenas acrescimos
+        valor = recebido + juros + multa;
+      }
     } else {
       valor = total;
     }
