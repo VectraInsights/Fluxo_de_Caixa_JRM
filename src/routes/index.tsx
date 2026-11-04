@@ -528,13 +528,7 @@ function Dashboard() {
   const totalRecOutros = Math.max(0, totalRec - totalRecBoleto);
   const totalDesp = Math.abs(data?.resumo.total_desp || 0);
   const totalPagas = Math.abs(data?.resumo.total_pagas || 0);
-  const totalDescontoPagas = Math.abs(data?.resumo.total_desconto_pagas || 0);
-  const totalJurosPagas = Math.abs(data?.resumo.total_juros_pagas || 0);
-  const totalMultaPagas = Math.abs(data?.resumo.total_multa_pagas || 0);
   const totalRecebidas = Math.abs(data?.resumo.total_recebidas || 0);
-  const totalDescontoRecebidas = Math.abs(data?.resumo.total_desconto_recebidas || 0);
-  const totalJurosRecebidas = Math.abs(data?.resumo.total_juros_recebidas || 0);
-  const totalMultaRecebidas = Math.abs(data?.resumo.total_multa_recebidas || 0);
 
   const chartData = useMemo(() => {
     if (!data) return [];
@@ -1141,11 +1135,6 @@ function Dashboard() {
                 icon={<TrendingUp className="h-5 w-5" />}
                 gradient="from-success/30 via-success/10 to-transparent"
                 accent="text-success"
-                sub={
-                  totalDescontoRecebidas > 0 || totalJurosRecebidas > 0 || totalMultaRecebidas > 0
-                    ? `Desc ${fmt(totalDescontoRecebidas)} · Juros ${fmt(totalJurosRecebidas)} · Multa ${fmt(totalMultaRecebidas)}`
-                    : null
-                }
               />
             )}
             {!data && isFetching ? (
@@ -1157,11 +1146,6 @@ function Dashboard() {
                 icon={<TrendingDown className="h-5 w-5" />}
                 gradient="from-destructive/30 via-destructive/10 to-transparent"
                 accent="text-destructive"
-                sub={
-                  totalDescontoPagas > 0 || totalJurosPagas > 0 || totalMultaPagas > 0
-                    ? `Desc ${fmt(totalDescontoPagas)} · Juros ${fmt(totalJurosPagas)} · Multa ${fmt(totalMultaPagas)}`
-                    : null
-                }
               />
             )}
           </div>
@@ -1571,13 +1555,6 @@ function TitulosLista({
               <span className={`text-xs font-semibold tabular-nums ${accent}`}>
                 {fmt(t.valor)}
               </span>
-              {((t.desconto ?? 0) > 0 || (t.juros ?? 0) > 0 || (t.multa ?? 0) > 0) && (
-                <span className="text-[9px] text-muted-foreground tabular-nums leading-none">
-                  {t.desconto ? `Desc ${fmt(t.desconto)}` : ""}
-                  {t.juros ? ` Juros ${fmt(t.juros)}` : ""}
-                  {t.multa ? ` Multa ${fmt(t.multa)}` : ""}
-                </span>
-              )}
             </div>
           </div>
         );
