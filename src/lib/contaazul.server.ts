@@ -1591,11 +1591,15 @@ async function processarPagasResposta(
     const juros = extrairNumero(i, "juros", "valor_juros", "acrescimos", "juros_multa", "valor_acrescimo");
     const multa = extrairNumero(i, "multa", "valor_multa", "valor_multa_mora");
     const desconto = extrairNumero(i, "desconto", "valor_desconto", "abatimento", "valor_desconto_concedido", "desconto_concedido", "valor_desconto_baixa", "desconto_baixa");
-    const valorPagoCampo = extrairNumero(i, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa", "valor_pagamento", "valor_pago_liquido", "valor_pago_final");
+
+    // Valor efetivamente pago. A Conta Azul retorna o valor líquido (já com
+    // desconto aplicado) no campo "pago" ou em campos de valor_pago/valor_liquido.
+    // Usamos o primeiro que encontrar > 0.
+    const valorPagoCampo = extrairNumero(i, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa", "valor_pagamento", "valor_pago_liquido", "valor_pago_final", "valor_pago_efetivo");
 
     // Log de debug quando houver desconto ou acrescimos: ajuda a identificar
     // qual campo a API da Conta Azul esta retornando para cada titulo.
-    if (desconto > 0 || juros > 0 || multa > 0) {
+    if (desconto > 0 || juros > 0 || multa > 0 || valorPagoCampo > 0) {
       log(
         "info",
         `detalhe pagamento ${empresa} id=${String(i.id).slice(0, 8)} pago=${pago} total=${total} juros=${juros} multa=${multa} desconto=${desconto} valorPagoCampo=${valorPagoCampo} campos=${JSON.stringify({ juros: i.juros, multa: i.multa, desconto: i.desconto, valor_pago: i.valor_pago, valor_liquido: i.valor_liquido, valor_efetivo: i.valor_efetivo, valor_baixa: i.valor_baixa, valor_desconto: i.valor_desconto, abatimento: i.abatimento, baixas_desconto: i.baixas?.[0]?.desconto, baixas_valor_desconto: i.baixas?.[0]?.valor_desconto, parcelas_desconto: i.parcelas?.[0]?.desconto, parcelas_valor_desconto: i.parcelas?.[0]?.valor_desconto })}`,
@@ -1609,30 +1613,17 @@ async function processarPagasResposta(
       });
     }
 
-    // Se o campo pago ja vem com desconto (valor liquido), nao subtrai de novo.
-    // So usa desconto no calculo quando nao houver campo de valor efetivo pago
-    // e o pagamento parece ser o valor bruto do titulo.
+    // Regra de ouro: o campo "pago" da Conta Azul ja vem com desconto aplicado
+    // (valor liquido). Nao subtraimos desconto de novo. Usamos o primeiro campo
+    // de valor efetivo > 0; senao usamos "pago" + juros/multa (se vierem
+    // separados); senao apenas "pago" ou "total".
     let valor: number;
     if (valorPagoCampo > 0) {
       valor = valorPagoCampo; // valor efetivamente pago (ja inclui juros/multa/desconto)
-    } else if (desconto > 0 || juros > 0 || multa > 0) {
-      // paga ja pode vir com desconto aplicado. Se ha desconto mas paga > 0,
-      // assumimos que paga ja eh o valor liquido (com desconto) e usamos ele,
-      // somando apenas juros/multa se vierem separados.
-      const base = pago > 0 ? pago : total;
-      const acrescimos = juros + multa;
-      const calc = base + acrescimos;
-      if (calc > 0) {
-        valor = calc;
-      } else {
-        valor = base;
-        log(
-          "warn",
-          `valor calculado invalido (pago=${pago} desconto=${desconto} juros=${juros} multa=${multa}), usando fallback ${valor}`,
-        );
-      }
+    } else if (pago > 0) {
+      valor = pago + juros + multa; // pago ja tem desconto; somamos apenas acrescimos
     } else {
-      valor = pago > 0 ? pago : total;
+      valor = total;
     }
     if (!i.id || valor <= 0) continue;
     const data =
@@ -1712,27 +1703,24 @@ export function processarRecebidas(
     const valorPagoCampo = extrairNumero(i, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa", "valor_pagamento", "valor_pago_liquido", "valor_pago_final");
 
     // Log de debug quando houver desconto ou acrescimos.
-    if (desconto > 0 || juros > 0 || multa > 0) {
+    if (desconto > 0 || juros > 0 || multa > 0 || valorPagoCampo > 0) {
       log(
         "info",
         `detalhe recebimento id=${String(i.id).slice(0, 8)} recebido=${recebido} total=${total} juros=${juros} multa=${multa} desconto=${desconto} valorPagoCampo=${valorPagoCampo} campos=${JSON.stringify({ juros: i.juros, multa: i.multa, desconto: i.desconto, valor_pago: i.valor_pago, valor_liquido: i.valor_liquido, valor_efetivo: i.valor_efetivo, valor_baixa: i.valor_baixa, valor_desconto: i.valor_desconto, abatimento: i.abatimento, baixas_desconto: i.baixas?.[0]?.desconto, baixas_valor_desconto: i.baixas?.[0]?.valor_desconto, parcelas_desconto: i.parcelas?.[0]?.desconto, parcelas_valor_desconto: i.parcelas?.[0]?.valor_desconto })}`,
       );
     }
 
+    // Regra de ouro: o campo "pago" da Conta Azul ja vem com desconto aplicado
+    // (valor liquido). Nao subtraimos desconto de novo. Usamos o primeiro campo
+    // de valor efetivo > 0; senao usamos "recebido" + juros/multa (se vierem
+    // separados); senao apenas "recebido" ou "total".
     let valor: number;
     if (valorPagoCampo > 0) {
-      valor = valorPagoCampo;
-    } else if (desconto > 0 || juros > 0 || multa > 0) {
-      const base = recebido > 0 ? recebido : total;
-      const acrescimos = juros + multa;
-      const calc = base + acrescimos;
-      if (calc > 0) {
-        valor = calc;
-      } else {
-        valor = base;
-      }
+      valor = valorPagoCampo; // valor efetivamente recebido (ja inclui juros/multa/desconto)
+    } else if (recebido > 0) {
+      valor = recebido + juros + multa; // recebido ja tem desconto; somamos apenas acrescimos
     } else {
-      valor = recebido > 0 ? recebido : total;
+      valor = total;
     }
     if (!i.id || valor <= 0) continue;
     const data =
