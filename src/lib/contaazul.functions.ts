@@ -312,6 +312,12 @@ export type DashboardData = {
   };
   avisos: string[];
   empresas_com_problema: string[];
+  // Empresas cuja lista de titulos veio INCOMPLETA (a API da Conta Azul recusou
+  // parte das paginas — rate limit). Nesses casos o total exibido esta errado e
+  // o resultado NAO foi cacheado no servidor: a tela detecta esta lista e refaz
+  // a consulta sozinha, para o carregamento automatico terminar com o valor
+  // correto sem exigir o clique em "Recarregar".
+  dados_incompletos: string[];
   // Títulos detalhados de Pagos e Recebidas por empresa (fonte única da verdade
   // para as listas — evita divergência entre o card do dashboard e a lista,
   // que antes eram buscadas por server functions separadas).
@@ -355,6 +361,8 @@ export const getDashboard = createServerFn({ method: "GET" })
     const empresas = await resolverEmpresas(data.empresa);
     const avisos: string[] = [];
     const empresasComProblema = new Set<string>();
+    // Empresas com listas de titulos parciais (ver ResultadoLista.incompleto).
+    const dadosIncompletos = new Set<string>();
 
     // Empresas em paralelo (tokens e chamadas à API são independentes)
     const resultados = await Promise.all(
@@ -365,6 +373,7 @@ export const getDashboard = createServerFn({ method: "GET" })
             `${emp}: sem token válido — reconecte a empresa na Conta Azul.`,
           );
           empresasComProblema.add(emp);
+          dadosIncompletos.add(emp); // sem token, os totais sao 0: a tela tenta de novo
           return { empresa: emp, bancos: [], rec: [], desp: [], pagas: [], recebidas: [] };
         }
         const [sal, rec, desp, pagas, recebidas] = await Promise.all([
@@ -398,14 +407,31 @@ export const getDashboard = createServerFn({ method: "GET" })
         if (!rec.ok) {
           avisos.push(`${emp}: falha ao buscar contas a receber.`);
           empresasComProblema.add(emp);
+          dadosIncompletos.add(emp);
         }
         if (!desp.ok) {
           avisos.push(`${emp}: falha ao buscar contas a pagar.`);
           empresasComProblema.add(emp);
+          dadosIncompletos.add(emp);
         }
-        // Nota: falha em buscarPagas/buscarRecebidas NAO vira aviso/erro de
-        // sincronizacao — e um card complementar; o token ruim ja e detectado
-        // por rec/desp.
+        // Pagos/Recebidos sao cards complementares: falha neles NAO acende a
+        // bolinha de sincronizacao (o token ruim ja e detectado por rec/desp).
+        // Mas elas entram em `dados_incompletos`: um resultado parcial NAO foi
+        // cacheado, entao a tela refaz a busca e o card termina com o total
+        // certo — era isso que fazia o "Contas Pagas" vir errado no
+        // carregamento automatico e certo apos clicar em Recarregar.
+        if (pagas.incompleto) {
+          avisos.push(
+            `${emp}: contas pagas vieram incompletas (a API recusou parte das páginas) — nova tentativa automática.`,
+          );
+          dadosIncompletos.add(emp);
+        }
+        if (recebidas.incompleto) {
+          avisos.push(
+            `${emp}: recebimentos vieram incompletos (a API recusou parte das páginas) — nova tentativa automática.`,
+          );
+          dadosIncompletos.add(emp);
+        }
 
         // Filtra os titulos pelos BANCOS EXIBIDOS no painel (mesma lista do
         // card de Bancos): titulo de banco que nao aparece la nao entra nas
@@ -589,6 +615,7 @@ export const getDashboard = createServerFn({ method: "GET" })
       },
       avisos,
       empresas_com_problema: Array.from(empresasComProblema),
+      dados_incompletos: Array.from(dadosIncompletos),
       detalhamento,
     };
   });

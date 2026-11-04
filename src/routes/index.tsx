@@ -372,6 +372,30 @@ function Dashboard() {
         return `${ano}-${String(mes).padStart(2, "0")}`;
       });
 
+  // --- Recarregamento automatico ate o dado sair certo -----------------------
+  // Quando o servidor devolve `dados_incompletos`, os totais estao ERRADOS: a
+  // API da Conta Azul recusou parte das paginas (rate limit) e aquele resultado
+  // nao foi cacheado. Aqui a tela refaz a consulta sozinha, com espera
+  // crescente, ate3x — assim o carregamento automatico termina com o valor
+  // correto e o usuario nao precisa clicar em "Recarregar".
+  const tentativasDadoIncompleto = useRef(0);
+  const temDadosIncompletos = (data?.dados_incompletos?.length ?? 0) > 0;
+
+  useEffect(() => {
+    if (!temDadosIncompletos) {
+      // Tudo completo: zera o contador para a proxima sequencia de falhas.
+      tentativasDadoIncompleto.current = 0;
+      return;
+    }
+    if (tentativasDadoIncompleto.current >= 3) return;
+    tentativasDadoIncompleto.current += 1;
+    const espera = 3000 * tentativasDadoIncompleto.current;
+    const t = setTimeout(() => {
+      refetch();
+    }, espera);
+    return () => clearTimeout(t);
+  }, [temDadosIncompletos, dataUpdatedAt, refetch]);
+
   // Ao trocar o mes visado, preenche a URL ja cadastrada (se houver) e
   // descarta qualquer registro pendente de confirmacao.
   useEffect(() => {

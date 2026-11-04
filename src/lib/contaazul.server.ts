@@ -265,12 +265,23 @@ export type ItemLancamento = {
   _total?: number;
 };
 
+// Resultado de uma busca de lista (Pagos / Recebidos / A Receber / A Pagar).
+// `ok` = resultado pode ser tratado como definitivo (e pode ser cacheado).
+// `incompleto` = alguma pagina da API nao pôde ser lida (rate limit / rede),
+// logo `dados` pode estar PARCIAL — nunca deve aparecer como total final sem
+// uma nova tentativa.
+export type ResultadoLista = {
+  dados: ItemLancamento[];
+  ok: boolean;
+  incompleto?: boolean;
+};
+
 type EntradaCache<T> = { promessa: Promise<T>; exp: number };
 
 const detalheCache = new Map<string, EntradaCache<{ metodo: string | null; erro: boolean }>>();
 const DETALHE_TTL_MS = 5 * 60 * 1000;
 
-const listCache = new Map<string, EntradaCache<{ dados: ItemLancamento[]; ok: boolean }>>();
+const listCache = new Map<string, EntradaCache<ResultadoLista>>();
 const LIST_TTL_MS = 2 * 60 * 1000; // 2 minutos de cache para listas
 
 const saldoCache = new Map<
@@ -350,6 +361,74 @@ async function fetchComRetry(
   if (ultErro) throw ultErro;
   // não deveria chegar aqui
   return fetch(url, init);
+}
+
+const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+// Numero de vezes que a paginacao de uma lista (Pagos/Recebidos) pode ser
+// REINICIADA do zero quando uma pagina falha no meio. A API da Conta Azul derruba
+// paginas intermediarias com rate limit; sem isto a busca parava na pagina com
+// erro e devolvia so o que ja tinha lido — o card "Contas Pagas" mostrava um
+// total menor no carregamento automatico e o total certo quando o usuario clicava
+// em Recarregar (que limpa o cache e refaz tudo).
+//
+// 2 passagens + 2 tentativas por pagina limita o pior caso a ~9s; se ainda assim
+// ficar incompleto, o resultado nao e cacheado e a TELA refaz a consulta sozinha
+// (ver "dados_incompletos" em getDashboard), quando o limite da API ja passou.
+const MAX_PASSES_PAGINACAO = 2;
+
+// Busca UMA pagina da listagem, com retries, backoff e renovacao de token.
+//
+// Devolve a resposta quando ela veio com sucesso OU com um ERRO DEFINITIVO
+// (4xx fora de 401/429 — ex.: um status que esta conta nao aceita, que nao vai
+// passar repetindo). Devolve `null` quando esgotou as tentativas em erro
+// TRANSITORIO (429 / 5xx / rede) — nesse caso quem chama reinicia a
+// paginacao inteira.
+//
+// DIFERENTE do `if (!res.ok) break` de antes: aqui uma falha transitória de uma
+// pagina nunca e tratada como "acabaram os dados". A paginacao so termina de
+// verdade quando a API devolve uma pagina com menos itens que o tamanho da pagina.
+async function fetchPaginaRobusta(
+  empresa: string,
+  url: string,
+  tokenRef: { token: string },
+): Promise<Response | null> {
+  for (let tentativa = 1; tentativa <= 2; tentativa++) {
+    let res: Response;
+    try {
+      // 2 tentativas internas: cobre 429/5xx/rede com backoff (retry-after respeitado).
+      // Mantidas baidas de proposito: quem re-tenta de verdade e o repasse da
+      // paginacao e, depois, a refetch automatica da tela.
+      res = await fetchComRetry(
+        url,
+        { headers: { Authorization: `Bearer ${tokenRef.token}` } },
+        2,
+      );
+    } catch (e) {
+      log("warn", `fetchPagina ${empresa} falha de rede (tentativa ${tentativa}/2): ${String(e).slice(0, 100)}`);
+      await sleep(1200);
+      continue;
+    }
+
+    if (res.status === 401) {
+      const novo = await renovarToken(empresa);
+      if (novo) tokenRef.token = novo;
+      await sleep(300);
+      continue;
+    }
+
+    if (res.ok) return res;
+
+    const transitorio = res.status === 429 || res.status >= 500;
+    if (!transitorio) {
+      log("warn", `fetchPagina ${empresa} erro definitivo status=${res.status} (nao sera repetido)`);
+      return res;
+    }
+
+    log("warn", `fetchPagina ${empresa} status=${res.status} transitorio (tentativa ${tentativa}/2)`);
+    await sleep(1200);
+  }
+  return null;
 }
 
 // Deduplica refreshes concorrentes por empresa (evita invalidar refresh_token rotacionado)
@@ -1480,27 +1559,29 @@ export async function buscarPagas(
   empresa: string,
   dataInicio: string,
   dataFim: string,
-): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
+): Promise<ResultadoLista> {
   const cacheKey = `pagas:${empresa}:${dataInicio}:${dataFim}`;
   const r = await lerOuCriar(
     listCache,
     cacheKey,
     LIST_TTL_MS,
     () => buscarPagasInterna(empresa, dataInicio, dataFim),
+    // So um resultado COMPLETO fica no cache. Resultado parcial seria servido
+    // por 2 minutos e faria o card mostrar um total errado.
     (x) => x.ok,
   );
-  return { dados: r.dados, ok: r.ok };
+  return { dados: r.dados, ok: r.ok, incompleto: r.incompleto };
 }
 
 async function buscarPagasInterna(
   empresa: string,
   dataInicio: string,
   dataFim: string,
-): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
+): Promise<ResultadoLista> {
   const tokenInicial = await obterToken(empresa);
   if (!tokenInicial) {
     log("warn", `buscarPagas sem token: ${empresa}`);
-    return { dados: [], ok: false };
+    return { dados: [], ok: false, incompleto: true };
   }
   const tokenRef = { token: tokenInicial };
 
@@ -1518,57 +1599,92 @@ async function buscarPagasInterna(
   // Status oficial para contas baixadas e ACQUITTED (documentacao Conta Azul);
   // PAGO fica como fallback para contas que usem o valor antigo.
   const statusTentativas = ["ACQUITTED", "PAGO"];
+
+  // Marcador de resultado PARCIAL: alguma pagina nao pôde ser lida por erro
+  // transitório. Nesse caso o retorno NAO pode ser tratado como final nem
+  // cacheado — o dashboard avisa e a tela refaz a busca automaticamente.
+  let incompleto = false;
+  // Melhor colecao parcial obtida: devolvida como fallback para o card nao
+  // sumir (o aviso indica que o total esta incompleto).
+  let parcial: ItemLancamento[] = [];
+
   for (const status of statusTentativas) {
     const brutos: ItemLancamento[] = [];
-    let ok = false;
-    let pagina = 1;
+    let falhaTransitoria = false;
 
-    // Pagina ate a API nao devolver mais itens (sem limite de paginas).
-    while (true) {
-      const params = new URLSearchParams({
-        ...venc,
-        data_pagamento_de: dataInicio,
-        data_pagamento_ate: dataFim,
-        status,
-        tamanho_pagina: "100",
-        pagina: String(pagina),
-      });
-      const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar?${params}`;
-      let res = await fetchComRetry(
-        url,
-        { headers: { Authorization: `Bearer ${tokenRef.token}` } },
-        2,
-      );
+    // Pagina ate a API nao devolver mais itens (sem limite de paginas). Se uma
+    // pagina falhar no meio (rate limit), a paginacao RECOMECA do zero — a
+    // versao anterior parava ali e devolvia so os itens ja lidos, que era
+    // exatamente o total menor visto no carregamento automatico.
+    for (let passe = 1; passe <= MAX_PASSES_PAGINACAO; passe++) {
+      brutos.length = 0;
+      falhaTransitoria = false;
+      let pagina = 1;
 
-      if (res.status === 401) {
-        const novo = await renovarToken(empresa);
-        if (novo) {
-          tokenRef.token = novo;
-          res = await fetchComRetry(
-            url,
-            { headers: { Authorization: `Bearer ${novo}` } },
-            1,
-          );
+      while (true) {
+        const params = new URLSearchParams({
+          ...venc,
+          data_pagamento_de: dataInicio,
+          data_pagamento_ate: dataFim,
+          status,
+          tamanho_pagina: "100",
+          pagina: String(pagina),
+        });
+        const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-pagar?${params}`;
+        const res = await fetchPaginaRobusta(empresa, url, tokenRef);
+
+        if (res === null) {
+          // Erro transitório persistente: reinicia a paginacao inteira.
+          falhaTransitoria = true;
+          break;
         }
+
+        if (!res.ok) {
+          // Erro definitivo (ex.: status nao aceito por esta conta): nao adianta
+          // repetir — pula para o proximo status.
+          log(
+            "warn",
+            `buscarPagas ${empresa} pg=${pagina} status=${res.status} (filtro status=${status}) — seguindo para outro status`,
+          );
+          falhaTransitoria = false;
+          break;
+        }
+
+        let j: any;
+        try {
+          j = await res.json();
+        } catch {
+          falhaTransitoria = true;
+          break;
+        }
+        const itens: any[] = j.itens || (Array.isArray(j) ? j : []);
+        brutos.push(...(await processarPagasResposta(itens, empresa, dataInicio, dataFim, status)));
+        if (itens.length < 100) break; // ultima pagina: paginacao completa
+        pagina++;
+        await sleep(150); // respiro entre paginas para nao estourar o rate limit
       }
 
-      if (!res.ok) {
-        log(
-          "warn",
-          `buscarPagas ${empresa} status=${res.status} (filtro status=${status}) pg=${pagina}`,
-        );
-        break; // interrompe, mas mantem os itens ja coletados
-      }
+      if (!falhaTransitoria) break; // paginacao concluida para este status
+      log(
+        "warn",
+        `buscarPagas ${empresa} [status=${status}] parou na pagina ${pagina} — reiniciando (passe ${passe}/${MAX_PASSES_PAGINACAO})`,
+      );
+      await sleep(1500 * passe); // espera a API liberar antes de recomeçar
+    }
 
-      const j: any = await res.json();
-      const itens: any[] = j.itens || (Array.isArray(j) ? j : []);
-      ok = true;
-      brutos.push(...(await processarPagasResposta(itens, empresa, dataInicio, dataFim, status)));
-      if (itens.length < 100) break;
-      pagina++;
+    if (falhaTransitoria) {
+      incompleto = true;
+      if (brutos.length > parcial.length) parcial = brutos;
+      continue; // tenta o proximo status; no fim devolve a parcial com ok=false
     }
 
     if (brutos.length > 0) {
+      if (incompleto) {
+        // Algum status anterior falhou: nao da para garantir que esta lista
+        // cobre todos os titulos. Guarda como parcial e segue.
+        if (brutos.length > parcial.length) parcial = brutos;
+        continue;
+      }
       // Enriquece titulos sem valor_pago_* consultando o endpoint de baixa para
       // obter o valor_composicao.desconto real e garantir que o card mostre o
       // valor liquido (total - desconto + juros + multa).
@@ -1580,8 +1696,20 @@ async function buscarPagasInterna(
       );
       return { dados: enriquecidos, ok: true };
     }
+    // Este status respondeu completo e sem titulos: tenta o proximo.
   }
-  return { dados: [], ok: false };
+
+  if (incompleto) {
+    log(
+      "warn",
+      `buscarPagas ${empresa}: paginacao nao concluiu — devolvendo ${parcial.length} titulo(s) parcial(is), resultado NAO cacheado`,
+    );
+    return { dados: parcial, ok: false, incompleto: true };
+  }
+
+  // Todos os status responderam completos e sem titulos: periodo sem contas
+  // pagas (resultado vazio valido e cacheavel).
+  return { dados: [], ok: true };
 }
 
 async function processarPagasResposta(
@@ -1968,27 +2096,28 @@ export async function buscarRecebidas(
   empresa: string,
   dataInicio: string,
   dataFim: string,
-): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
+): Promise<ResultadoLista> {
   const cacheKey = `recebidas:${empresa}:${dataInicio}:${dataFim}`;
   const r = await lerOuCriar(
     listCache,
     cacheKey,
     LIST_TTL_MS,
     () => buscarRecebidasInterna(empresa, dataInicio, dataFim),
+    // So um resultado COMPLETO fica no cache (ver buscarPagas).
     (x) => x.ok,
   );
-  return { dados: r.dados, ok: r.ok };
+  return { dados: r.dados, ok: r.ok, incompleto: r.incompleto };
 }
 
 async function buscarRecebidasInterna(
   empresa: string,
   dataInicio: string,
   dataFim: string,
-): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
+): Promise<ResultadoLista> {
   const tokenInicial = await obterToken(empresa);
   if (!tokenInicial) {
     log("warn", `buscarRecebidas sem token: ${empresa}`);
-    return { dados: [], ok: false };
+    return { dados: [], ok: false, incompleto: true };
   }
   const tokenRef = { token: tokenInicial };
 
@@ -2003,58 +2132,89 @@ async function buscarRecebidasInterna(
     data_vencimento_ate: vencFim.toISOString().slice(0, 10),
   };
 
+  // Marcador de resultado PARCIAL (mesma logica de buscarPagasInterna): alguma
+  // pagina nao pôde ser lida por erro transitório, entao `dados` pode estar
+  // incompleto e NAO pode ser tratado como final nem cacheado.
+  let incompleto = false;
+  // Melhor colecao parcial obtida, devolvida como fallback.
+  let parcial: ItemLancamento[] = [];
+
   for (const endpoint of ENDPOINTS_RECEBIDAS) {
     for (const status of STATUS_RECEBIDAS) {
       const brutos: ItemLancamento[] = [];
-      let ok = false;
-      let pagina = 1;
+      let falhaTransitoria = false;
 
-      // Pagina ate a API nao devolver mais itens (sem limite de paginas).
-      while (true) {
-        const params = new URLSearchParams({
-          ...venc,
-          data_pagamento_de: dataInicio,
-          data_pagamento_ate: dataFim,
-          status,
-          tamanho_pagina: "100",
-          pagina: String(pagina),
-        });
-        const url = `https://api-v2.contaazul.com${endpoint}?${params}`;
-        let res = await fetchComRetry(
-          url,
-          { headers: { Authorization: `Bearer ${tokenRef.token}` } },
-          2,
-        );
+      // Pagina ate a API nao devolver mais itens (sem limite de paginas). Se
+      // uma pagina falhar no meio (rate limit), a paginacao RECOMECA do zero
+      // em vez de devolver os itens ja lidos como se fossem todos.
+      for (let passe = 1; passe <= MAX_PASSES_PAGINACAO; passe++) {
+        brutos.length = 0;
+        falhaTransitoria = false;
+        let pagina = 1;
 
-        if (res.status === 401) {
-          const novo = await renovarToken(empresa);
-          if (novo) {
-            tokenRef.token = novo;
-            res = await fetchComRetry(
-              url,
-              { headers: { Authorization: `Bearer ${novo}` } },
-              1,
-            );
+        while (true) {
+          const params = new URLSearchParams({
+            ...venc,
+            data_pagamento_de: dataInicio,
+            data_pagamento_ate: dataFim,
+            status,
+            tamanho_pagina: "100",
+            pagina: String(pagina),
+          });
+          const url = `https://api-v2.contaazul.com${endpoint}?${params}`;
+          const res = await fetchPaginaRobusta(empresa, url, tokenRef);
+
+          if (res === null) {
+            // Erro transitório persistente: reinicia a paginacao inteira.
+            falhaTransitoria = true;
+            break;
           }
+
+          if (!res.ok) {
+            // Erro definitivo (4xx fora de 401/429): nao adianta repetir —
+            // pula para a proxima combinacao de endpoint/status.
+            log(
+              "warn",
+              `buscarRecebidas ${empresa} ${endpoint} status=${res.status} (filtro status=${status}) — seguindo para outra combinacao`,
+            );
+            break;
+          }
+
+          let j: any;
+          try {
+            j = await res.json();
+          } catch {
+            falhaTransitoria = true;
+            break;
+          }
+          const itens: any[] = j.itens || (Array.isArray(j) ? j : []);
+          brutos.push(...processarRecebidas(itens, dataInicio, dataFim));
+          if (itens.length < 100) break; // ultima pagina: paginacao completa
+          pagina++;
+          await sleep(150); // respiro entre paginas para nao estourar o rate limit
         }
 
-        if (!res.ok) {
-          log(
-            "warn",
-            `buscarRecebidas ${empresa} ${endpoint} status=${res.status} (filtro status=${status})`,
-          );
-          break; // interrompe, mas mantem os itens ja coletados
-        }
+        if (!falhaTransitoria) break; // paginacao concluida
+        log(
+          "warn",
+          `buscarRecebidas ${empresa} [${endpoint} status=${status}] parou na pagina ${pagina} — reiniciando (passe ${passe}/${MAX_PASSES_PAGINACAO})`,
+        );
+        await sleep(1500 * passe); // espera a API liberar antes de recomeçar
+      }
 
-        const j: any = await res.json();
-        const itens: any[] = j.itens || (Array.isArray(j) ? j : []);
-        ok = true;
-        brutos.push(...processarRecebidas(itens, dataInicio, dataFim));
-        if (itens.length < 100) break;
-        pagina++;
+      if (falhaTransitoria) {
+        incompleto = true;
+        if (brutos.length > parcial.length) parcial = brutos;
+        continue;
       }
 
       if (brutos.length > 0) {
+        if (incompleto) {
+          // Alguma combinacao anterior falhou: nao da para garantir que esta
+          // lista cobre todos os titulos. Guarda como parcial e segue.
+          if (brutos.length > parcial.length) parcial = brutos;
+          continue;
+        }
         // Enriquece titulos sem valor_pago_* consultando o endpoint de baixa para
         // obter o valor_composicao.desconto real e garantir valor liquido no card.
         const enriquecidos = await enriquecerPagasComValorLiquido(empresa, brutos, tokenRef);
@@ -2065,11 +2225,22 @@ async function buscarRecebidasInterna(
         );
         return { dados: enriquecidos, ok: true };
       }
+      // Esta combinacao respondeu completa e sem titulos: tenta a proxima.
     }
   }
 
-  log("warn", `buscarRecebidas ${empresa}: nenhuma combinacao de endpoint/status respondeu`);
-  return { dados: [], ok: false };
+  if (incompleto) {
+    log(
+      "warn",
+      `buscarRecebidas ${empresa}: paginacao nao concluiu — devolvendo ${parcial.length} titulo(s) parcial(is), resultado NAO cacheado`,
+    );
+    return { dados: parcial, ok: false, incompleto: true };
+  }
+
+  // Todas as combinacoes responderam completas e sem titulos no periodo:
+  // resultado vazio valido (cacheavel — evita refazer a busca a cada carga).
+  log("warn", `buscarRecebidas ${empresa}: nenhuma combinacao de endpoint/status trouxe titulos`);
+  return { dados: [], ok: true };
 }
 
 // Inspeciona o detalhe de N itens — usado pelo painel de debug pra ver o JSON cru.
