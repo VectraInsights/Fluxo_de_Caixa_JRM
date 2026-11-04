@@ -656,30 +656,64 @@ async function buscarSaldosInterna(
     return { lista, ok: false, todas };
   }
 
-  const resps = await Promise.all(
-    contas.map(async (c) => {
-      const id = String(c.id ?? "");
-      const r = await fetchComRetry(
-        `https://api-v2.contaazul.com/v1/conta-financeira/${c.id}/saldo-atual`,
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
-      if (r.ok) {
-        const sj: any = await r.json();
-        return {
-          id,
-          nome: String(c.nome ?? "").trim(),
-          saldo: (sj.saldo_atual as number) || 0,
-          erro: false as const,
-        };
-      }
-      log("warn", `buscarSaldos saldo-atual falhou: ${empresa} / ${c.nome} status=${r.status}`);
-      return { id, nome: String(c.nome ?? "").trim(), saldo: 0, erro: true as const };
-    }),
-  );
-
-  for (const r of resps) {
-    todas.push(r);
-    if (!r.erro) lista.push({ id: r.id, nome: r.nome, saldo: r.saldo });
+  // Busca saldos em lotes pequenos com delay entre lotes para evitar rate limit
+  // da Conta Azul na primeira carga (muitas requisicoes em paralelo).
+  const LOTE = 3;
+  const DELAY_MS = 800;
+  for (let i = 0; i < contas.length; i += LOTE) {
+    const lote = contas.slice(i, i + LOTE);
+    const resps = await Promise.all(
+      lote.map(async (c) => {
+        const id = String(c.id ?? "");
+        // Retry especifico para saldo: tenta ate 3 vezes qualquer erro de rede/status
+        let ultimaResp: Response | null = null;
+        let ultimaErro: any = null;
+        for (let tentativa = 0; tentativa < 3; tentativa++) {
+          try {
+            const r = await fetch(
+              `https://api-v2.contaazul.com/v1/conta-financeira/${c.id}/saldo-atual`,
+              { headers: { Authorization: `Bearer ${token}` } },
+            );
+            ultimaResp = r;
+            if (r.ok) break; // sucesso, para o retry
+            // 429/5xx: espera e tenta de novo
+            if (r.status === 429 || (r.status >= 500 && r.status < 600)) {
+              const espera = 600 * Math.pow(2, tentativa);
+              await new Promise((res) => setTimeout(res, espera));
+              continue;
+            }
+            // Outros erros (ex: 400/3039 da Conta Azul): tenta mais uma vez com delay curto
+            await new Promise((res) => setTimeout(res, 400));
+          } catch (e) {
+            ultimaErro = e;
+            await new Promise((res) => setTimeout(res, 400 * (tentativa + 1)));
+          }
+        }
+        const r = ultimaResp;
+        if (r && r.ok) {
+          const sj: any = await r.json();
+          return {
+            id,
+            nome: String(c.nome ?? "").trim(),
+            saldo: (sj.saldo_atual as number) || 0,
+            erro: false as const,
+          };
+        }
+        log(
+          "warn",
+          `buscarSaldos saldo-atual falhou apos tentativas: ${empresa} / ${c.nome} status=${r?.status ?? "erro rede"}`,
+        );
+        return { id, nome: String(c.nome ?? "").trim(), saldo: 0, erro: true as const };
+      }),
+    );
+    // Delay entre lotes para nao saturar a API da Conta Azul
+    if (i + LOTE < contas.length) {
+      await new Promise((res) => setTimeout(res, DELAY_MS));
+    }
+    for (const r of resps) {
+      todas.push(r);
+      if (!r.erro) lista.push({ id: r.id, nome: r.nome, saldo: r.saldo });
+    }
   }
 
   return { lista, ok: true, todas };
