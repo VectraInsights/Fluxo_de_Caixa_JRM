@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `9c6228e` | fix: titulos pagos/recebidos exibem o valor liquido (com desconto) e as paginas da listagem sao buscadas em paralelo | 04/11/2026 |
 | `6453fea` | feat: rota de diagnostico `/api/debug-baixas` que revela o JSON cru da baixa (desconto, juros, multa e valor pago real) para descobrir onde o desconto da Conta Azul e gravado | 04/11/2026 |
 | `76ced54` | fix: paginas de pagos/recebidos recusadas pela API (rate limit) viravam total parcial no carregamento automatico — paginacao que reinicia, resultado incompleto fora do cache e refetch automatica da tela | 04/11/2026 |
 | `b4c3e3e` | fix: corrige os erros de tipagem que quebravam o build apos o pull do remoto (campos de desconto/juros no resumo, nivel "debug" no log, id do titulo) e o regex de Estorno/Estornado no PDF | 04/11/2026 |
@@ -655,7 +656,7 @@ simulados), 19 assercoes, todos passando:
 
 ---
 
-## 3.12 Valor do titulo pago sem o desconto (investigacao em andamento)
+## 3.12 Valor do titulo pago sem o desconto (RESOLVIDO em 04/11/2026 — veja a secao 3.13)
 
 **Sintoma (print do usuario):** no card **PAGOS** de 30/10 (empresa "todas",
 total R$ 168.991,59) os titulos aparecem pelo valor cheio, sem o desconto
@@ -712,13 +713,84 @@ nivel. Tambem testa se existe algum endpoint que devolva **todas as baixas do
 periodo em uma chamada** (candidatos em `/v1/financeiro/baixas`,
 `/v1/financeiro/eventos-financeiros/baixas`, etc.).
 
-**Situacao:** aguardando o **Redeploy** na Vercel para rodar a rota e confirmar
-a composicao real do valor antes de aplicar a correcao nos cards e nos relatorios.
+**Situacao:** **RESOLVIDO** em 04/11/2026 (commit `9c6228e`, secao 3.13). A rota
+de diagnostico, rodada em producao depois do redeploy, mostrou que na listagem
+de contas pagas o campo `pago` e o valor **bruto** da baixa
+(`valor_composicao.valor_bruto`) e o campo `total` e o valor **liquido**
+(`valor_composicao.valor_liquido` = bruto - desconto + juros + multa). O codigo
+usava o `pago` — por isso o titulo aparecia **sem** o desconto. A correcao nao
+precisa de nenhuma chamada extra a API: basta usar o `total`.
 
 ---
 | recebidos com 429 no meio | termina **COMPLETO**: 110 titulos, total 11.000 |
 
 ---
+
+## 3.13 Titulo pago com o desconto aplicado + paginacao em paralelo (04/11/2026)
+
+**Commit do fix:** `9c6228e` — `fix: titulos pagos/recebidos exibem o valor liquido (com desconto) e as paginas da listagem sao buscadas em paralelo`
+
+### O que o diagnostico mostrou (producao)
+
+A rota `/api/debug-baixas` (rodada em producao) comparou 16 titulos pagos reais
+com a baixa correspondente. Resultado: **16/16** confirmaram a mesma regra.
+
+| Campo da listagem | Significado | Exemplo (1/3 - Compra de produto 1922) |
+|-------------------|-------------|----------------------------------------|
+| `pago`  | `valor_composicao.valor_bruto` (cheio, **sem** desconto) | R$ 1.127,69 |
+| `total` | `valor_composicao.valor_liquido` (bruto - desconto + juros + multa) | R$ 1.127,66 |
+
+Outros exemplos: "CAPITAL DE GIRO - 21/48" -> bruto 72.430,28 / liquido 65.738,42
+(desconto de R$ 6.691,86); "1/366 - ALUGUEL SALA SANTA CATARINA" -> bruto 299,00
+/ liquido 305,67 (juros de R$ 6,67).
+
+O codigo exibia o `pago` — por isso o titulo aparecia **sem** o desconto.
+
+### O que mudou (`src/lib/contaazul.server.ts`)
+
+1. **Valor do titulo = `total` (liquido)** em `processarPagasResposta()` e em
+   `processarRecebidas()`. Sem nenhuma chamada extra a API (a listagem ja traz
+   o liquido). Pagamento parcial (`nao_pago > 0`) continua usando o valor pago.
+2. **Rotulo Desc/Juros pela diferenca**: `bruto - liquido` > 0 e desconto;
+   < 0 e juros/multa. O titulo passa a mostrar "Desc R$ ..." no rodape da tela e
+   o card mostra o total ("Desc R$ ... · Juros R$ ...").
+3. **Sem log por titulo**: a busca gravava 1 insert no Supabase por titulo com
+   desconto/juros (centenas de titulos = centenas de inserts). Agora grava
+   **1 log resumo** por listagem.
+4. **Paginacao em paralelo**: novo helper `listarTodasPaginas()` usa o
+   `itens_totais` da 1a pagina e busca as demais **3 por vez**
+   (`buscarPagasInterna`, `buscarRecebidasInterna` e `buscarV2Interna`).
+   Antes eram uma a uma, com 150 ms de espera entre elas.
+5. **`buscarBaixaPorParcela()` desembrulha o array** devolvido por
+   `/parcelas/{parcela_id}/baixa` (antes o `valor_composicao` nunca era lido).
+
+### Testes executados
+
+`npx tsc --noEmit` e `npm run build` sem erro; teste com API falsa usando os
+valores reais de 30/10/2026, cobrindo: titulo com desconto de R$ 0,03 (valor
+1.127,66), titulo com juros (valor 305,67), capital de giro (valor 65.738,42),
+pagamento parcial (usa o valor pago), paginacao com 350 itens (4 paginas,
+concorrencia 3, 4 chamadas) e a cauda adaptativa quando a API nao informa
+`itens_totais`.
+
+### Como conferir no painel
+
+1. **Redeploy** na Vercel (o deploy e manual).
+2. Recarregar o dashboard em 30/10/2026, empresa "todas".
+3. O titulo "1/3 - Compra de produto 1922 (NFe 257866-110)" (LGP Transportes)
+   deve aparecer como **R$ 1.127,66** (antes R$ 1.127,69), com o rotulo
+   "Desc R$ 0,03".
+4. O card PAGOS passa a somar os valores liquidos (menor que antes, porque o
+   desconto sai da conta) e o subtitulo passa a mostrar o total do desconto.
+5. O carregamento deve ficar mais rapido: as paginas da listagem sao buscadas
+   em paralelo (3 por vez) em vez de uma a uma.
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit 9c6228e
+git push origin main
+```
 
 ## 4. Commit de Reversão Padrao
 
