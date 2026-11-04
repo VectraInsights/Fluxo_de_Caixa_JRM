@@ -673,12 +673,12 @@ export async function exportarPdf(rel: RelatorioListas) {
 
   // Cabecalho
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(15);
+  doc.setFontSize(16);
   doc.text("Fluxo de Caixa", margem, 13);
 
   // Periodo / empresa
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
+  doc.setFontSize(10);
   doc.setTextColor(100);
   doc.text(
     `Período: ${formatarDataBR(rel.dataInicio)} a ${formatarDataBR(rel.dataFim)}    |    Empresa: ${
@@ -700,10 +700,10 @@ export async function exportarPdf(rel: RelatorioListas) {
     })),
   ];
 
-  const alturaCard = 15;
+  const alturaCard = 16;
   const gapCard = 3;
   const larguraCard = (larguraUtil - gapCard * (cards.length - 1)) / cards.length;
-  const yCard = 27;
+  const yCard = 28;
   let xCard = margem;
   for (const c of cards) {
     // Fundo claro com moldura na cor da relacao
@@ -714,21 +714,21 @@ export async function exportarPdf(rel: RelatorioListas) {
 
     // Rotulo pequeno em cima
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
+    doc.setFontSize(8.5);
     doc.setTextColor(110);
     doc.text(c.rotulo, xCard + 3, yCard + 5.5);
 
     // Valor em negrito (fonte encolhe se nao couber no card)
     const valorTxt = formatarValor(c.valor);
-    let fs = 11.5;
+    let fs = 13;
     doc.setFont("helvetica", "bold");
     doc.setFontSize(fs);
-    while (fs > 7 && doc.getTextWidth(valorTxt) > larguraCard - 6) {
+    while (fs > 8 && doc.getTextWidth(valorTxt) > larguraCard - 6) {
       fs -= 0.5;
       doc.setFontSize(fs);
     }
     doc.setTextColor(30);
-    doc.text(valorTxt, xCard + 3, yCard + 12.5);
+    doc.text(valorTxt, xCard + 3, yCard + 13);
 
     xCard += larguraCard + gapCard;
   }
@@ -749,7 +749,7 @@ export async function exportarPdf(rel: RelatorioListas) {
     doc.rect(margem, y - 4.5, largura - margem * 2, 8, "F");
     doc.setTextColor(255);
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
+    doc.setFontSize(12);
     doc.text(`Faturamento — ${formatarValor(f.total)}`, margem + 4, y + 1);
     doc.setTextColor(0);
     y += 8;
@@ -783,8 +783,8 @@ export async function exportarPdf(rel: RelatorioListas) {
       ],
       theme: "grid",
       styles: {
-        fontSize: 7.2,
-        cellPadding: 0.9,
+        fontSize: 8.5,
+        cellPadding: 1,
         overflow: "linebreak",
       },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
@@ -824,7 +824,7 @@ export async function exportarPdf(rel: RelatorioListas) {
     doc.rect(margem, y - 4.5, largura - margem * 2, 8, "F");
     doc.setTextColor(255);
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
+    doc.setFontSize(12);
     doc.text(`${item.titulo} — ${formatarValor(total)}`, margem + 4, y + 1);
     doc.setTextColor(0);
     y += 8;
@@ -872,8 +872,8 @@ export async function exportarPdf(rel: RelatorioListas) {
       body,
       theme: "grid",
       styles: {
-        fontSize: 7.2,
-        cellPadding: 0.9,
+        fontSize: 8.5,
+        cellPadding: 1,
         overflow: "linebreak",
       },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
@@ -940,10 +940,10 @@ export async function exportarPdf(rel: RelatorioListas) {
       doc.rect(margem, y - 5, largura - margem * 2, 9, "F");
       doc.setTextColor(255);
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(12);
+      doc.setFontSize(13);
       doc.text(g.nome, margem + 4, y + 1);
       doc.setFont("helvetica", "normal");
-      doc.setFontSize(8);
+      doc.setFontSize(9);
       doc.setTextColor(203, 213, 225);
       doc.text(resumo, largura - margem - 4, y + 1, { align: "right" });
       doc.setTextColor(0);
