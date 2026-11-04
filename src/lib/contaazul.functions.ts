@@ -301,7 +301,13 @@ export type DashboardData = {
     total_desp: number;
     total_rec_boleto: number;
     total_pagas: number;
+    total_desconto_pagas: number;
+    total_juros_pagas: number;
+    total_multa_pagas: number;
     total_recebidas: number;
+    total_desconto_recebidas: number;
+    total_juros_recebidas: number;
+    total_multa_recebidas: number;
     saldo_final: number;
   };
   avisos: string[];

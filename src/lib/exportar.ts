@@ -829,7 +829,7 @@ export async function exportarPdf(rel: RelatorioListas) {
       const base = t.descricao || t.terceiro || "";
       const cat = (t.categoria || "").trim();
       if (!cat) return base;
-      if (/estorn(a|ado)\b/i.test(cat)) {
+      if (/estorn(o|ado)\b/i.test(cat)) {
         const maiusc = cat.charAt(0).toUpperCase() + cat.slice(1);
         return `${base} (${maiusc})`;
       }

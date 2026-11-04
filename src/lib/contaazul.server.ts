@@ -219,7 +219,7 @@ export async function pedirToken(params: Record<string, string>): Promise<Respon
 }
 
 // ------------------- Logs em memória (ring buffer) -------------------
-type LogEntry = { ts: number; nivel: "info" | "warn" | "error"; msg: string };
+type LogEntry = { ts: number; nivel: "debug" | "info" | "warn" | "error"; msg: string };
 const LOGS: LogEntry[] = [];
 const LOGS_MAX = 200;
 export function log(nivel: LogEntry["nivel"], msg: string) {
@@ -241,6 +241,7 @@ export function limparLogs() {
 // concorrentes (ex.: getDashboard + getEmpresaBreakdown) compartilham a
 // MESMA requisição à API da Conta Azul em vez de duplicar as chamadas.
 export type ItemLancamento = {
+  id?: string;
   data: string;
   valor: number;
   metodo: string | null;
@@ -1660,6 +1661,7 @@ async function processarPagasResposta(
       data,
       valor,
       metodo: null,
+      id: String(i.id),
       conta_id: extrairContaId(i),
       descricao: extrairDescricao(i),
       terceiro: extrairTerceiro(i),
@@ -1944,6 +1946,7 @@ export function processarRecebidas(
       data,
       valor,
       metodo: null,
+      id: String(i.id),
       conta_id: extrairContaId(i),
       descricao: extrairDescricao(i),
       terceiro: extrairTerceiro(i),

@@ -1389,7 +1389,7 @@ function KpiCard({
   accent: string;
   badge?: React.ReactNode;
   variation?: number | null;
-  sub?: string;
+  sub?: string | null;
 }) {
   return (
     <div className="group relative overflow-hidden rounded-2xl border border-border bg-card/60 backdrop-blur-xl p-4 shadow-lg hover:border-brand/30 hover:-translate-y-0.5 transition-all">
