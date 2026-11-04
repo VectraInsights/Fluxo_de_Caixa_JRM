@@ -1749,19 +1749,40 @@ async function enriquecerPagasComValorLiquido(
     const dadosBaixa = Array.isArray(j) ? j[0] : j;
     if (!dadosBaixa) return;
 
-    const vc = dadosBaixa.valor_composicao ?? {};
-    const desconto = Number(vc.desconto || 0);
-    const juros = Number(vc.juros || 0);
-    const multa = Number(vc.multa || 0);
-    const valorBruto = Number(vc.valor_bruto || 0);
+    // Tenta pegar os dados da Parcela também para garantir o desconto original
+    // (desconto lançado na emissão/edição da conta, antes do pagamento).
+    let dadosParcela: any = null;
+    if (parcelaId) {
+      try {
+        const urlParcela = `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/${parcelaId}`;
+        const resParcela = await fetchComRetry(urlParcela, {
+          headers: { Authorization: `Bearer ${tokenRef.token}` },
+        }, 1);
+        if (resParcela.ok) {
+          const jParcela = await resParcela.json();
+          dadosParcela = Array.isArray(jParcela) ? jParcela[0] : jParcela;
+        }
+      } catch {
+        // falha silenciosa: segue com o que vier da baixa
+      }
+    }
+
+    const vcBaixa = dadosBaixa.valor_composicao ?? {};
+    const vcParcela = dadosParcela?.valor_composicao ?? {};
+
+    // Prioriza o desconto da parcela se o da baixa estiver zerado (e vice-versa)
+    const desconto = Number(vcBaixa.desconto || vcParcela.desconto || 0);
+    const juros = Number(vcBaixa.juros || vcParcela.juros || 0);
+    const multa = Number(vcBaixa.multa || vcParcela.multa || 0);
+    const valorBruto = Number(vcBaixa.valor_bruto || vcParcela.valor_bruto || 0);
 
     let valor: number;
 
     if (valorBruto > 0) {
-      // Valor liquido definitivo conforme documentacao: valor_bruto - desconto + juros + multa
+      // Valor liquido definitivo: valor_bruto - desconto + juros + multa
       valor = valorBruto - desconto + juros + multa;
     } else {
-      // Fallback quando a baixa nao retorna valor_bruto: usa os valores da listagem
+      // Fallback quando nenhuma fonte retorna valor_bruto: usa os valores da listagem
       const pago = item._pago ?? 0;
       const total = item._total ?? 0;
       const ehBruto = Math.abs(pago - total) < 0.01;
