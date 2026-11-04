@@ -248,6 +248,14 @@ export type ItemLancamento = {
   descricao?: string | null;
   terceiro?: string | null;
   categoria?: string | null;
+  // Valores acessorios de pagamento (juros, multa, desconto) e o valor
+  // efetivamente pago (quando a API disponibiliza). Usados para nao perder
+  // lancamentos com juros/multa: o campo "pago" da API pode vir com o valor
+  // original do titulo, sem os acrescimos.
+  juros?: number;
+  multa?: number;
+  desconto?: number;
+  valor_pago?: number;
 };
 
 type EntradaCache<T> = { promessa: Promise<T>; exp: number };
@@ -884,6 +892,21 @@ export function extrairCategoria(j: any): string | null {
   return nomes.length ? nomes.join(" / ") : null;
 }
 
+// Extrai um numero de um dos campos candidatos (numerico ou string "1.234,56").
+// Retorna 0 se nada for encontrado.
+function extrairNumero(j: any, ...campos: string[]): number {
+  if (!j) return 0;
+  for (const c of campos) {
+    const v = j[c];
+    if (typeof v === "number" && !isNaN(v)) return v;
+    if (typeof v === "string") {
+      const n = Number(v.replace(/[^0-9,-]/g, "").replace(",", "."));
+      if (!isNaN(n)) return n;
+    }
+  }
+  return 0;
+}
+
 // Extrai o id da conta financeira (banco) do titulo. A API usa nomes
 // diferentes conforme o endpoint: na lista de titulos vem em
 // `conta_financeira_id`; no endpoint de parcelas (contas a pagar/receber
@@ -1460,7 +1483,24 @@ async function processarPagasResposta(
   for (const i of itens) {
     const pago = (i.pago as number) || 0;
     const total = (i.total as number) || 0;
-    const valor = pago > 0 ? pago : total;
+    // Juros / multa / desconto podem vir em campos separados da API. O campo
+    // "pago" costuma trazer o valor original do titulo sem os acrescimos, entao
+    // somamos quando disponivel. Se a API tiver um campo de valor efetivo pago,
+    // usamos ele diretamente.
+    const juros = extrairNumero(i, "juros", "valor_juros", "acrescimos", "juros_multa");
+    const multa = extrairNumero(i, "multa", "valor_multa");
+    const desconto = extrairNumero(i, "desconto", "valor_desconto", "abatimento");
+    const valorPagoCampo = extrairNumero(i, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa");
+
+    let valor: number;
+    if (valorPagoCampo > 0) {
+      valor = valorPagoCampo; // valor efetivamente pago (ja inclui juros/multa)
+    } else if (juros > 0 || multa > 0 || desconto > 0) {
+      valor = pago + juros + multa - desconto;
+      if (valor <= 0) valor = pago > 0 ? pago : total; // fallback de seguranca
+    } else {
+      valor = pago > 0 ? pago : total;
+    }
     if (!i.id || valor <= 0) continue;
     const data =
       extrairDataPagamento(i) ||
@@ -1475,6 +1515,10 @@ async function processarPagasResposta(
       descricao: extrairDescricao(i),
       terceiro: extrairTerceiro(i),
       categoria: extrairCategoria(i),
+      juros: juros || undefined,
+      multa: multa || undefined,
+      desconto: desconto || undefined,
+      valor_pago: valorPagoCampo || undefined,
     });
   }
 
@@ -1534,9 +1578,21 @@ export function processarRecebidas(
   for (const i of itens) {
     const recebido = (i.pago as number) || 0;
     const total = (i.total as number) || 0;
-    // "pago" e o valor efetivamente recebido (no contas a receber, o campo
-    // "pago" e quanto ja foi recebido do titulo).
-    const valor = recebido > 0 ? recebido : total;
+    // Mesmo tratamento de juros/multa/desconto das pagas, aplicado aos recebidos.
+    const juros = extrairNumero(i, "juros", "valor_juros", "acrescimos", "juros_multa");
+    const multa = extrairNumero(i, "multa", "valor_multa");
+    const desconto = extrairNumero(i, "desconto", "valor_desconto", "abatimento");
+    const valorPagoCampo = extrairNumero(i, "valor_pago", "valor_liquido", "valor_efetivo", "valor_baixa");
+
+    let valor: number;
+    if (valorPagoCampo > 0) {
+      valor = valorPagoCampo;
+    } else if (juros > 0 || multa > 0 || desconto > 0) {
+      valor = recebido + juros + multa - desconto;
+      if (valor <= 0) valor = recebido > 0 ? recebido : total;
+    } else {
+      valor = recebido > 0 ? recebido : total;
+    }
     if (!i.id || valor <= 0) continue;
     const data =
       extrairDataRecebimento(i) ||
@@ -1554,6 +1610,10 @@ export function processarRecebidas(
       descricao: extrairDescricao(i),
       terceiro: extrairTerceiro(i),
       categoria: extrairCategoria(i),
+      juros: juros || undefined,
+      multa: multa || undefined,
+      desconto: desconto || undefined,
+      valor_pago: valorPagoCampo || undefined,
     });
   }
   return brutos;

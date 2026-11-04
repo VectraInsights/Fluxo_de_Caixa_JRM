@@ -819,11 +819,26 @@ export async function exportarPdf(rel: RelatorioListas) {
     // continua apenas no XLSX. A coluna "Metodo" so aparece se a lista tiver
     // algum metodo preenchido (nos Pagos/Recebidos ela e sempre vazia).
     const temMetodo = lista.some((t) => !!t.metodo);
+
+    // Quando a categoria indicar estorno/estornado, anexa-la a descricao para
+    // ficar visivel no PDF (a coluna Categoria foi removida dele). Primeira letra
+    // sempre maiuscula (Estorno / Estornado).
+    const descricaoComCategoria = (t: LinhaExport): string => {
+      const base = t.descricao || t.terceiro || "";
+      const cat = (t.categoria || "").trim();
+      if (!cat) return base;
+      if (/estorn(a|ado)\b/i.test(cat)) {
+        const maiusc = cat.charAt(0).toUpperCase() + cat.slice(1);
+        return `${base} (${maiusc})`;
+      }
+      return base;
+    };
+
     const head = temMetodo
       ? [["Data", "Descrição", item.rotuloTerceiro, "Método", "Valor (R$)"]]
       : [["Data", "Descrição", item.rotuloTerceiro, "Valor (R$)"]];
     const body = lista.map((t) => {
-      const base = [formatarDataBR(t.data), tituloDaLinha(t), subtituloDaLinha(t)];
+      const base = [formatarDataBR(t.data), descricaoComCategoria(t), subtituloDaLinha(t)];
       return temMetodo
         ? [...base, t.metodo || "", formatarValor(t.valor)]
         : [...base, formatarValor(t.valor)];
