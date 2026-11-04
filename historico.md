@@ -683,6 +683,38 @@ Ou diretamente pelo hash no GitHub/Vercel, fazendo redeploy desse commit.
 
 **Regra do projeto (AGENTS.md):** sempre `git commit` + `git push` apos qualquer alteracao, com mensagem em portugues no padrao `feat:`, `fix:` ou `chore:`. **Nunca** reescreva o historico ja publicado (force push / rebase / amend) — o projeto esta conectado ao Lovable.
 
+### Referencia para reverter: correcao da paginacao de Pagos/Recebidos (04/11/2026)
+
+**Commit do fix:** `76ced54` — `fix: paginas de pagos/recebidos recusadas pela API (rate limit) viravam total parcial no carregamento automatico`
+**Commit do docs:** `24ca044` (secao 3.11 deste arquivo)
+**Tag de referencia:** `correcao-paginas` — apontando para `76ced54`, publicada no remoto (sobrevive a limpeza do clone local)
+
+**O que o fix alterou (3 arquivos):**
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/contaazul.server.ts` | `fetchPaginaRobusta()` (novo), `MAX_PASSES_PAGINACAO`, tipo `ResultadoLista` (`ok` + `incompleto`) e a paginacao de `buscarPagasInterna` / `buscarRecebidasInterna` reescritas |
+| `src/lib/contaazul.functions.ts` | campo `dados_incompletos` em `DashboardData` + avisos de "nova tentativa automatica" no `getDashboard` |
+| `src/routes/index.tsx` | refetch automatica em background (3 s / 6 s / 9 s, max 3) quando `dados_incompletos` volta preenchido |
+
+**Como reverter (sem reescrever o historico ja publicado):**
+
+```bash
+# Reverte SO o fix, em um commit novo (nao usa reset/force)
+git revert --no-edit 76ced54
+git push origin main
+
+# Se tambem quiser tirar a documentacao da correcao:
+git revert --no-edit 24ca044
+git push origin main
+```
+
+**O que volta a acontecer apos o revert:** o comportamento antigo — se a API da
+Conta Azul derrubar uma pagina no meio da paginacao (rate limit), o card
+"Contas Pagas" passa a exibir um total PARCIAL sem aviso por ate 2 minutos
+(cache), so se corrigindo quando o usuario clica em **Recarregar** (que limpa o
+cache). As 19 assercoes do teste da secao 3.11 voltariam a falhar.
+
 ---
 
 ## 5. Estrutura de Arquivos Relevantes
