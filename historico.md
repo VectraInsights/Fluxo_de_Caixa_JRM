@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `9defc7a` | fix: listas de Pagos/Recebidos usam a data real do pagamento (baixa da parcela), recupera titulos recebidos descartados pelo vencimento e deixa o PDF mais compacto | 04/11/2026 |
 | `1a398a2` | fix: remove a linha de Desc/Juros/Multa dos cards e do rodape (o valor ja vem com o desconto aplicado) | 04/11/2026 |
 | `9c6228e` | fix: titulos pagos/recebidos exibem o valor liquido (com desconto) e as paginas da listagem sao buscadas em paralelo | 04/11/2026 |
 | `6453fea` | feat: rota de diagnostico `/api/debug-baixas` que revela o JSON cru da baixa (desconto, juros, multa e valor pago real) para descobrir onde o desconto da Conta Azul e gravado | 04/11/2026 |
@@ -802,6 +803,112 @@ continuam sendo calculados e devolvidos pela API (apenas nao sao exibidos).
 
 ```bash
 git revert --no-edit 9c6228e
+git push origin main
+```
+
+## 3.14 Data real do pagamento + recuperacao dos recebimentos + PDF compacto (04/11/2026)
+
+**Commit do fix:** `9defc7a` — `fix: listas de Pagos/Recebidos usam a data real do pagamento (baixa da parcela), recupera titulos recebidos descartados pelo vencimento e deixa o PDF mais compacto`
+
+### O que o diagnostico mostrou (producao)
+
+O print do usuario (JRM Transportes, novembro de 2026) mostrava a linha
+"25/10 - 1/366 - ALUGUEL COMPUTADOR" na lista de **Pagos**: era o
+**VENCIMENTO** do titulo, e nao a data em que o dinheiro saiu do banco.
+
+A listagem da Conta Azul (`/v1/financeiro/contas-a-pagar` e
+`/v1/financeiro/contas-a-receber`) so devolve `data_vencimento`. A data real
+do caixa esta na **baixa da parcela**:
+
+```
+GET /v1/financeiro/eventos-financeiros/parcelas/{parcela_id}/baixa
+```
+
+Testado em producao: o `id` devolvido pela listagem **e o id da parcela** e a
+baixa responde `data_pagamento` + `valor_composicao` (valor_bruto /
+desconto / juros / multa / valor_liquido). Exemplo real (LGP, "CRÉD.TED-STR"):
+`data_pagamento` = 2026-10-30, valor bruto R$ 1.776,20.
+
+Nao existe endpoint em lote de baixas (todas as variantes testadas responderam
+404/400), por isso o enriquecimento e feito **por titulo**, com cache de 30
+minutos (`BAIXA_TTL_MS`) e 16 requisicoes em paralelo
+(`CONCORRENCIA_BAIXAS`). Se a baixa nao responder, o titulo mantem o valor e a
+data da listagem — nada se perde.
+
+### A causa do total menor (titulos recebidos que sumiam)
+
+O filtro de recebidos descartava o titulo quando o **vencimento** estava fora
+do periodo — mas o dinheiro pode ter entrado dentro do mes. Comparacao
+API x painel (periodo de 2026):
+
+| Empresa / periodo | API | Painel (antes) | Titulos perdidos |
+|-------------------|-----|----------------|------------------|
+| LGP Transportes - jul/2026 | 97 | 96 | 1 |
+| LGP Transportes - ago/2026 | 106 | 105 | 1 |
+| LGP Transportes - set/2026 | 142 | 142 | 0 |
+| Juvenal Transportes - out/2026 | 234 | 218 | 16 |
+
+Exemplo: "FAT. 1666" (Juvenal) venceu em 29/07/2026 e foi recebido em
+13/10/2026 — o vencimento de julho jogava o dinheiro de outubro para fora do
+painel.
+
+### O que mudou (`src/lib/contaazul.server.ts`)
+
+1. **`extrairDadosBaixa()`** (exportado, funcao pura): le o array de baixas e
+   devolve `data_pagamento`, `desconto`, `juros`, `multa`, `valor_bruto`,
+   `valor_liquido` e `valor_pago`. Com mais de uma baixa, a data exibida e a
+   da ultima baixa dentro do periodo.
+2. **`buscarBaixaDaParcela()`**: chama `/parcelas/{id}/baixa` com retry,
+   renova o token em 401 e guarda o resultado no `baixaCache` (30 min; 1 min
+   quando a chamada falha).
+3. **`enriquecerComBaixas()`** (exportado): aplica a baixa em todos os
+   titulos (16 em paralelo) — grava `data` = `data_pagamento` e substitui o
+   valor pelo **liquido** (`VALOR_PAGAS` e `VALOR_RECEBIDAS` = `"liquido"`,
+   confirmado pelo usuario: liquido tanto em Pagos quanto em Recebidos).
+4. **Recebidos nao descartam pelo vencimento**: o titulo so sai da lista quando
+   a propria API traz a data REAL de recebimento fora do periodo.
+5. O codigo morto `enriquecerPagasComValorLiquido()` foi removido (as duas
+   chamadas foram trocadas por `enriquecerComBaixas()`).
+
+### O que mudou (`src/lib/exportar.ts`) — menos folhas para imprimir
+
+| Antes | Agora |
+|-------|-------|
+| Margem de 14 mm e colunas com `maxWidth` somando ~164 mm numa pagina de 297 mm | Margem de 10 mm e larguras FIXAS somando a largura util (277 mm) |
+| Fonte 8 pt, `cellPadding` 2 mm | Fonte 7,2 pt, `cellPadding` 0,9 mm e entrelinha 1,08 (`doc.setLineHeightFactor`) |
+| Cada secao (Recebidos, Pagos) comecava numa PAGINA NOVA | As secoes **fluem** na mesma folha (so abrem pagina nova quando nao cabe) |
+| Margem da tabela 30/16 mm | 12/12 mm |
+
+Medicao (120 titulos, A4 paisagem): descricoes longas **9 -> 5 folhas**,
+descricoes curtas **6 -> 4 folhas**. O PDF continua com Faturamento, Recebidos
+e Pagos (e o XLSX completo, com "Resultado (A Receber - A Pagar)").
+
+### Testes executados
+
+- `npx tsc --noEmit` e `npm run build` sem erro.
+- Teste com API falsa: **18/18 PASS** — a data real substitui o vencimento, o
+  titulo recebido com vencimento fora do periodo NAO e descartado, face/liquido
+  em pagas e recebidas, baixa ausente mantem valor e data, agregacao de 2
+  baixas.
+- Benchmark de folhas do PDF (config antiga x config nova): 9 -> 5 e 6 -> 4.
+
+### Como conferir no painel
+
+1. **Redeploy** na Vercel (o deploy e manual).
+2. Recarregar o dashboard em novembro/2026, empresa "todas".
+3. A linha "1/366 - ALUGUEL COMPUTADOR" (JRM Transportes) deve aparecer com a
+   **data do pagamento** (e nao 25/10).
+4. Os totais de **Recebidos** devem subir: LGP jul/2026 (96 -> 97 titulos),
+   LGP ago/2026 (105 -> 106) e Juvenal out/2026 (218 -> 234).
+5. O PDF deve sair com menos folhas e com as datas do pagamento.
+6. Conferir o tempo de carga: cada titulo faz 1 chamada de baixa (cache de 30
+   min). O log `enriquecerComBaixas <empresa>: N/M titulos com baixa ... em Xs`
+   mostra o tempo de cada listagem.
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit 9defc7a
 git push origin main
 ```
 
