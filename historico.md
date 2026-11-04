@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `cf4712d` | fix: conta com desconto detecta mais campos (valor_desconto_concedido, valor_pago_liquido, etc.) e total no PDF so na ultima linha da planilha (nao no rodape de cada pagina) | 03/11/2026 |
 | `9bdb86f` | fix: lista de pagos/recebidas usa dados do getDashboard (fonte unica) para nao divergir do card — detalhamento por empresa incluso na resposta do dashboard | 03/11/2026 |
 | `8a3c37e` | fix: busca de pagas/recebidas retorna itens ja coletados mesmo que uma pagina posterior da API falhe | 03/11/2026 |
 | `bd1513d` | fix: remove limite de paginas na busca de pagas e recebidas (sem teto de 20 paginas, itera ate a API parar de retornar itens) | 03/11/2026 |
