@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `76ced54` | fix: paginas de pagos/recebidos recusadas pela API (rate limit) viravam total parcial no carregamento automatico — paginacao que reinicia, resultado incompleto fora do cache e refetch automatica da tela | 04/11/2026 |
 | `b4c3e3e` | fix: corrige os erros de tipagem que quebravam o build apos o pull do remoto (campos de desconto/juros no resumo, nivel "debug" no log, id do titulo) e o regex de Estorno/Estornado no PDF | 04/11/2026 |
 | `d986f21` | fix: desconto aplicado corretamente - detecta se pago eh bruto (pago ~= total) ou liquido (pago ~= total - desconto) comparando com o total da parcela | 03/11/2026 |
 | `89bab13` | fix: desconto ja vem no pago da Conta Azul (valor liquido) - nao subtrair duas vezes; usa pago/valorPagoCampo diretamente e soma apenas juros/multa separados | 03/11/2026 |
@@ -591,6 +592,66 @@ Casos cobertos: `Estorno`, `estorno`, `ESTORNO`, `Estornado`, `estornado`,
 `Combustivel`. Como a coluna Categoria foi removida do PDF impresso, a
 categoria de estorno continua sendo anexada **a descricao** do titulo
 (ex.: `Titulo (Estorno)`).
+
+---
+
+## 3.11 "Contas Pagas" errado no carregamento automatico (paginacao incompleta)
+
+**Sintoma:** o card **Contas Pagas** mostrava um valor MENOR quando o sistema
+recarregava sozinho (R$ 25.743,05) e o valor certo quando o usuario clicava em
+**Recarregar** (R$ 168.991,59) — duas cargas com 11 segundos de diferenca.
+
+**Causa:** a paginacao de `buscarPagas` / `buscarRecebidas` tratava a falha de
+**uma pagina** como "acabaram os dados":
+
+```ts
+if (!res.ok) { log("warn", ...); break; }   // parava aqui e mantinha o ja lido
+...
+return { dados: enriquecidos, ok: true };   // <- mesmo com a paginação pela metade
+```
+
+Quando a API derrubava uma pagina no meio do **rate limit** (o proprio codigo de
+saldos ja lida com o erro 3039), a busca parava no meio, devolvia so os itens ja
+lidos com `ok: true` — e **isso era cacheado por 2 minutos** (`listCache`). O
+card exibia entao um total parcial **sem nenhum aviso de erro**. O botao
+**Recarregar** chama `limparCache`, que apaga o `listCache`, e a refetch completa
+trazia o total certo. Daí a diferença entre as duas imagens.
+
+**Correcoes, em 3 camadas:**
+
+1. **Paginacao que reinicia.** `fetchPaginaRobusta()` (novo) busca cada pagina
+   com retries, backoff, respeito ao `retry-after` e renovacao de token, e
+   distingue erro **transitorio** (429/5xx/rede) de erro **definitivo** (4xx
+   fora de 401/429 — ex.: um status que a conta nao aceita, que nao adianta
+   repetir). Falha transitória no meio da lista => a paginacao **recomeca do
+   zero** (`MAX_PASSES_PAGINACAO = 2`, com pausa de 1,5 s e respiro de 150 ms
+   entre paginas). Falha definitiva => pula direto para o proximo
+   status/endpoint. Os limites ficaram baixos de proposito: o pior caso de uma
+   pagina fica em ~9 s, para nao estourar o tempo da funcao na Vercel.
+2. **Resultado parcial nunca vira total final.** Novo tipo `ResultadoLista`
+   (`{ dados, ok, incompleto? }`): so um resultado **completo** entra no cache
+   (`manter: (x) => x.ok`). O parcial volta com `ok: false` e `incompleto: true`
+   — mantendo o melhor trecho lido, para o card nao sumir.
+3. **A tela se corrige sozinha.** `getDashboard` passou a devolver
+   `dados_incompletos` (mais o aviso "nova tentativa automatica") e o painel
+   refaz a consulta em background com espera crescente (3 s, 6 s, 9 s; maximo de
+   3 tentativas por sequencia) — quando o limite da API ja passou. Assim o
+   carregamento automatico termina com o valor correto **sem** exigir o clique em
+   Recarregar.
+
+**Pagos/Recebidos continuam sem acender a bolinha vermelha de sincronizacao**
+(cards complementares; o token ruim ja e detectado por A Receber / A Pagar). O
+sinal novo e o aviso na caixinha de alertas + a refetch automatica.
+
+**Testes** — API falsa (stub de `global.fetch` com Supabase e Conta Azul
+simulados), 19 assercoes, todos passando:
+
+| Cenario | Comportamento verificado |
+|---------|--------------------------|
+| 429 na pagina 2 e recuperacao | termina **COMPLETO**: 125 titulos, total 12.500 (pagina 2 tentada 5x) |
+| falha persistente na pagina 2 | `ok=false`, `incompleto=true`, parcial de 100 mantido e **nao cacheado**; a refetch seguinte traz os 125 titulos e o total 12.500 |
+| 400 no status ACQUITTED | erro definitivo **cai no PAGO** sem marcar incompleto (10 titulos) |
+| recebidos com 429 no meio | termina **COMPLETO**: 110 titulos, total 11.000 |
 
 ---
 
