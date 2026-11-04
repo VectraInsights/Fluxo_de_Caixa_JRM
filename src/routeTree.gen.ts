@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiAutorizarRouteImport } from './routes/api/autorizar'
 import { Route as ApiCallbackRouteImport } from './routes/api/callback'
+import { Route as ApiDebugBaixasRouteImport } from './routes/api/debug-baixas'
 import { Route as ApiDebugPagasRouteImport } from './routes/api/debug-pagas'
 import { Route as ApiDebugRecebidosRouteImport } from './routes/api/debug-recebidos'
 import { Route as ApiCronRenovarTokensRouteImport } from './routes/api/cron/renovar-tokens'
@@ -29,6 +30,11 @@ const ApiAutorizarRoute = ApiAutorizarRouteImport.update({
 const ApiCallbackRoute = ApiCallbackRouteImport.update({
   id: '/api/callback',
   path: '/api/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDebugBaixasRoute = ApiDebugBaixasRouteImport.update({
+  id: '/api/debug-baixas',
+  path: '/api/debug-baixas',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiDebugPagasRoute = ApiDebugPagasRouteImport.update({
@@ -51,6 +57,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
+  '/api/debug-baixas': typeof ApiDebugBaixasRoute
   '/api/debug-pagas': typeof ApiDebugPagasRoute
   '/api/debug-recebidos': typeof ApiDebugRecebidosRoute
   '/api/cron/renovar-tokens': typeof ApiCronRenovarTokensRoute
@@ -59,6 +66,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
+  '/api/debug-baixas': typeof ApiDebugBaixasRoute
   '/api/debug-pagas': typeof ApiDebugPagasRoute
   '/api/debug-recebidos': typeof ApiDebugRecebidosRoute
   '/api/cron/renovar-tokens': typeof ApiCronRenovarTokensRoute
@@ -68,6 +76,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
+  '/api/debug-baixas': typeof ApiDebugBaixasRoute
   '/api/debug-pagas': typeof ApiDebugPagasRoute
   '/api/debug-recebidos': typeof ApiDebugRecebidosRoute
   '/api/cron/renovar-tokens': typeof ApiCronRenovarTokensRoute
@@ -78,6 +87,7 @@ export interface FileRouteTypes {
     | '/'
     | '/api/autorizar'
     | '/api/callback'
+    | '/api/debug-baixas'
     | '/api/debug-pagas'
     | '/api/debug-recebidos'
     | '/api/cron/renovar-tokens'
@@ -86,6 +96,7 @@ export interface FileRouteTypes {
     | '/'
     | '/api/autorizar'
     | '/api/callback'
+    | '/api/debug-baixas'
     | '/api/debug-pagas'
     | '/api/debug-recebidos'
     | '/api/cron/renovar-tokens'
@@ -94,6 +105,7 @@ export interface FileRouteTypes {
     | '/'
     | '/api/autorizar'
     | '/api/callback'
+    | '/api/debug-baixas'
     | '/api/debug-pagas'
     | '/api/debug-recebidos'
     | '/api/cron/renovar-tokens'
@@ -103,6 +115,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ApiAutorizarRoute: typeof ApiAutorizarRoute
   ApiCallbackRoute: typeof ApiCallbackRoute
+  ApiDebugBaixasRoute: typeof ApiDebugBaixasRoute
   ApiDebugPagasRoute: typeof ApiDebugPagasRoute
   ApiDebugRecebidosRoute: typeof ApiDebugRecebidosRoute
   ApiCronRenovarTokensRoute: typeof ApiCronRenovarTokensRoute
@@ -129,6 +142,13 @@ declare module '@tanstack/react-router' {
       path: '/api/callback'
       fullPath: '/api/callback'
       preLoaderRoute: typeof ApiCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/debug-baixas': {
+      id: '/api/debug-baixas'
+      path: '/api/debug-baixas'
+      fullPath: '/api/debug-baixas'
+      preLoaderRoute: typeof ApiDebugBaixasRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/debug-pagas': {
@@ -159,6 +179,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ApiAutorizarRoute: ApiAutorizarRoute,
   ApiCallbackRoute: ApiCallbackRoute,
+  ApiDebugBaixasRoute: ApiDebugBaixasRoute,
   ApiDebugPagasRoute: ApiDebugPagasRoute,
   ApiDebugRecebidosRoute: ApiDebugRecebidosRoute,
   ApiCronRenovarTokensRoute: ApiCronRenovarTokensRoute,
