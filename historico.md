@@ -1225,6 +1225,47 @@ git revert --no-edit <hash_do_commit>
 git push origin main
 ```
 
+## 3.19 Exportacao bloqueada enquanto as baixas nao chegam (05/11/2026)
+
+**Commit:** `fix: bloqueia a exportacao enquanto a API ainda nao devolveu as baixas dos titulos`
+
+### O que acontecia
+
+Logo depois de um deploy (ou depois de clicar em **Recarregar**, que limpa o
+cache do servidor) a busca das baixas leva alguns segundos — a API da Conta Azul
+limita 10 requisicoes por segundo e a funcao da Vercel tem 60 s de limite. Nesse
+intervalo o painel ainda mostrava os titulos, mas o **PDF/XLSX saiam com titulos
+a menos** (27 de 36 recebidas e 90 de 93 pagos, no caso da Juvenal).
+
+O motivo: o filtro de bancos do painel remove o titulo que **ainda nao tem
+banco** (o banco vem da baixa). Enquanto a baixa nao chegou, o titulo fica de
+fora do relatorio.
+
+### O que mudou
+
+| Item | Antes | Agora |
+|------|-------|-------|
+| Banner | (nenhum) | aviso amarelo "Consultando a data real do pagamento e o banco dos titulos" |
+| Botoes PDF/XLSX | sempre liberados | **bloqueados** enquanto faltam baixas (ate 6 rodadas de refetch automatico) |
+| Contador de rodadas | `useRef` (a tela nao sabia se ainda completava) | `useState` |
+| Banner de avisos | "Falha na sincronizacao com a Conta Azul" | "Aviso da sincronizacao com a Conta Azul" (o caso do limite da API nao e falha) |
+
+Depois de 6 rodadas o botao volta a ficar liberado (o aviso do servidor continua
+na tela) — assim uma falha pontual da API nunca deixa o painel sem exportacao.
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/routes/index.tsx` | `MAX_RODADAS_BAIXAS`, `rodadasBaixas` (state), `completandoBaixas`, banner de aviso e bloqueio dos botoes PDF/XLSX |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
