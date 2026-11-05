@@ -12,6 +12,7 @@ import {
   buscarRecebidas,
   filtrarPorBancos,
   mapaContaParaBanco,
+  aplicarBancoAosTitulos,
   removerAcentos,
   getLogs,
   limparLogs,
@@ -442,6 +443,11 @@ export const getDashboard = createServerFn({ method: "GET" })
         const despF = filtrarPorBancos(desp.dados, contasMap, bancosOk);
         const pagasF = filtrarPorBancos(pagas.dados, contasMap, bancosOk);
         const recebidasF = filtrarPorBancos(recebidas.dados, contasMap, bancosOk);
+        // Nome do banco de cada titulo (vai para o PDF/XLSX).
+        aplicarBancoAosTitulos(recF, contasMap);
+        aplicarBancoAosTitulos(despF, contasMap);
+        aplicarBancoAosTitulos(pagasF, contasMap);
+        aplicarBancoAosTitulos(recebidasF, contasMap);
         const removidos =
           rec.dados.length - recF.length +
           (desp.dados.length - despF.length) +
@@ -568,6 +574,7 @@ export const getDashboard = createServerFn({ method: "GET" })
           descricao: i.descricao ?? null,
           terceiro: i.terceiro ?? null,
           categoria: i.categoria ?? null,
+          banco: i.banco ?? null,
           juros: i.juros,
           multa: i.multa,
           desconto: i.desconto,
@@ -583,6 +590,7 @@ export const getDashboard = createServerFn({ method: "GET" })
           descricao: i.descricao ?? null,
           terceiro: i.terceiro ?? null,
           categoria: i.categoria ?? null,
+          banco: i.banco ?? null,
           juros: i.juros,
           multa: i.multa,
           desconto: i.desconto,
@@ -629,6 +637,8 @@ export type TituloDetalhe = {
   descricao: string | null;
   terceiro: string | null; // cliente (receber) ou fornecedor (pagar)
   categoria: string | null; // categoria financeira da Conta Azul
+  // Banco/conta financeira do titulo (ex.: BRADESCO, ITAU, SICOOB 3049)
+  banco?: string | null;
   // Valores acessorios do pagamento/baixa (conforme documentacao tecnica):
   // desconto e juros estao em valor_composicao.desconto / valor_composicao.juros
   juros?: number;
@@ -667,6 +677,7 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
           descricao: i.descricao ?? null,
           terceiro: i.terceiro ?? null,
           categoria: i.categoria ?? null,
+          banco: i.banco ?? null,
           juros: i.juros,
           multa: i.multa,
           desconto: i.desconto,
@@ -702,12 +713,17 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
         // Filtra pelos bancos exibidos no painel (mesma regra do getDashboard).
         const contasMap = mapaContaParaBanco(sal.todas);
         const bancosOk = bancosPermitidosDaEmpresa(emp);
+        // Nome do banco de cada titulo (vai para o PDF/XLSX).
+        const comBanco = (itens: any[]) => {
+          aplicarBancoAosTitulos(itens, contasMap);
+          return itens;
+        };
         return {
           empresa: emp,
-          receber: montar(filtrarPorBancos(rec.dados, contasMap, bancosOk)),
-          pagar: montar(filtrarPorBancos(desp.dados, contasMap, bancosOk)),
-          pagos: montar(filtrarPorBancos(pagas.dados, contasMap, bancosOk)),
-          recebidas: montar(filtrarPorBancos(recebidas.dados, contasMap, bancosOk)),
+          receber: montar(comBanco(filtrarPorBancos(rec.dados, contasMap, bancosOk))),
+          pagar: montar(comBanco(filtrarPorBancos(desp.dados, contasMap, bancosOk))),
+          pagos: montar(comBanco(filtrarPorBancos(pagas.dados, contasMap, bancosOk))),
+          recebidas: montar(comBanco(filtrarPorBancos(recebidas.dados, contasMap, bancosOk))),
         };
       }),
     );

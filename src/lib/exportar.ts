@@ -502,6 +502,7 @@ export async function construirXlsx(rel: RelatorioListas): Promise<Uint8Array<Ar
         formatarDataBR(t.data),
         tituloDaLinha(t),
         subtituloDaLinha(t),
+        t.banco || "",
         t.categoria || "",
         t.empresa || "",
         t.metodo || "",
@@ -513,13 +514,22 @@ export async function construirXlsx(rel: RelatorioListas): Promise<Uint8Array<Ar
       titulo: item.titulo,
       subtitulo: periodo,
       corTitulo: xlsxHex(item.cor),
-      cabecalho: ["Data", "Descrição", item.rotuloTerceiro, "Categoria", "Empresa", "Método", "Valor (R$)"],
+      cabecalho: [
+        "Data",
+        "Descrição",
+        item.rotuloTerceiro,
+        "Banco",
+        "Categoria",
+        "Empresa",
+        "Método",
+        "Valor (R$)",
+      ],
       linhas,
-      total: ["", "TOTAL", "", "", "", "", total],
-      larguras: [12, 46, 30, 26, 22, 16, 18],
-      alinhamentos: ["center", "left", "left", "left", "left", "center", "right"],
-      colunasQuebra: [1, 3],
-      colunaMoeda: 6,
+      total: ["", "TOTAL", "", "", "", "", "", total],
+      larguras: [12, 46, 30, 18, 26, 22, 16, 18],
+      alinhamentos: ["center", "left", "left", "left", "left", "left", "center", "right"],
+      colunasQuebra: [1, 4],
+      colunaMoeda: 7,
       autofiltro: true,
     });
     XLSX.utils.book_append_sheet(wb, ws, item.titulo);
@@ -850,10 +860,16 @@ export async function exportarPdf(rel: RelatorioListas) {
     };
 
     const head = temMetodo
-      ? [["Data", "Descrição", item.rotuloTerceiro, "Método", "Valor (R$)"]]
-      : [["Data", "Descrição", item.rotuloTerceiro, "Valor (R$)"]];
+      ? [["Data", "Descrição", item.rotuloTerceiro, "Banco", "Método", "Valor (R$)"]]
+      : [["Data", "Descrição", item.rotuloTerceiro, "Banco", "Valor (R$)"]];
     const body = lista.map((t) => {
-      const base = [formatarDataBR(t.data), descricaoComCategoria(t), subtituloDaLinha(t)];
+      const base = [
+        formatarDataBR(t.data),
+        descricaoComCategoria(t),
+        subtituloDaLinha(t),
+        // Banco/conta financeira do titulo (ex.: BRADESCO, ITAU, SICOOB 3049)
+        t.banco || "—",
+      ];
       return temMetodo
         ? [...base, t.metodo || "", formatarValor(t.valor)]
         : [...base, formatarValor(t.valor)];
@@ -862,6 +878,7 @@ export async function exportarPdf(rel: RelatorioListas) {
     body.push([
       "",
       "TOTAL",
+      "",
       ...(temMetodo ? ["", ""] : [""]),
       formatarValor(total),
     ]);
@@ -880,19 +897,24 @@ export async function exportarPdf(rel: RelatorioListas) {
       // Colunas com largura FIXA somando a largura util da pagina (antes o
       // maxWidth somava ~164 mm numa pagina de 297 mm: sobrava espaco vazio e
       // a descricao quebrava em mais linhas -> mais folhas para imprimir).
+      // Com a coluna "Banco" a descricao perde uns mm: o terceiro fica em
+      // 80/88 mm (o nome do fornecedor/cliente ainda cabe em 1 linha) e o
+      // banco em 28 mm ("Sicoob 3109").
       columnStyles: temMetodo
         ? ({
             0: { cellWidth: 18 },
-            1: { cellWidth: larguraUtil - 18 - 80 - 32 - 38 },
+            1: { cellWidth: larguraUtil - 18 - 80 - 28 - 24 - 32 },
             2: { cellWidth: 80 },
-            3: { cellWidth: 32 },
-            4: { cellWidth: 38, halign: "right" },
+            3: { cellWidth: 28 },
+            4: { cellWidth: 24 },
+            5: { cellWidth: 32, halign: "right" },
           } as any)
         : ({
             0: { cellWidth: 18 },
-            1: { cellWidth: larguraUtil - 18 - 95 - 38 },
-            2: { cellWidth: 95 },
-            3: { cellWidth: 38, halign: "right" },
+            1: { cellWidth: larguraUtil - 18 - 88 - 28 - 32 },
+            2: { cellWidth: 88 },
+            3: { cellWidth: 28 },
+            4: { cellWidth: 32, halign: "right" },
           } as any),
       margin: { top: 12, bottom: 12, left: margem, right: margem },
     });

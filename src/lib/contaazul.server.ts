@@ -246,6 +246,9 @@ export type ItemLancamento = {
   valor: number;
   metodo: string | null;
   conta_id?: string;
+  // Nome do banco/conta financeira do titulo (preenchido a partir do
+  // conta_id + mapa de contas; usado no PDF/XLSX e no filtro de bancos).
+  banco?: string | null;
   descricao?: string | null;
   terceiro?: string | null;
   categoria?: string | null;
@@ -317,7 +320,15 @@ type DadosBaixa = {
   valor_bruto: number;
   valor_liquido: number;
   valor_pago: number;
+  // Banco/conta financeira usada no pagamento (vem da baixa).
+  banco: string | null;
+  conta_id: string | null;
 };
+
+// Versao do formato guardado no cache (Supabase e memoria). Ao mudar o que e
+// guardado, incremente: as linhas antigas sao ignoradas e as baixas sao
+// buscadas de novo na API.
+const BAIXA_CACHE_VERSAO = 2;
 
 // Cache em memoria: guarda as BAIXAS CRUAS (array), e nao o resultado ja
 // filtrado pelo periodo — assim o mesmo cache serve para qualquer intervalo
@@ -1248,6 +1259,26 @@ export function mapaContaParaBanco(
   return mapa;
 }
 
+// Preenche o nome do BANCO de cada titulo (a partir do conta_id e do mapa de
+// contas financeiras). Titulo sem conta ou com conta fora do mapa fica sem
+// banco (mostra "—" no relatorio).
+export function aplicarBancoAosTitulos(
+  itens: ItemLancamento[],
+  contaParaBanco: Map<string, string>,
+): ItemLancamento[] {
+  if (!contaParaBanco || contaParaBanco.size === 0) return itens;
+  for (const i of itens ?? []) {
+    // Banco que ja veio da baixa (conta usada no pagamento) tem prioridade.
+    if (i.banco) continue;
+    if (!i.conta_id) {
+      i.banco = null;
+      continue;
+    }
+    i.banco = contaParaBanco.get(String(i.conta_id)) ?? null;
+  }
+  return itens;
+}
+
 // Filtra os titulos pelos bancos EXIBIDOS no dashboard.
 //
 // Regra (conservadora, para nunca perder dinheiro da lista sem querer):
@@ -1983,6 +2014,9 @@ export function extrairDadosBaixa(
   let valorBruto = 0;
   let valorLiquido = 0;
   let valorPago = 0;
+  // Banco/conta financeira usada no pagamento (vem na propria baixa).
+  let banco: string | null = null;
+  let contaId: string | null = null;
   for (const b of validas) {
     const vc = b?.valor_composicao || b?.composicao_valor || b?.detalhe_valor || {};
     desconto += Number(vc.desconto || 0);
@@ -1991,6 +2025,11 @@ export function extrairDadosBaixa(
     valorBruto += Number(vc.valor_bruto || b?.valor_bruto || 0);
     valorLiquido += Number(vc.valor_liquido || 0);
     valorPago += Number(b?.valor_pago || 0);
+    const cf = b?.conta_financeira;
+    if (cf && !banco) {
+      banco = cf.nome || cf.banco || null;
+      contaId = cf.id ? String(cf.id) : null;
+    }
   }
   if (valorBruto <= 0) valorBruto = valorPago;
   if (valorLiquido <= 0) valorLiquido = valorBruto - desconto + juros + multa;
@@ -2003,6 +2042,8 @@ export function extrairDadosBaixa(
     valor_bruto: valorBruto,
     valor_liquido: valorLiquido,
     valor_pago: valorPago,
+    banco,
+    conta_id: contaId,
   };
 }
 
@@ -2013,7 +2054,11 @@ export function extrairDadosBaixa(
  */
 function compactarBaixa(b: any): any {
   const vc = b?.valor_composicao || b?.composicao_valor || b?.detalhe_valor || {};
+  // A baixa traz a conta financeira usada no pagamento (ex.: "Sicoob 3109") —
+  // e a fonte do BANCO do titulo no relatorio.
+  const cf = b?.conta_financeira || null;
   return {
+    v: BAIXA_CACHE_VERSAO,
     data_pagamento: typeof b?.data_pagamento === "string" ? b.data_pagamento : null,
     valor_pago: Number(b?.valor_pago || 0),
     valor_composicao: {
@@ -2023,6 +2068,13 @@ function compactarBaixa(b: any): any {
       juros: Number(vc.juros || 0),
       multa: Number(vc.multa || 0),
     },
+    conta_financeira: cf
+      ? {
+          id: cf.id ? String(cf.id) : null,
+          nome: cf.nome ?? null,
+          banco: cf.banco ?? null,
+        }
+      : null,
   };
 }
 
@@ -2119,7 +2171,11 @@ async function lerBaixasDoSupabase(
       }
       for (const row of data || []) {
         const b = row?.baixa;
-        if (Array.isArray(b) && b.length) out.set(String(row.parcela_id), b);
+        // Linhas gravadas em outra versao do formato sao ignoradas: a baixa e
+        // buscada de novo na API (e regravida no formato novo).
+        if (!Array.isArray(b) || !b.length) continue;
+        if (b[0]?.v !== BAIXA_CACHE_VERSAO) continue;
+        out.set(String(row.parcela_id), b);
       }
     }
   } catch (e) {
@@ -2268,6 +2324,9 @@ export async function enriquecerComBaixas(
     item.juros = baixa.juros > 0 ? baixa.juros : undefined;
     item.multa = baixa.multa > 0 ? baixa.multa : undefined;
     if (baixa.valor_pago > 0) item.valor_pago = baixa.valor_pago;
+
+    // Banco/conta usada no pagamento (a listagem nao traz esse vinculo).
+    if (baixa.banco) item.banco = baixa.banco;
 
     // Valor do titulo.
     const face = baixa.valor_bruto > 0 ? baixa.valor_bruto : (item._pago ?? 0);
