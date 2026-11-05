@@ -74,6 +74,11 @@ const fmt = (v: number) =>
 const fmtCompact = (v: number) =>
   Number(v).toLocaleString("pt-BR", { notation: "compact", compactDisplay: "short" });
 
+// Quantas vezes a tela refaz a consulta sozinha enquanto a API ainda nao
+// devolviu a baixa de todos os titulos (a API limita 10 requisicoes por
+// segundo por conta, e a funcao da Vercel tem 60 s de limite).
+const MAX_RODADAS_BAIXAS = 6;
+
 function todayLocalISO(offsetDays = 0) {
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
@@ -402,22 +407,28 @@ function Dashboard() {
   // limite: em um mes grande a busca leva mais de uma carga. Como o cache no
   // Supabase guarda o que ja foi buscado, cada rodada avanca — aqui a tela
   // repete a consulta (com espera crescente) ate os titulos ficarem completos.
-  const tentativasBaixas = useRef(0);
+  //
+  // O contador e um STATE (e nao um ref) porque a tela precisa saber se ainda
+  // esta completando os dados: enquanto isso, a exportacao (PDF/XLSX) fica
+  // bloqueada para nao gerar um relatorio com titulos a menos.
+  const [rodadasBaixas, setRodadasBaixas] = useState(0);
   const temBaixasPendentes = (data?.baixas_pendentes?.length ?? 0) > 0;
+  // Ainda estamos buscando as baixas (e ainda ha rodadas para tentar).
+  const completandoBaixas = temBaixasPendentes && rodadasBaixas < MAX_RODADAS_BAIXAS;
 
   useEffect(() => {
     if (!temBaixasPendentes) {
-      tentativasBaixas.current = 0;
+      setRodadasBaixas(0);
       return;
     }
-    if (tentativasBaixas.current >= 6) return;
-    tentativasBaixas.current += 1;
-    const espera = 4000 * tentativasBaixas.current;
+    if (rodadasBaixas >= MAX_RODADAS_BAIXAS) return;
+    const espera = 4000 * (rodadasBaixas + 1);
     const t = setTimeout(() => {
+      setRodadasBaixas((n) => n + 1);
       refetch();
     }, espera);
     return () => clearTimeout(t);
-  }, [temBaixasPendentes, dataUpdatedAt, refetch]);
+  }, [temBaixasPendentes, dataUpdatedAt, rodadasBaixas, refetch]);
 
   // Ao trocar o mes visado, preenche a URL ja cadastrada (se houver) e
   // descarta qualquer registro pendente de confirmacao.
@@ -1061,16 +1072,40 @@ function Dashboard() {
             </div>
           )}
           
+          {/* Aviso: a API da Conta Azul ainda está devolvendo as baixas (data real
+              do pagamento e banco). A tela se completa sozinha; a exportação fica
+              bloqueada até os dados ficarem completos, para não sair um
+              relatório com títulos a menos. */}
+          {completandoBaixas && (
+            <div className="mb-5 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+              <div className="flex items-start gap-3">
+                <Loader2 className="h-5 w-5 text-amber-500 shrink-0 mt-0.5 animate-spin" />
+                <div className="text-sm">
+                  <div className="font-semibold mb-1">
+                    Consultando a data real do pagamento e o banco dos títulos
+                  </div>
+                  <div className="text-muted-foreground">
+                    A Conta Azul limita a 10 consultas por segundo por conta. Como cada
+                    título precisa de uma consulta para trazer a baixa (data do pagamento
+                    e banco), a tela termina de completar sozinha em alguns instantes.
+                    Enquanto isso, o PDF e o XLSX ficam bloqueados para não sair um
+                    relatório incompleto.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Banner visível de empresas com erro definitivo (token revogado/credenciais inválidas) */}
           {(data?.avisos?.length ?? 0) > 0 && (
             <div className="mb-5 rounded-xl border border-destructive/30 bg-destructive/10 p-4">
               <div className="flex items-start gap-3">
                 <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
                 <div className="text-sm">
-                  <div className="font-semibold mb-1">Falha na sincronização com a Conta Azul</div>
+                  <div className="font-semibold mb-1">Aviso da sincronização com a Conta Azul</div>
                   <div className="text-muted-foreground">
                     Os valores abaixo podem estar zerados ou incompletos porque não foi possível
-                    obter os dados dessas empresas:
+                    obter todos os dados dessas empresas:
                   </div>
                   <ul className="mt-2 space-y-1 text-muted-foreground">
                     {data!.avisos.map((a, i) => (
@@ -1269,11 +1304,20 @@ function Dashboard() {
                 {erroExportacao && (
                   <span className="text-[11px] text-destructive">{erroExportacao}</span>
                 )}
+                {completandoBaixas && (
+                  <span className="text-[11px] text-muted-foreground">
+                    Consultando as baixas dos títulos… a exportação abre em instantes
+                  </span>
+                )}
                 <button
                   onClick={() => exportar("pdf")}
-                  disabled={!consolidado || exportando !== null}
+                  disabled={!consolidado || exportando !== null || completandoBaixas}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background/60 px-3 py-1.5 text-xs font-medium text-foreground/80 hover:text-foreground hover:border-brand/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Exportar as listas em PDF"
+                  title={
+                    completandoBaixas
+                      ? "Aguarde: a API da Conta Azul ainda está devolvendo as baixas (data real do pagamento e banco)"
+                      : "Exportar as listas em PDF"
+                  }
                 >
                   {exportando === "pdf" ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1284,9 +1328,13 @@ function Dashboard() {
                 </button>
                 <button
                   onClick={() => exportar("xlsx")}
-                  disabled={!consolidado || exportando !== null}
+                  disabled={!consolidado || exportando !== null || completandoBaixas}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background/60 px-3 py-1.5 text-xs font-medium text-foreground/80 hover:text-foreground hover:border-brand/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Exportar as listas em Excel (XLSX)"
+                  title={
+                    completandoBaixas
+                      ? "Aguarde: a API da Conta Azul ainda está devolvendo as baixas (data real do pagamento e banco)"
+                      : "Exportar as listas em Excel (XLSX)"
+                  }
                 >
                   {exportando === "xlsx" ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
