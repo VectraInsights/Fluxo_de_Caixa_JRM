@@ -1142,6 +1142,89 @@ que nao existe mais (404) e a exportacao falha com
 Nao quebra nada: basta atualizar a pagina (F5). A mensagem de erro agora diz
 isso de forma explicita ("Atualize a pagina (Ctrl+F5) e tente novamente").
 
+## 3.18 Data errada (vencimento) e banco vazio — limite de 10 req/s da API (05/11/2026)
+
+**Commit:** `fix: respeita o limite de 10 requisicoes por segundo da API da Conta Azul nas baixas`
+
+### O relato
+
+No painel da **Juvenal Transportes** (nov/2026) apareciam titulos com a data de
+**VENCIMENTO** em vez da data do **pagamento/recebimento**, e varios titulos
+sem **banco** (a coluna `—` no PDF). Exemplo: `CTE - 37535` (venc. 29/10)
+mostrava 29/10 e nenhum banco.
+
+### Causa raiz
+
+A listagem de contas a pagar/receber da Conta Azul **nao traz** a data do
+pagamento nem o banco — so o vencimento. Quem traz os dois e a **baixa da
+parcela** (`GET /v1/financeiro/eventos-financeiros/parcelas/{id}/baixa`), que
+era consultada para **cada** titulo.
+
+O problema era o **limite de taxa da API**: a Conta Azul aceita **10 requisicoes
+por segundo por conta conectada**:
+
+> "Limite de requisicoes excedido: ate 10 por segundo por conta conectada"
+
+As chamadas de baixa eram disparadas com **32 em paralelo**. O que passava do
+limite voltava **429**, o titulo ficava **sem baixa** e o relatorio mantinha a
+data do vencimento com o banco vazio. Confirmado em producao: sondando 120
+titulos, **41 voltaram 429** e **nenhum** voltou 404 — o dado existia, so nao
+chegava. (`CTE - 37535` tem baixa em **04/11/2026**, **Sicoob 3109**.)
+
+Nao existe endpoint **em lote** de baixas (testados 10 candidatos: 404/400) e
+nenhuma listagem traz `baixas`/`parcelas`/`conta_id` — a chamada
+individualizada e obrigatoria.
+
+### O que mudou
+
+| Item | Antes | Agora |
+|------|-------|-------|
+| Chamadas de baixa | 32 em paralelo (429) | fila por tempo, **9 req/s** (folga sobre o limite de 10) |
+| Intervalo entre chamadas | — | 111 ms, dobra ate 3 s se a API responder 429, volta a 111 ms depois de uma sequencia de acertos |
+| Chamadas em voo | 32 | 24 (cada chamada leva ~2 s: 24 em voo sustentam 9 req/s) |
+| Erro 429 / 5xx / rede | virava "titulo sem baixa" (cacheado) | **nao** e cacheado: a proxima carga tenta de novo |
+| Orcamento de tempo | nenhum | **42 s** (`JRM_PRAZO_BAIXAS_MS`) — o que sobrou fica para a proxima carga |
+| Lista no cache (2 min) | cacheada mesmo com baixas faltando | **nao** cacheada enquanto faltarem baixas (o cache do Supabase guarda o que ja foi buscado, entao cada carga avanca) |
+
+Alem do limitador, a busca passou a devolver tres contadores:
+
+- `sem_baixa` — falha **transitoria** (429/5xx/rede): a proxima carga tenta de novo;
+- `sem_baixa_definitivo` — o titulo **nao tem baixa** na API (nao adianta repetir);
+- `baixas_pendentes` — nem chegou a ser consultado (o orcamento de 42 s acabou).
+
+### Painel
+
+- `getDashboard` devolve `baixas_pendentes` (empresas com baixa faltando) e
+  um aviso por empresa ("N titulo(s) sem a baixa — a data exibida pode ser o
+  vencimento e o banco fica vazio").
+- O front **refaz a consulta sozinho** (ate 6 rodadas, espera 4 s x rodada)
+  enquanto houver baixas pendentes — como o cache guarda o que ja foi buscado,
+  cada rodada avanca e a tela termina com a data real e o banco.
+- Titulo **sem baixa na API** (definitivo) gera aviso separado e **nao** entra
+  no refetch (repetir nao mudaria nada).
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/contaazul.server.ts` | limitador de taxa (`esperarVagaBaixa`, `baixaRecebeu429`, `baixaDeuCerto`); `buscarBaixaDaParcela` com 4 tentativas e status `ok/vazio/falha`; `enriquecerComBaixas` devolve `{ dados, semBaixa, semBaixaDefinitivo, pendentes }`; `ResultadoLista` com `sem_baixa`, `sem_baixa_definitivo`, `baixas_pendentes`; listas incompletas nao ficam no cache de 2 min |
+| `src/lib/contaazul.functions.ts` | `DashboardData.baixas_pendentes`; avisos por empresa (transitorio x definitivo) |
+| `src/routes/index.tsx` | refetch automatico das Baixas pendentes (ate 6 rodadas) |
+
+### Variaveis de ambiente (opcionais)
+
+| Variavel | Padrao | Para que serve |
+|----------|--------|----------------|
+| `JRM_BAIXAS_POR_SEGUNDO` | `9` | chamadas de baixa por segundo (maximo seguro: 9) |
+| `JRM_PRAZO_BAIXAS_MS` | `42000` | orcamento de tempo da busca de baixas por carga (limite da funcao: 60 s) |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
