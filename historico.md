@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `a1c0d56` | feat: deixa as listas de titulos do painel legiveis (descricao ocupa a largura da coluna em 2 linhas) | 05/11/2026 |
 | `7825474` | feat: aumenta as fontes do PDF impresso (tabelas 8,5 pt) mantendo o rodape em 8 pt | 04/11/2026 |
 | `9defc7a` | fix: listas de Pagos/Recebidos usam a data real do pagamento (baixa da parcela), recupera titulos recebidos descartados pelo vencimento e deixa o PDF mais compacto | 04/11/2026 |
 | `1a398a2` | fix: remove a linha de Desc/Juros/Multa dos cards e do rodape (o valor ja vem com o desconto aplicado) | 04/11/2026 |
@@ -938,6 +939,38 @@ git push origin main
 
 # reverter apenas o aumento das fontes
 git revert --no-edit 7825474
+git push origin main
+```
+
+## 3.15 Listas de titulos do painel mais legiveis (05/11/2026)
+
+**Commit:** `a1c0d56` — `feat: deixa as listas de titulos do painel legiveis (descricao ocupa a largura da coluna em 2 linhas)`
+
+### O problema
+
+Nas listas do rodape do painel ("A Receber, A Pagar, Pagos e Recebidos"), cada
+titulo era uma linha horizontal com **data + descricao + empresa + valor** lado a
+lado. Com 4 colunas na tela, sobrava poucos pixels para a descricao e ela
+aparecia espremida ("1/3...", "Rosangela Transpor..."), sem dar para ler o que
+era o titulo.
+
+### O que mudou (`src/routes/index.tsx`, componente `TitulosLista`)
+
+1. A linha virou **duas linhas**: a primeira traz data + etiqueta da empresa +
+   etiqueta de Boleto + valor; a **segunda traz a descricao com a largura
+   inteira da coluna** (`line-clamp-2`, 13 px), com o texto completo no
+   `title` (tooltip do navegador).
+2. O terceiro (cliente/fornecedor) continua em uma linha menor e apagada
+   abaixo da descricao.
+3. A grade do bloco passou de `lg:grid-cols-4` para `md:grid-cols-2
+   2xl:grid-cols-4`: em telas medias as listas ficam com o **dobro de largura**
+   (2 colunas) e as 4 colunas so aparecem em telas muito largas (2xl).
+4. A altura da rolagem das listas subiu de 280 px para 320 px.
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit a1c0d56
 git push origin main
 ```
 
