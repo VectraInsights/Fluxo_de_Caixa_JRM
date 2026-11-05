@@ -319,6 +319,12 @@ export type DashboardData = {
   // a consulta sozinha, para o carregamento automatico terminar com o valor
   // correto sem exigir o clique em "Recarregar".
   dados_incompletos: string[];
+  // Empresas que ainda tem titulos SEM a baixa da parcela (data real do
+  // pagamento e banco). A API da Conta Azul aceita 10 requisicoes por segundo e
+  // a funcao tem 60 s de limite: em um mes grande a busca das baixas leva
+  // varias cargas. Como o cache no Supabase guarda o que ja foi buscado, cada
+  // carga avanca — a tela refaz a consulta sozinha ate completar.
+  baixas_pendentes: string[];
   // Títulos detalhados de Pagos e Recebidas por empresa (fonte única da verdade
   // para as listas — evita divergência entre o card do dashboard e a lista,
   // que antes eram buscadas por server functions separadas).
@@ -364,6 +370,10 @@ export const getDashboard = createServerFn({ method: "GET" })
     const empresasComProblema = new Set<string>();
     // Empresas com listas de titulos parciais (ver ResultadoLista.incompleto).
     const dadosIncompletos = new Set<string>();
+    // Empresas que ainda tem titulos sem a baixa (data real + banco): a tela
+    // refaz a consulta sozinha ate completar (o cache guarda o que ja foi
+    // buscado, entao cada rodada avanca).
+    const baixasPendentes = new Set<string>();
 
     // Empresas em paralelo (tokens e chamadas à API são independentes)
     const resultados = await Promise.all(
@@ -432,6 +442,33 @@ export const getDashboard = createServerFn({ method: "GET" })
             `${emp}: recebimentos vieram incompletos (a API recusou parte das páginas) — nova tentativa automática.`,
           );
           dadosIncompletos.add(emp);
+        }
+        // A baixa da parcela (data real + banco) pode ter sido recusada pela API
+        // por limite de taxa, ou o orcamento de tempo da funcao pode ter
+        // acabado: esses titulos ficam com a data de VENCIMENTO e sem banco ate
+        // a proxima carga. O painel avisa e refaz a consulta sozinho.
+        const semBaixa = (pagas.sem_baixa ?? 0) + (recebidas.sem_baixa ?? 0);
+        const semBaixaDefinitivo =
+          (pagas.sem_baixa_definitivo ?? 0) + (recebidas.sem_baixa_definitivo ?? 0);
+        const baixasPendentesTotal = (pagas.baixas_pendentes ?? 0) + (recebidas.baixas_pendentes ?? 0);
+        if (semBaixa > 0 || baixasPendentesTotal > 0) {
+          const detalhe = [
+            semBaixa > 0 ? `${semBaixa} sem a baixa (limite da API)` : "",
+            baixasPendentesTotal > 0 ? `${baixasPendentesTotal} ainda nao consultadas` : "",
+          ]
+            .filter(Boolean)
+            .join(" e ");
+          avisos.push(
+            `${emp}: ${detalhe} — a data exibida pode ser o vencimento e o banco fica vazio. A consulta sera refeita automaticamente.`,
+          );
+          baixasPendentes.add(emp);
+        }
+        if (semBaixaDefinitivo > 0) {
+          // Titulo sem baixa na API: nao adianta repetir a consulta (a data real
+          // e o banco nao existem para esse titulo).
+          avisos.push(
+            `${emp}: ${semBaixaDefinitivo} título(s) não têm baixa lançada na Conta Azul — nesse caso a data exibida é o vencimento e o banco fica vazio.`,
+          );
         }
 
         // Filtra os titulos pelos BANCOS EXIBIDOS no painel (mesma lista do
@@ -624,6 +661,7 @@ export const getDashboard = createServerFn({ method: "GET" })
       avisos,
       empresas_com_problema: Array.from(empresasComProblema),
       dados_incompletos: Array.from(dadosIncompletos),
+      baixas_pendentes: Array.from(baixasPendentes),
       detalhamento,
     };
   });

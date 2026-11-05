@@ -277,6 +277,17 @@ export type ResultadoLista = {
   dados: ItemLancamento[];
   ok: boolean;
   incompleto?: boolean;
+  // Quantos titulos ficaram SEM a baixa da parcela (a API recusou por limite
+  // de taxa). Esses titulos exibem a data de VENCIMENTO e o banco vazio ate
+  // a proxima carga conseguir consultar a baixa.
+  sem_baixa?: number;
+  // Quantos titulos NAO tem baixa na API (a parcela nunca foi baixada). Nao ha
+  // data de pagamento nem banco para buscar — nao adianta repetir a consulta.
+  sem_baixa_definitivo?: number;
+  // Quantos titulos ainda nao foram buscados (o orcamento de tempo da funcao
+  // acabou antes). Ficam para a proxima carga — o painel refaz a consulta
+  // sozinho ate completar.
+  baixas_pendentes?: number;
 };
 
 type EntradaCache<T> = { promessa: Promise<T>; exp: number };
@@ -336,8 +347,63 @@ const BAIXA_CACHE_VERSAO = 2;
 const baixaCache = new Map<string, { exp: number; baixas: any[] | null }>();
 const BAIXA_TTL_MS = 12 * 60 * 60 * 1000; // 12 horas: a baixa nao muda
 const BAIXA_TTL_MS_VAZIO = 60 * 1000; // erro/404 nao fica horas no cache
-const CONCORRENCIA_BAIXAS = 32; // chamadas em paralelo (o retry trata 429)
 const CHUNK_CACHE_BANCO = 200; // ids por consulta/upsert no Supabase
+
+// ------------------- Limite de requisicoes da API de baixas -------------------
+//
+// A Conta Azul aceita 10 requisicoes por SEGUNDO por conta conectada:
+//   "Limite de requisicoes excedido: ate 10 por segundo por conta conectada".
+//
+// Disparando 32 chamadas em paralelo, uma parte das baixas voltava 429 e o
+// titulo ficava SEM baixa: no relatorio saia a data de VENCIMENTO (errada) e
+// o banco vazio ("—"). Agora as chamadas sao ESPACADAS no tempo (fila por
+// tempo) e o intervalo se ajusta sozinho: um 429 dobra o intervalo, e varias
+// respostas seguidas de sucesso o reduzem de volta.
+const BAIXAS_POR_SEGUNDO = Number(process.env.JRM_BAIXAS_POR_SEGUNDO || "9"); // folga sobre o limite de 10
+const BAIXA_INTERVALO_MIN_MS = 1000 / Math.max(1, BAIXAS_POR_SEGUNDO);
+const BAIXA_INTERVALO_MAX_MS = 3000;
+let baixaIntervaloMs = BAIXA_INTERVALO_MIN_MS;
+let baixaProximoSlot = 0; // instante do proximo pedido liberado
+let baixaApos429 = false; // houve 429 recente: nao alivia o intervalo ainda
+
+/** Espera a vez deste pedido na fila (espaca as chamadas na taxa da API). */
+async function esperarVagaBaixa(): Promise<void> {
+  const agora = Date.now();
+  const slot = Math.max(agora, baixaProximoSlot);
+  baixaProximoSlot = slot + baixaIntervaloMs;
+  const espera = slot - agora;
+  if (espera > 0) await new Promise((r) => setTimeout(r, espera));
+}
+
+/** A API recusou por limite de taxa: aumenta o intervalo entre as chamadas. */
+function baixaRecebeu429(): void {
+  baixaApos429 = true;
+  baixaIntervaloMs = Math.min(baixaIntervaloMs * 2, BAIXA_INTERVALO_MAX_MS);
+}
+
+/** A chamada deu certo: depois de uma sequencia de acertos, alivia o intervalo. */
+function baixaDeuCerto(): void {
+  if (baixaApos429) {
+    // so alivia depois de uma sequencia de acertos (evita oscilar)
+    baixaApos429 = false;
+    baixaIntervaloMs = Math.min(baixaIntervaloMs, BAIXA_INTERVALO_MAX_MS);
+    return;
+  }
+  if (baixaIntervaloMs > BAIXA_INTERVALO_MIN_MS) {
+    baixaIntervaloMs = Math.max(BAIXA_INTERVALO_MIN_MS, baixaIntervaloMs * 0.92);
+  }
+}
+
+// Quantas chamadas de baixa ficam em voo ao mesmo tempo. Cada chamada leva
+// ~2 s na API, entao sao necessarios ~20 em voo para sustentar 9 req/s.
+const CONCORRENCIA_BAIXAS = 24;
+
+// Orcamento de tempo da busca de baixas. A funcao da Vercel tem 60 s de
+// limite (plano Hobby) e a API so aceita 10 req/s: em um mes grande (1.300
+// titulos) nao da para buscar tudo de uma vez. A busca para quando o orcamento
+// acaba e o que sobrou fica para a proxima carga — o cache no Supabase garante
+// que cada carga avanca (e o painel refaz a consulta sozinho).
+const PRAZO_BAIXAS_MS = Number(process.env.JRM_PRAZO_BAIXAS_MS || "42000");
 
 // Quando o cache do Supabase falha (tabela ainda nao criada, sem permissao,
 // Supabase fora do ar), nao insistir a cada requisição: espera 30 min.
@@ -1731,9 +1797,18 @@ export async function buscarPagas(
     () => buscarPagasInterna(empresa, dataInicio, dataFim),
     // So um resultado COMPLETO fica no cache. Resultado parcial seria servido
     // por 2 minutos e faria o card mostrar um total errado.
-    (x) => x.ok,
+    // Resultado com baixas faltando tambem nao fica no cache: a proxima carga
+    // precisa tentar de novo (as baixas ja buscadas vem do cache do Supabase).
+    (x) => x.ok && !x.sem_baixa && !x.baixas_pendentes,
   );
-  return { dados: r.dados, ok: r.ok, incompleto: r.incompleto };
+  return {
+    dados: r.dados,
+    ok: r.ok,
+    incompleto: r.incompleto,
+    sem_baixa: r.sem_baixa,
+    sem_baixa_definitivo: r.sem_baixa_definitivo,
+    baixas_pendentes: r.baixas_pendentes,
+  };
 }
 
 async function buscarPagasInterna(
@@ -1845,20 +1920,27 @@ async function buscarPagasInterna(
       }
       // Enriquece os titulos com a BAIXA da parcela: data real do pagamento e
       // valor (face ou liquido, conforme VALOR_PAGAS).
-      const enriquecidos = await enriquecerComBaixas(
-        empresa,
-        brutos,
-        tokenRef,
-        dataInicio,
-        dataFim,
-        VALOR_PAGAS,
-      );
+      const { dados: enriquecidos, semBaixa, semBaixaDefinitivo, pendentes } =
+        await enriquecerComBaixas(
+          empresa,
+          brutos,
+          tokenRef,
+          dataInicio,
+          dataFim,
+          VALOR_PAGAS,
+        );
       const total = enriquecidos.reduce((a, b) => a + b.valor, 0);
       log(
         "info",
         `buscarPagas ${empresa} [status=${status}]: ${brutos.length} titulos pagos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)})`,
       );
-      return { dados: enriquecidos, ok: true };
+      return {
+        dados: enriquecidos,
+        ok: true,
+        sem_baixa: semBaixa,
+        sem_baixa_definitivo: semBaixaDefinitivo,
+        baixas_pendentes: pendentes,
+      };
     }
     // Este status respondeu completo e sem titulos: tenta o proximo.
   }
@@ -2079,60 +2161,105 @@ function compactarBaixa(b: any): any {
 }
 
 /**
+ * Resultado da busca da baixa de uma parcela:
+ *   ok    = a API devolveu a(s) baixa(s) do titulo;
+ *   vazio = o titulo NAO tem baixa (404 / lista vazia) — definitivo: nao existe
+ *           data de pagamento nem banco para buscar de novo;
+ *   falha = erro transitorio (429/5xx/rede) — a proxima carga tenta de novo.
+ */
+type StatusBaixa = "ok" | "vazio" | "falha";
+
+/**
  * Busca (com cache em memoria) as BAIXAS CRUAS de uma parcela.
- * Devolve null quando a parcela ainda nao tem baixa (ou a chamada falhou).
  */
 async function buscarBaixaDaParcela(
   empresa: string,
   parcelaId: string,
   tokenRef: { token: string },
-): Promise<any[] | null> {
+): Promise<{ baixas: any[] | null; status: StatusBaixa }> {
   const chave = `${empresa}:${parcelaId}`;
   const agora = Date.now();
   const cached = baixaCache.get(chave);
-  if (cached && cached.exp > agora) return cached.baixas;
+  if (cached && cached.exp > agora) {
+    // No cache so entra "vazio" (1 min) e "ok" (12 h) — nunca "falha".
+    return { baixas: cached.baixas, status: cached.baixas ? "ok" : "vazio" };
+  }
 
   const url = `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/${parcelaId}/baixa`;
 
-  const guardar = (baixas: any[] | null) => {
-    baixaCache.set(chave, {
-      exp: Date.now() + (baixas && baixas.length ? BAIXA_TTL_MS : BAIXA_TTL_MS_VAZIO),
-      baixas,
-    });
-    return baixas;
+  // Guarda no cache de memoria. Um 404 (titulo sem baixa) vale por 1 min; uma
+  // falha de rede/429 NAO e cacheada (e transientia): a proxima carga tenta de
+  // novo, para o titulo nao ficar preso com a data de vencimento.
+  const guardar = (baixas: any[] | null, ttl: number) => {
+    baixaCache.set(chave, { exp: Date.now() + ttl, baixas });
+    return { baixas, status: "vazio" as StatusBaixa };
   };
 
-  let res: Response;
-  try {
-    res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
-  } catch {
-    return guardar(null);
-  }
+  let res: Response | null = null;
+  let ultimoStatus = 0;
+  let renoveuToken = false;
 
-  if (res.status === 401) {
-    const novo = await renovarToken(empresa);
-    if (novo) {
-      tokenRef.token = novo;
-      try {
-        res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${novo}` } }, 1);
-      } catch {
-        return guardar(null);
+  for (let tentativa = 0; tentativa < 4; tentativa++) {
+    // Fila por tempo: respeita o limite de 10 req/s da API.
+    await esperarVagaBaixa();
+    try {
+      res = await fetch(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+    } catch (e) {
+      log("warn", `baixa ${parcelaId}: erro de rede (${String(e).slice(0, 80)})`);
+      await sleep(500 * (tentativa + 1));
+      continue;
+    }
+    ultimoStatus = res.status;
+    if (res.status === 401 && !renoveuToken) {
+      renoveuToken = true;
+      const novo = await renovarToken(empresa);
+      if (novo) {
+        tokenRef.token = novo;
+        continue;
       }
     }
+    if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
+      baixaRecebeu429();
+      const espera = 800 * Math.pow(2, tentativa);
+      log("warn", `baixa ${parcelaId}: ${res.status} (limite da API, espera ${espera}ms)`);
+      await sleep(espera);
+      continue;
+    }
+    break;
   }
 
-  if (!res.ok) return guardar(null);
+  if (!res) {
+    // Erro de rede (nenhuma resposta): transitorio — a proxima carga tenta de
+    // novo, para o titulo nao ficar preso com a data de vencimento.
+    log("warn", `baixa ${parcelaId}: falhou sem resposta — sera refeita na proxima carga`);
+    return { baixas: null, status: "falha" };
+  }
+
+  if (!res.ok) {
+    // Falha transientia (429/5xx/401): nao cacheia, para a proxima carga
+    // tentar de novo e o titulo receber a data REAL e o banco.
+    if (ultimoStatus === 429 || ultimoStatus >= 500 || ultimoStatus === 401) {
+      log("warn", `baixa ${parcelaId}: falhou com ${ultimoStatus} — sera refeita na proxima carga`);
+      return { baixas: null, status: "falha" };
+    }
+    // 404 (ou outro erro definitivo): o titulo nao tem baixa.
+    return guardar(null, BAIXA_TTL_MS_VAZIO);
+  }
 
   let j: any;
   try {
     j = await res.json();
   } catch {
-    return guardar(null);
+    // Resposta ilegivel: trata como falha transitoria (a proxima carga tenta).
+    log("warn", `baixa ${parcelaId}: resposta ilegivel — sera refeita na proxima carga`);
+    return { baixas: null, status: "falha" };
   }
 
+  baixaDeuCerto();
   const lista: any[] = Array.isArray(j) ? j : j ? [j] : [];
-  if (!lista.length) return guardar(null);
-  return guardar(lista.map(compactarBaixa));
+  if (!lista.length) return guardar(null, BAIXA_TTL_MS_VAZIO);
+  baixaCache.set(chave, { exp: Date.now() + BAIXA_TTL_MS, baixas: lista.map(compactarBaixa) });
+  return { baixas: baixaCache.get(chave)!.baixas, status: "ok" };
 }
 
 // ------------------- Cache persistente das baixas (Supabase) -----------------
@@ -2227,10 +2354,15 @@ async function gravarBaixasNoSupabase(
  *   1. cache em memoria (12 h);
  *   2. cache persistente no Supabase (tabela public.baixas_cache) — sobrevive
  *      ao cold start e e compartilhado entre as instancias da Vercel;
- *   3. chamada a API da Conta Azul (32 em paralelo) — e o que popula o cache.
+ *   3. chamada a API da Conta Azul (limitada a 9 req/s, o limite da API) —
+ *      e o que popula o cache.
  *
  * O titulo continua na lista mesmo se a baixa nao responder (falha de rede /
- * rate limit): nesse caso mantem o valor e a data que vieram da listagem.
+ * rate limit): nesse caso mantem o valor e a data que vieram da listagem
+ * (ou seja, o VENCIMENTO) e o banco fica vazio. A quantidade desses titulos
+ * volta em `semBaixa` (falha transitoria — a proxima carga tenta de novo) e em
+ * `semBaixaDefinitivo` (o titulo nao tem baixa na API), para o painel avisar
+ * que a data pode ser a de vencimento.
  */
 export async function enriquecerComBaixas(
   empresa: string,
@@ -2239,13 +2371,21 @@ export async function enriquecerComBaixas(
   dataInicio: string,
   dataFim: string,
   modo: "face" | "liquido",
-): Promise<ItemLancamento[]> {
+): Promise<{
+  dados: ItemLancamento[];
+  semBaixa: number;
+  semBaixaDefinitivo: number;
+  pendentes: number;
+}> {
   const comId = itens.filter((i) => i.id);
-  if (!comId.length) return itens;
+  if (!comId.length) {
+    return { dados: itens, semBaixa: 0, semBaixaDefinitivo: 0, pendentes: 0 };
+  }
 
   const t0 = Date.now();
   let comBaixa = 0;
   let semBaixa = 0;
+  let semBaixaDefinitivo = 0;
 
   // Baixas ja conhecidas: cache de memoria + cache do Supabase.
   const baixasPorParcela = new Map<string, any[]>();
@@ -2279,22 +2419,33 @@ export async function enriquecerComBaixas(
 
   // Chamadas a API para o que nao estava em nenhum cache.
   const novasParaGravar: { parcela_id: string; baixa: any[] }[] = [];
+  // Status de cada parcela buscada: "ok" (veio a baixa), "vazio" (o titulo nao
+  // tem baixa — definitivo) ou "falha" (erro transitorio — tenta de novo).
+  const statusPorParcela = new Map<string, StatusBaixa>();
+  let pendentes = 0;
   if (aindaFaltam.length) {
+    const prazo = Date.now() + PRAZO_BAIXAS_MS;
     let idx = 0;
     async function worker() {
       while (true) {
+        // Orcamento de tempo: quando acaba, o que sobrou fica para a proxima
+        // carga (o cache no Supabase ja guardou o que foi buscado).
+        if (Date.now() >= prazo) return;
         const meu = idx++;
         if (meu >= aindaFaltam.length) return;
         const parcelaId = aindaFaltam[meu];
-        const baixas = await buscarBaixaDaParcela(empresa, parcelaId, tokenRef);
-        if (!baixas || !baixas.length) continue;
-        baixasPorParcela.set(parcelaId, baixas);
-        novasParaGravar.push({ parcela_id: parcelaId, baixa: baixas });
+        const r = await buscarBaixaDaParcela(empresa, parcelaId, tokenRef);
+        statusPorParcela.set(parcelaId, r.status);
+        if (!r.baixas || !r.baixas.length) continue;
+        baixasPorParcela.set(parcelaId, r.baixas);
+        novasParaGravar.push({ parcela_id: parcelaId, baixa: r.baixas });
       }
     }
     await Promise.all(
       Array.from({ length: Math.min(CONCORRENCIA_BAIXAS, aindaFaltam.length) }, () => worker()),
     );
+    // Titulos que nao chegaram a ser buscados (orcamento de tempo esgotado).
+    pendentes = aindaFaltam.filter((id) => !statusPorParcela.has(id)).length;
     // Grava no cache persistente para as proximas cargas (em lote).
     await gravarBaixasNoSupabase(empresa, novasParaGravar);
   }
@@ -2304,13 +2455,17 @@ export async function enriquecerComBaixas(
     const parcelaId = String(item.id);
     const baixas = baixasPorParcela.get(parcelaId);
     if (!baixas) {
-      semBaixa++;
+      // "falha" = erro transitorio (a proxima carga tenta de novo);
+      // "vazio" = o titulo nao tem baixa mesmo (nao adianta repetir);
+      // sem status = nem chegou a ser buscado (orcamento de tempo).
+      if (statusPorParcela.get(parcelaId) === "falha") semBaixa++;
+      else if (statusPorParcela.get(parcelaId) === "vazio") semBaixaDefinitivo++;
       continue;
     }
     // A data exibida depende do periodo (a ultima baixa dentro dele).
     const baixa = extrairDadosBaixa(baixas, dataInicio, dataFim);
     if (!baixa) {
-      semBaixa++;
+      semBaixaDefinitivo++;
       continue;
     }
     comBaixa++;
@@ -2341,11 +2496,11 @@ export async function enriquecerComBaixas(
 
   log(
     "info",
-    `enriquecerComBaixas ${empresa}: ${comBaixa}/${comId.length} titulos com baixa (${semBaixa} sem) | ` +
+    `enriquecerComBaixas ${empresa}: ${comBaixa}/${comId.length} titulos com baixa (${semBaixa} sem, ${semBaixaDefinitivo} sem baixa na API, ${pendentes} pendentes) | ` +
       `cache memoria ${comId.length - idsSemCache.length}, cache banco ${doBanco.size}, API ${novasParaGravar.length} | ` +
       `${((Date.now() - t0) / 1000).toFixed(1)}s`,
   );
-  return itens;
+  return { dados: itens, semBaixa, semBaixaDefinitivo, pendentes };
 }
 
 // ------------------- Contas efetivamente recebidas (baixadas) -------------------
@@ -2477,9 +2632,16 @@ export async function buscarRecebidas(
     LIST_TTL_MS,
     () => buscarRecebidasInterna(empresa, dataInicio, dataFim),
     // So um resultado COMPLETO fica no cache (ver buscarPagas).
-    (x) => x.ok,
+    (x) => x.ok && !x.sem_baixa && !x.baixas_pendentes,
   );
-  return { dados: r.dados, ok: r.ok, incompleto: r.incompleto };
+  return {
+    dados: r.dados,
+    ok: r.ok,
+    incompleto: r.incompleto,
+    sem_baixa: r.sem_baixa,
+    sem_baixa_definitivo: r.sem_baixa_definitivo,
+    baixas_pendentes: r.baixas_pendentes,
+  };
 }
 
 async function buscarRecebidasInterna(
@@ -2580,20 +2742,27 @@ async function buscarRecebidasInterna(
         }
         // Enriquece os titulos com a BAIXA da parcela: data real do recebimento
         // e valor (face ou liquido, conforme VALOR_RECEBIDAS).
-        const enriquecidos = await enriquecerComBaixas(
-          empresa,
-          brutos,
-          tokenRef,
-          dataInicio,
-          dataFim,
-          VALOR_RECEBIDAS,
-        );
+        const { dados: enriquecidos, semBaixa, semBaixaDefinitivo, pendentes } =
+          await enriquecerComBaixas(
+            empresa,
+            brutos,
+            tokenRef,
+            dataInicio,
+            dataFim,
+            VALOR_RECEBIDAS,
+          );
         const total = enriquecidos.reduce((a, b) => a + b.valor, 0);
         log(
           "info",
           `buscarRecebidas ${empresa} [${endpoint} status=${status}]: ${brutos.length} titulos recebidos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)})`,
         );
-        return { dados: enriquecidos, ok: true };
+        return {
+          dados: enriquecidos,
+          ok: true,
+          sem_baixa: semBaixa,
+          sem_baixa_definitivo: semBaixaDefinitivo,
+          baixas_pendentes: pendentes,
+        };
       }
       // Esta combinacao respondeu completa e sem titulos: tenta a proxima.
     }

@@ -396,6 +396,29 @@ function Dashboard() {
     return () => clearTimeout(t);
   }, [temDadosIncompletos, dataUpdatedAt, refetch]);
 
+  // --- Recarregamento automatico das BAIXAS pendentes ------------------------
+  // A baixa da parcela traz a data REAL do pagamento e o banco do titulo. A
+  // API aceita 10 requisicoes por segundo e a funcao da Vercel tem 60 s de
+  // limite: em um mes grande a busca leva mais de uma carga. Como o cache no
+  // Supabase guarda o que ja foi buscado, cada rodada avanca — aqui a tela
+  // repete a consulta (com espera crescente) ate os titulos ficarem completos.
+  const tentativasBaixas = useRef(0);
+  const temBaixasPendentes = (data?.baixas_pendentes?.length ?? 0) > 0;
+
+  useEffect(() => {
+    if (!temBaixasPendentes) {
+      tentativasBaixas.current = 0;
+      return;
+    }
+    if (tentativasBaixas.current >= 6) return;
+    tentativasBaixas.current += 1;
+    const espera = 4000 * tentativasBaixas.current;
+    const t = setTimeout(() => {
+      refetch();
+    }, espera);
+    return () => clearTimeout(t);
+  }, [temBaixasPendentes, dataUpdatedAt, refetch]);
+
   // Ao trocar o mes visado, preenche a URL ja cadastrada (se houver) e
   // descarta qualquer registro pendente de confirmacao.
   useEffect(() => {
