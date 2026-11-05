@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `230a293` | feat: mostra o banco/conta financeira do titulo no PDF e no XLSX (Recebidos e Pagos) | 05/11/2026 |
 | `0904139` | feat: cache persistente das baixas no Supabase (tabela baixas_cache) + TTL de 12h e 32 chamadas em paralelo | 05/11/2026 |
 | `a1c0d56` | feat: deixa as listas de titulos do painel legiveis (descricao ocupa a largura da coluna em 2 linhas) | 05/11/2026 |
 | `7825474` | feat: aumenta as fontes do PDF impresso (tabelas 8,5 pt) mantendo o rodape em 8 pt | 04/11/2026 |
@@ -1032,6 +1033,101 @@ git push origin main
 
 A tabela `public.baixas_cache` pode ficar no banco (sem uso, ocupa pouco
 espaco) ou ser removida com `DROP TABLE public.baixas_cache;`.
+
+## 3.17 Banco/conta financeira no PDF e no XLSX (05/11/2026)
+
+**Commit:** `230a293` — `feat: mostra o banco/conta financeira do titulo no PDF e no XLSX (Recebidos e Pagos)`
+
+### O pedido
+
+O banco (conta financeira) de cada titulo tinha que sair no PDF, tanto em
+**Recebidos** quanto em **Pagos**.
+
+### De onde vem o banco
+
+A listagem da Conta Azul (contas a pagar/receber) **nao traz** o banco do
+titulo: o campo `conta_id` vem vazio nessa listagem. Quem traz e a **baixa da
+parcela** — o mesmo objeto que ja era consultado para trazer a data real do
+pagamento:
+
+```json
+{
+  "data_pagamento": "2026-10-30",
+  "valor_composicao": { "valor_bruto": 1127.69, "desconto": 0.03, "valor_liquido": 1127.66 },
+  "conta_financeira": { "id": "01a0f79f-...", "banco": "SICOOB", "nome": "Sicoob 3109" }
+}
+```
+
+Como as baixas ja eram buscadas para todos os titulos de Pagos/Recebidos, o
+banco veio **de graca** (nenhuma chamada extra a API).
+
+**Prioridade:** banco da baixa (a conta realmente usada no pagamento) > banco
+do `conta_id` da listagem (via mapa de contas) > vazio (`—` no relatorio).
+O `aplicarBancoAosTitulos()` so preenche o banco quando ele ainda esta vazio,
+e o `item.conta_id` **nao** foi alterado — assim o filtro de bancos do painel
+continua exatamente igual.
+
+### O que mudou no relatorio
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/contaazul.server.ts` | `ItemLancamento.banco`; `compactarBaixa()` guarda `conta_financeira` (id/nome/banco); `extrairDadosBaixa()` extrai o banco; `enriquecerComBaixas()` aplica o banco no titulo; `aplicarBancoAosTitulos()` (fallback pelo mapa de contas) |
+| `src/lib/contaazul.functions.ts` | `TituloDetalhe.banco`; o banco entra no `getDashboard` e no `getEmpresaBreakdown` (base do PDF/XLSX) |
+| `src/lib/exportar.ts` | coluna **Banco** no PDF (entre Terceiro e Metodo) e no XLSX (entre Terceiro e Categoria) |
+
+### Cache das baixas: versao 2
+
+O formato guardado no cache (Supabase e memoria) mudou: agora ele tambem
+guarda a `conta_financeira`. O `BAIXA_CACHE_VERSAO` foi para **2**, e as
+linhas antigas do banco (sem o campo `v`) sao **ignoradas** — as baixas sao
+buscadas de novo na API e regravidas no formato novo. Isso vale para a 1a
+carga depois do deploy (a mais lenta, que repovoa o cache).
+
+### Larguras das colunas no PDF
+
+A coluna nova eats some espaco da descricao, entao as larguras foram
+reajustadas (a soma continua = largura util da pagina, 277 mm):
+
+| Coluna | Com Metodo | Sem Metodo |
+|--------|-----------|------------|
+| Data | 18 mm | 18 mm |
+| Descricao | 95 mm | 111 mm |
+| Fornecedor/Cliente | 80 mm | 88 mm |
+| **Banco** | **28 mm** | **28 mm** |
+| Metodo | 24 mm | — |
+| Valor (R$) | 32 mm | 32 mm |
+
+O nome do fornecedor/cliente continua cabendo em 1 linha (80/88 mm) e o banco
+(`Sicoob 3109`, `Bradesco`, `Itaú`) cabe em 28 mm.
+
+### Impacto nas folhas (teste com 120 titulos de descricao longa)
+
+| Layout | Com Metodo | Sem Metodo |
+|--------|-----------|------------|
+| Antes (sem a coluna Banco) | 6 | 5 |
+| Depois (com a coluna Banco) | 7 | 6 |
+
+A coluna nova custa **1 folha** nesse teste de stress (120 titulos com
+descricoes longas em uma unica tabela). Nos relatorios reais (dezenas de
+titulos) o efeito e menor. Nao ha como mostrar uma coluna a mais sem custar
+espaco: as larguras foram otimizadas (testadas 5 combinacoes — o resultado de
+folhas foi o mesmo em todas).
+
+### Testes
+
+- `test-baixa.mts`: **19 verificacoes OK**, incluindo "banco vem da baixa"
+  (`Sicoob 3109`) e "titulo sem banco fica vazio".
+- PDF gerado com a funcao de producao e lido com `pdfjs`: a coluna Banco
+  aparece com os valores (`Sicoob 3109`, `Itaú`, `Bradesco`, `—`).
+- XLSX gerado com a funcao de producao e relido: cabecalho
+  `Data | Descricao | Fornecedor | Banco | Categoria | Empresa | Metodo | Valor (R$)`.
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit 230a293
+git push origin main
+```
 
 ## 4. Commit de Reversão Padrao
 
