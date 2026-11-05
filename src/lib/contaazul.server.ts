@@ -298,9 +298,16 @@ const SALDO_TTL_MS = 2 * 60 * 1000; // 2 minutos de cache para saldos
 // A baixa traz `data_pagamento` (data real do caixa) e o `valor_composicao`
 // (valor_bruto / desconto / juros / multa / valor_liquido).
 //
-// A baixa e imutavel depois de lancada, entao o resultado fica em cache por 30
-// minutos: em um mes com centenas de titulos isso evita repetir centenas de
+// A baixa e imutavel depois de lancada, entao o resultado fica em cache por 12
+// horas: em um mes com centenas de titulos isso evita repetir centenas de
 // chamadas a cada recarga do dashboard.
+//
+// Duas camadas de cache:
+//   1. memoria (baixaCache): rapida, mas vive so na instancia da Vercel e
+//      some a cada cold start;
+//   2. Supabase (tabela public.baixas_cache): sobrevive ao cold start e e
+//      compartilhado entre as instancias — e o que transforma a 2a carga do
+//      dia de ~2 minutos em poucos segundos.
 
 type DadosBaixa = {
   data_pagamento: string | null;
@@ -312,9 +319,18 @@ type DadosBaixa = {
   valor_pago: number;
 };
 
-const baixaCache = new Map<string, { exp: number; dados: DadosBaixa | null }>();
-const BAIXA_TTL_MS = 30 * 60 * 1000; // 30 minutos: a baixa nao muda
-const BAIXA_TTL_MS_VAZIO = 60 * 1000; // erro/404 nao fica 30 min no cache
+// Cache em memoria: guarda as BAIXAS CRUAS (array), e nao o resultado ja
+// filtrado pelo periodo — assim o mesmo cache serve para qualquer intervalo
+// (um titulo pode ter baixas em meses diferentes).
+const baixaCache = new Map<string, { exp: number; baixas: any[] | null }>();
+const BAIXA_TTL_MS = 12 * 60 * 60 * 1000; // 12 horas: a baixa nao muda
+const BAIXA_TTL_MS_VAZIO = 60 * 1000; // erro/404 nao fica horas no cache
+const CONCORRENCIA_BAIXAS = 32; // chamadas em paralelo (o retry trata 429)
+const CHUNK_CACHE_BANCO = 200; // ids por consulta/upsert no Supabase
+
+// Quando o cache do Supabase falha (tabela ainda nao criada, sem permissao,
+// Supabase fora do ar), nao insistir a cada requisição: espera 30 min.
+let cacheBancoIndisponivelAte = 0;
 
 // Modo de exibicao do valor do titulo:
 //   "face"   = valor cheio do titulo (valor_bruto da baixa)
@@ -1991,28 +2007,47 @@ export function extrairDadosBaixa(
 }
 
 /**
- * Busca (com cache) a baixa de uma parcela.
+ * Mantem no cache apenas os campos que interessam da baixa (data do
+ * pagamento e composicao do valor), para o JSON guardado no banco ficar
+ * pequeno.
+ */
+function compactarBaixa(b: any): any {
+  const vc = b?.valor_composicao || b?.composicao_valor || b?.detalhe_valor || {};
+  return {
+    data_pagamento: typeof b?.data_pagamento === "string" ? b.data_pagamento : null,
+    valor_pago: Number(b?.valor_pago || 0),
+    valor_composicao: {
+      valor_bruto: Number(vc.valor_bruto || b?.valor_bruto || 0),
+      valor_liquido: Number(vc.valor_liquido || 0),
+      desconto: Number(vc.desconto || 0),
+      juros: Number(vc.juros || 0),
+      multa: Number(vc.multa || 0),
+    },
+  };
+}
+
+/**
+ * Busca (com cache em memoria) as BAIXAS CRUAS de uma parcela.
+ * Devolve null quando a parcela ainda nao tem baixa (ou a chamada falhou).
  */
 async function buscarBaixaDaParcela(
   empresa: string,
   parcelaId: string,
   tokenRef: { token: string },
-  dataInicio: string,
-  dataFim: string,
-): Promise<DadosBaixa | null> {
+): Promise<any[] | null> {
   const chave = `${empresa}:${parcelaId}`;
   const agora = Date.now();
   const cached = baixaCache.get(chave);
-  if (cached && cached.exp > agora) return cached.dados;
+  if (cached && cached.exp > agora) return cached.baixas;
 
   const url = `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/${parcelaId}/baixa`;
 
-  const guardar = (dados: DadosBaixa | null) => {
+  const guardar = (baixas: any[] | null) => {
     baixaCache.set(chave, {
-      exp: Date.now() + (dados ? BAIXA_TTL_MS : BAIXA_TTL_MS_VAZIO),
-      dados,
+      exp: Date.now() + (baixas && baixas.length ? BAIXA_TTL_MS : BAIXA_TTL_MS_VAZIO),
+      baixas,
     });
-    return dados;
+    return baixas;
   };
 
   let res: Response;
@@ -2044,12 +2079,99 @@ async function buscarBaixaDaParcela(
   }
 
   const lista: any[] = Array.isArray(j) ? j : j ? [j] : [];
-  return guardar(extrairDadosBaixa(lista, dataInicio, dataFim));
+  if (!lista.length) return guardar(null);
+  return guardar(lista.map(compactarBaixa));
+}
+
+// ------------------- Cache persistente das baixas (Supabase) -----------------
+// A baixa e imutavel: guarda-se o array cru na tabela public.baixas_cache para
+// que a proxima carga (em qualquer instancia da Vercel) leia do banco em vez
+// de refazer ~1.300 chamadas a API da Conta Azul.
+
+/**
+ * Le as baixas ja cacheadas no Supabase para as parcelas informadas.
+ */
+async function lerBaixasDoSupabase(
+  empresa: string,
+  parcelaIds: string[],
+): Promise<Map<string, any[]>> {
+  const out = new Map<string, any[]>();
+  if (!parcelaIds.length) return out;
+  if (Date.now() < cacheBancoIndisponivelAte) return out;
+
+  try {
+    const sb = getSupabase();
+    for (let i = 0; i < parcelaIds.length; i += CHUNK_CACHE_BANCO) {
+      // A coluna e UUID: ids fora do padrao sao descartados (evita erro de cast).
+      const ids = parcelaIds
+        .slice(i, i + CHUNK_CACHE_BANCO)
+        .filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
+      if (!ids.length) continue;
+      const { data, error } = await sb
+        .from("baixas_cache")
+        .select("parcela_id, baixa")
+        .eq("empresa", empresa)
+        .in("parcela_id", ids);
+      if (error) {
+        cacheBancoIndisponivelAte = Date.now() + 30 * 60 * 1000;
+        log("warn", `cache de baixas (Supabase) indisponivel: ${error.message}`);
+        return out;
+      }
+      for (const row of data || []) {
+        const b = row?.baixa;
+        if (Array.isArray(b) && b.length) out.set(String(row.parcela_id), b);
+      }
+    }
+  } catch (e) {
+    cacheBancoIndisponivelAte = Date.now() + 30 * 60 * 1000;
+    log("warn", `cache de baixas (Supabase) falhou: ${(e as Error)?.message}`);
+  }
+  return out;
 }
 
 /**
- * Enriquece a lista de titulos (pagos ou recebidos) com a baixa da parcela:
+ * Grava (upsert em lote) as baixas novas no cache do Supabase.
+ */
+async function gravarBaixasNoSupabase(
+  empresa: string,
+  itens: { parcela_id: string; baixa: any[] }[],
+): Promise<void> {
+  if (!itens.length) return;
+  if (Date.now() < cacheBancoIndisponivelAte) return;
+
+  try {
+    const sb = getSupabase();
+    for (let i = 0; i < itens.length; i += CHUNK_CACHE_BANCO) {
+      const lote = itens.slice(i, i + CHUNK_CACHE_BANCO).map((x) => ({
+        empresa,
+        parcela_id: x.parcela_id,
+        baixa: x.baixa,
+        atualizado_em: new Date().toISOString(),
+      }));
+      const { error } = await sb
+        .from("baixas_cache")
+        .upsert(lote, { onConflict: "empresa,parcela_id" });
+      if (error) {
+        cacheBancoIndisponivelAte = Date.now() + 30 * 60 * 1000;
+        log("warn", `cache de baixas (Supabase) falhou ao gravar: ${error.message}`);
+        return;
+      }
+    }
+  } catch (e) {
+    cacheBancoIndisponivelAte = Date.now() + 30 * 60 * 1000;
+    log("warn", `cache de baixas (Supabase) falhou ao gravar: ${(e as Error)?.message}`);
+  }
+}
+
+/**
+ * Enriquece a lista de titulos (pagos ou recebidos) com a BAIXA da parcela:
  * data REAL do pagamento e valor (face ou liquido, conforme o modo).
+ *
+ * Tres camadas, do mais rapido para o mais lento:
+ *   1. cache em memoria (12 h);
+ *   2. cache persistente no Supabase (tabela public.baixas_cache) — sobrevive
+ *      ao cold start e e compartilhado entre as instancias da Vercel;
+ *   3. chamada a API da Conta Azul (32 em paralelo) — e o que popula o cache.
  *
  * O titulo continua na lista mesmo se a baixa nao responder (falha de rede /
  * rate limit): nesse caso mantem o valor e a data que vieram da listagem.
@@ -2065,63 +2187,104 @@ export async function enriquecerComBaixas(
   const comId = itens.filter((i) => i.id);
   if (!comId.length) return itens;
 
-  const CONCORRENCIA_BAIXAS = 16;
   const t0 = Date.now();
   let comBaixa = 0;
   let semBaixa = 0;
 
-  let idx = 0;
-  async function worker() {
-    while (true) {
-      const meu = idx++;
-      if (meu >= comId.length) return;
-      const item = comId[meu];
-
-      const baixa = await buscarBaixaDaParcela(
-        empresa,
-        String(item.id),
-        tokenRef,
-        dataInicio,
-        dataFim,
-      );
-      if (!baixa) {
-        semBaixa++;
-        continue;
-      }
-      comBaixa++;
-
-      // Data: a data REAL do pagamento/recebimento (a listagem so traz o
-      // vencimento do titulo).
-      if (baixa.data_pagamento) item.data = baixa.data_pagamento;
-
-      // Composicao real do pagamento.
-      item.desconto = baixa.desconto > 0 ? baixa.desconto : undefined;
-      item.juros = baixa.juros > 0 ? baixa.juros : undefined;
-      item.multa = baixa.multa > 0 ? baixa.multa : undefined;
-      if (baixa.valor_pago > 0) item.valor_pago = baixa.valor_pago;
-
-      // Valor do titulo.
-      const face = baixa.valor_bruto > 0 ? baixa.valor_bruto : (item._pago ?? 0);
-      const liquido =
-        baixa.valor_liquido > 0
-          ? baixa.valor_liquido
-          : face - baixa.desconto + baixa.juros + baixa.multa;
-      if (face > 0 || liquido > 0) {
-        item.valor = modo === "face" ? (face > 0 ? face : liquido) : liquido;
-      }
+  // Baixas ja conhecidas: cache de memoria + cache do Supabase.
+  const baixasPorParcela = new Map<string, any[]>();
+  const idsSemCache: string[] = [];
+  for (const item of comId) {
+    const parcelaId = String(item.id);
+    const chave = `${empresa}:${parcelaId}`;
+    const cached = baixaCache.get(chave);
+    if (cached && cached.exp > Date.now() && cached.baixas && cached.baixas.length) {
+      baixasPorParcela.set(parcelaId, cached.baixas);
+    } else {
+      idsSemCache.push(parcelaId);
     }
   }
 
-  await Promise.all(
-    Array.from({ length: Math.min(CONCORRENCIA_BAIXAS, comId.length) }, () => worker()),
-  );
+  const doBanco = await lerBaixasDoSupabase(empresa, idsSemCache);
+  const aindaFaltam: string[] = [];
+  for (const parcelaId of idsSemCache) {
+    const b = doBanco.get(parcelaId);
+    if (b && b.length) {
+      baixasPorParcela.set(parcelaId, b);
+      // Tambem guarda em memoria (12 h) para as proximas consultas.
+      baixaCache.set(`${empresa}:${parcelaId}`, {
+        exp: Date.now() + BAIXA_TTL_MS,
+        baixas: b,
+      });
+    } else {
+      aindaFaltam.push(parcelaId);
+    }
+  }
+
+  // Chamadas a API para o que nao estava em nenhum cache.
+  const novasParaGravar: { parcela_id: string; baixa: any[] }[] = [];
+  if (aindaFaltam.length) {
+    let idx = 0;
+    async function worker() {
+      while (true) {
+        const meu = idx++;
+        if (meu >= aindaFaltam.length) return;
+        const parcelaId = aindaFaltam[meu];
+        const baixas = await buscarBaixaDaParcela(empresa, parcelaId, tokenRef);
+        if (!baixas || !baixas.length) continue;
+        baixasPorParcela.set(parcelaId, baixas);
+        novasParaGravar.push({ parcela_id: parcelaId, baixa: baixas });
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(CONCORRENCIA_BAIXAS, aindaFaltam.length) }, () => worker()),
+    );
+    // Grava no cache persistente para as proximas cargas (em lote).
+    await gravarBaixasNoSupabase(empresa, novasParaGravar);
+  }
+
+  // Aplica as baixas nos titulos.
+  for (const item of comId) {
+    const parcelaId = String(item.id);
+    const baixas = baixasPorParcela.get(parcelaId);
+    if (!baixas) {
+      semBaixa++;
+      continue;
+    }
+    // A data exibida depende do periodo (a ultima baixa dentro dele).
+    const baixa = extrairDadosBaixa(baixas, dataInicio, dataFim);
+    if (!baixa) {
+      semBaixa++;
+      continue;
+    }
+    comBaixa++;
+
+    // Data: a data REAL do pagamento/recebimento (a listagem so traz o
+    // vencimento do titulo).
+    if (baixa.data_pagamento) item.data = baixa.data_pagamento;
+
+    // Composicao real do pagamento.
+    item.desconto = baixa.desconto > 0 ? baixa.desconto : undefined;
+    item.juros = baixa.juros > 0 ? baixa.juros : undefined;
+    item.multa = baixa.multa > 0 ? baixa.multa : undefined;
+    if (baixa.valor_pago > 0) item.valor_pago = baixa.valor_pago;
+
+    // Valor do titulo.
+    const face = baixa.valor_bruto > 0 ? baixa.valor_bruto : (item._pago ?? 0);
+    const liquido =
+      baixa.valor_liquido > 0
+        ? baixa.valor_liquido
+        : face - baixa.desconto + baixa.juros + baixa.multa;
+    if (face > 0 || liquido > 0) {
+      item.valor = modo === "face" ? (face > 0 ? face : liquido) : liquido;
+    }
+  }
 
   log(
     "info",
-    `enriquecerComBaixas ${empresa}: ${comBaixa}/${comId.length} titulos com baixa (${semBaixa} sem) em ${(
-      (Date.now() - t0) /
-      1000
-    ).toFixed(1)}s`,
+    `enriquecerComBaixas ${empresa}: ${comBaixa}/${comId.length} titulos com baixa (${semBaixa} sem) | ` +
+      `cache memoria ${comId.length - idsSemCache.length}, cache banco ${doBanco.size}, API ${novasParaGravar.length} | ` +
+      `${((Date.now() - t0) / 1000).toFixed(1)}s`,
   );
   return itens;
 }
