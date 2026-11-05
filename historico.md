@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `0904139` | feat: cache persistente das baixas no Supabase (tabela baixas_cache) + TTL de 12h e 32 chamadas em paralelo | 05/11/2026 |
 | `a1c0d56` | feat: deixa as listas de titulos do painel legiveis (descricao ocupa a largura da coluna em 2 linhas) | 05/11/2026 |
 | `7825474` | feat: aumenta as fontes do PDF impresso (tabelas 8,5 pt) mantendo o rodape em 8 pt | 04/11/2026 |
 | `9defc7a` | fix: listas de Pagos/Recebidos usam a data real do pagamento (baixa da parcela), recupera titulos recebidos descartados pelo vencimento e deixa o PDF mais compacto | 04/11/2026 |
@@ -973,6 +974,64 @@ era o titulo.
 git revert --no-edit a1c0d56
 git push origin main
 ```
+
+## 3.16 Cache das baixas + velocidade de carga (05/11/2026)
+
+**Commit:** `0904139` — `feat: cache persistente das baixas no Supabase (tabela baixas_cache) + TTL de 12h e 32 chamadas em paralelo`
+
+### O problema
+
+Para exibir a **data real do pagamento**, cada titulo precisa da baixa da
+parcela (1 chamada a API). Em um mes grande isso sao muitas chamadas:
+
+| Periodo | Chamadas de baixa | Tempo (antes) |
+|---------|-------------------|---------------|
+| Todas - nov/2026 | 148 | 15 s |
+| LGP - jul/2026 | 978 | 128 s |
+| Juvenal - out/2026 | 1.292 | 148 s |
+
+Cada chamada leva ~2,1 s (16 em paralelo). O cache era **so em memoria** (por
+instancia da Vercel): a cada cold start tudo era refeito, e as instancias nao
+compartilhavam o resultado.
+
+### O que mudou
+
+1. **Cache persistente no Supabase** — nova tabela `public.baixas_cache`
+   (migration `supabase/migrations/20261105000001_baixas_cache.sql`, ja
+   aplicada no banco):
+   - `empresa` + `parcela_id` (chave primaria), `baixa` (JSONB com as
+     baixas CRUAS), `atualizado_em`;
+   - guarda o array **cru** (e nao o resultado filtrado pelo periodo), para o
+     mesmo cache servir a qualquer intervalo consultado;
+   - policy "Allow all" igual a da tabela `tokens`.
+2. **Cache em memoria de 30 min para 12 h** — a baixa e imutavel depois de
+   lancada. O cache de "nao encontrado" continua em 1 min.
+3. **Concorrencia de 16 para 32** — o retry com backoff ja existente trata 429.
+4. **Três camadas** no `enriquecerComBaixas()`: memoria (12 h) -> Supabase ->
+   API. As baixas novas vao para o banco em lote (upsert de 200 em 200).
+5. **Robustez**: se a tabela nao existir, o Supabase estiver fora do ar ou o
+   app nao tiver credencial, o enrichment volta a funcionar so com a API (o
+   erro e registrado e as tentativas param por 30 min).
+
+### Resultado esperado
+
+| Periodo | 1a carga (cache vazio) | Cargas seguintes |
+|---------|-----------------------|------------------|
+| LGP - jul/2026 | ~128 s (popula o cache) | ~2-5 s |
+| Juvenal - out/2026 | ~148 s (popula o cache) | ~2-5 s |
+
+O log `enriquecerComBaixas <empresa>: ... | cache memoria X, cache banco Y,
+API Z | Xs` mostra de onde veio cada baixa.
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit 0904139
+git push origin main
+```
+
+A tabela `public.baixas_cache` pode ficar no banco (sem uso, ocupa pouco
+espaco) ou ser removida com `DROP TABLE public.baixas_cache;`.
 
 ## 4. Commit de Reversão Padrao
 
