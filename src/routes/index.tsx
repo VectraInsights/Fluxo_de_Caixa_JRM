@@ -597,7 +597,12 @@ function Dashboard() {
       else await exportarXlsx(relatorio);
     } catch (e) {
       console.error("Falha ao exportar listas:", e);
-      setErroExportacao("Não foi possível gerar o arquivo. Tente novamente.");
+      // A libs do PDF/XLSX sao carregadas sob demanda: depois de um deploy, uma
+      // aba aberta ANTES do deploy tenta baixar um arquivo que nao existe mais
+      // (404) e a exportacao falha. Nesse caso, atualizar a pagina resolve.
+      setErroExportacao(
+        "Não foi possível gerar o arquivo. Atualize a página (Ctrl+F5) e tente novamente.",
+      );
     } finally {
       setExportando(null);
     }
