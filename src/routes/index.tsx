@@ -1278,7 +1278,9 @@ function Dashboard() {
                 <SkeletonCard />
               </div>
             ) : consolidado ? (
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+              // 4 colunas so em telas muito largas (2xl): em telas medias as
+              // listas ficam com o dobro de largura e a descricao cabe.
+              <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-4 gap-6">
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-success">
@@ -1516,7 +1518,7 @@ function TitulosLista({
     return <div className="text-xs text-muted-foreground py-2">Sem títulos no período</div>;
   }
   return (
-    <div className="max-h-[280px] overflow-y-auto space-y-1 pr-1">
+    <div className="max-h-[320px] overflow-y-auto space-y-1.5 pr-1">
       {itens.map((t, idx) => {
         const boleto = (t.metodo || "").toUpperCase().includes("BOLETO");
         const [, mes, dia] = t.data.split("-");
@@ -1525,37 +1527,44 @@ function TitulosLista({
         return (
           <div
             key={`${t.empresa ?? ""}-${t.data}-${idx}`}
-            className="flex items-center gap-2 rounded-lg border border-border/40 bg-background/40 px-3 py-2"
+            className="rounded-lg border border-border/40 bg-background/40 px-3 py-2"
           >
-            <span className="text-[11px] text-muted-foreground tabular-nums shrink-0 w-10">
-              {dia}/{mes}
-            </span>
-            <div className="flex-1 min-w-0">
-              <div className="text-xs truncate" title={principal || undefined}>
-                {principal || "—"}
-              </div>
-              {secundario && (
-                <div className="text-[10px] text-muted-foreground truncate">{secundario}</div>
+            {/* Linha 1: data + empresa + valor (tudo compacto) */}
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
+                {dia}/{mes}
+              </span>
+              {t.empresa && (
+                <span
+                  className="rounded-full border border-border/60 bg-background/60 px-1.5 py-0.5 text-[9px] font-semibold text-muted-foreground shrink max-w-[52%] truncate"
+                  title={t.empresa}
+                >
+                  {t.empresa}
+                </span>
               )}
-            </div>
-            {t.empresa && (
-              <span
-                className="rounded-full border border-border/60 bg-background/60 px-1.5 py-0.5 text-[9px] font-semibold text-muted-foreground shrink-0 max-w-[110px] truncate"
-                title={t.empresa}
-              >
-                {t.empresa}
-              </span>
-            )}
-            {boleto && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-brand-2/30 bg-brand-2/10 px-1.5 py-0.5 text-[9px] font-semibold text-brand-2 shrink-0">
-                <Barcode className="h-2.5 w-2.5" /> Boleto
-              </span>
-            )}
-            <div className="flex flex-col items-end gap-0.5 shrink-0">
-              <span className={`text-xs font-semibold tabular-nums ${accent}`}>
+              {boleto && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-brand-2/30 bg-brand-2/10 px-1.5 py-0.5 text-[9px] font-semibold text-brand-2 shrink-0">
+                  <Barcode className="h-2.5 w-2.5" /> Boleto
+                </span>
+              )}
+              <span className={`ml-auto text-xs font-semibold tabular-nums shrink-0 ${accent}`}>
                 {fmt(t.valor)}
               </span>
             </div>
+            {/* Descricao na linha de baixo, com a LARGURA INTEIRA da coluna
+                (antes ela dividia a linha com data, empresa e valor e ficava
+                espremida, mostrando so "1/3..." ou "Rosangela Transpor..."). */}
+            <div
+              className="mt-1 text-[13px] leading-snug line-clamp-2 break-words"
+              title={principal || undefined}
+            >
+              {principal || "—"}
+            </div>
+            {secundario && (
+              <div className="mt-0.5 text-[10px] text-muted-foreground truncate" title={secundario}>
+                {secundario}
+              </div>
+            )}
           </div>
         );
       })}
