@@ -64,6 +64,7 @@ O **Fluxo de Caixa JRM Dashboard** é um sistema de gestao financeira integrado 
 
 | Commit | Descricao | Data |
 |--------|-----------|------|
+| `fcd60ea` | fix: mensagem de erro da exportacao pede para atualizar a pagina (libs antigas apos deploy) | 05/11/2026 |
 | `230a293` | feat: mostra o banco/conta financeira do titulo no PDF e no XLSX (Recebidos e Pagos) | 05/11/2026 |
 | `0904139` | feat: cache persistente das baixas no Supabase (tabela baixas_cache) + TTL de 12h e 32 chamadas em paralelo | 05/11/2026 |
 | `a1c0d56` | feat: deixa as listas de titulos do painel legiveis (descricao ocupa a largura da coluna em 2 linhas) | 05/11/2026 |
@@ -1128,6 +1129,18 @@ folhas foi o mesmo em todas).
 git revert --no-edit 230a293
 git push origin main
 ```
+
+### Detalhe: exportacao logo depois de um deploy
+
+As libs do PDF/XLSX (`jspdf`, `jspdf-autotable`, `xlsx-js-style`) sao
+carregadas **sob demanda** (import dinamico), entao ficam em arquivos separados
+do bundle. A Vercel apaga os arquivos do deploy anterior: uma aba do painel
+que ficou aberta ANTES do deploy e que clica em "PDF" tenta baixar um arquivo
+que nao existe mais (404) e a exportacao falha com
+`Failed to fetch dynamically imported module`.
+
+Nao quebra nada: basta atualizar a pagina (F5). A mensagem de erro agora diz
+isso de forma explicita ("Atualize a pagina (Ctrl+F5) e tente novamente").
 
 ## 4. Commit de Reversão Padrao
 
