@@ -1313,6 +1313,46 @@ git revert --no-edit <hash_do_commit>
 git push origin main
 ```
 
+## 3.21 Rotulo TOTAL centralizado na celula mesclada (06/11/2026)
+
+**Commit:** `fix: centraliza o rotulo TOTAL na celula mesclada do PDF e do XLSX`
+
+### O que era
+
+Depois da secao 3.20 (celulas da linha de TOTAL mescladas), o rotulo "TOTAL"
+ficava grudado na borda esquerda da celula mesclada - parecia o rotulo da coluna
+"Data" e nao o centro da linha.
+
+### O que mudou
+
+| Item | Antes | Agora |
+|------|-------|-------|
+| PDF | "TOTAL" alinhado a esquerda (no inicio da celula) | "TOTAL" **centralizado** na celula mesclada (Faturamento: Data + Cliente; listas: Data + Descricao + Fornecedor/Cliente + Banco + Metodo) |
+| XLSX | rotulo "TOTAL" na coluna A alinhado a esquerda | rotulo "TOTAL" na coluna A **centralizado** na area mesclada |
+
+O VALOR nao muda: continua na ultima coluna, alinhado a direita e com o formato
+de moeda.
+
+### Como foi feito
+
+- **PDF**: no hook `didParseCell`, a celula mesclada recebe
+  `data.cell.styles.halign = "center"` (o `colSpan` continua igual).
+- **XLSX**: na linha de total, a coluna A passa a usar
+  `alignment.horizontal = "center"` (as demais colunas continuam a direita).
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/exportar.ts` | `mesclarLinhaTotal` (PDF) e `montarTabelaXlsx` (XLSX) |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
