@@ -1539,6 +1539,150 @@ git push origin main
 
 ---
 
+## 3.24 Limitador unico por empresa + cache persistente do metodo de pagamento (06/11/2026)
+
+**Commits:**
+- `fix: limita toda chamada da API por empresa e guarda o metodo de pagamento em cache persistente`
+- `docs: registra o limite real da API medido e o ajuste das chamadas de saldo (secoes 3.24 e 3.25)`
+
+### O problema (regressao medida em producao em 06/11/2026)
+
+Depois da secao 3.23 a 1a carga do painel ("todas", nov/2026) levou **116,6 s**
+e deixou **46 titulos sem baixa** (data de vencimento no lugar da data real e
+banco vazio). A 2a e a 3aloads eram rapidas (11,1 s e 4,1 s).
+
+Os logs da Vercel apontaram a causa: **63 + 36 + 4 chamadas de "detalhe do
+metodo de pagamento"** (busca da forma de pagamento de cada titulo em aberto)
+saíam em **rajada**, sem nenhum limitador de taxa, e tomavam **429** em cima
+das buscas de baixa — 24 retries e 23 respostas 429 numa unica carga.
+
+### O que mudou
+
+**1. TODA chamada da API passa pelo mesmo limitador por empresa**
+
+O limitador (antes so das buscas de baixa) foi generalizado:
+
+| Antes | Agora |
+|-------|-------|
+| `esperarVagaBaixa()` / `baixaRecebeu429()` / `baixaDeuCerto()` | `esperarVagaApi(empresa)` / `apiRecebeu429(empresa)` / `apiDeuCerto(empresa)` |
+| apenas a busca de baixa | baixa + listagens + detalhe do metodo + saldo |
+| `fetchComRetry(url, init, tentativas)` | `fetchComRetry(url, init, tentativas, empresa?)` |
+
+A fila por tempo (uma chamada a cada ~111 ms por empresa) e o ajuste automatico
+do intervalo (um 429 dobra o intervalo; varios acertos reduzem de volta) agora
+valem para **todas** as chamadas da empresa.
+
+**2. Cache persistente do METODO de pagamento (tabela `detalhes_cache`)**
+
+O cache do metodo era so em memoria (5 min) e se perdia a cada cold start da
+Vercel: a cada nova instancia o painel refazia ~100 chamadas de detalhe.
+
+- migration `supabase/migrations/20261106000001_detalhes_cache.sql` (aplicada
+  no banco): `empresa` + `titulo_id` (PK), `metodo`, `atualizado_em`;
+- TTL de **12 h**, contado a partir de `atualizado_em` (a leitura nao renova);
+- so **metodos preenchidos** sao cacheados (um titulo sem metodo pode ser
+  preenchido depois pela empresa);
+- leitura em lote (1 consulta a cada 200 titulos, 4 lotes em paralelo) e
+  gravacao em lote (upsert);
+- o cache de detalhes usa um aviso de "banco indisponivel" SEPARADO do das
+  baixas: se a tabela ainda nao existir, o cache de datas continua funcionando.
+
+### Verificacoes
+
+**Teste local (mock do Supabase + API real da Conta Azul), Juvenal nov/2026:**
+
+| Rodada | Chamadas de detalhe | Tempo |
+|--------|--------------------|-------|
+| 1a (cache vazio) | 70 | 10,0 s |
+| 2a (cache em memoria) | 0 | 0 ms |
+| 3a (modulo NOVO = cold start) | **0** (104 titulos lidos do Supabase) | 1,5 s |
+
+Os tres resultados foram **identicos** (mesmos titulos, mesmo metodo, mesmo
+valor).
+
+**Producao ("todas", nov/2026), depois da correcao:**
+
+| Chamada | Antes | Depois |
+|---------|-------|--------|
+| 1a (fria) | **116,6 s** + 46 sem baixa | **15,4 s** + 0 sem baixa |
+| 2a | 11,1 s | 0,9 s |
+| 3a | 4,1 s | 1,3 s |
+
+Totais **iguais** em todas as rodadas: pagas 295 (R$ 1.030.651,11) e recebidas
+78 (R$ 567.911,55).
+
+---
+
+## 3.25 Limite real da API (medido) e ajuste das chamadas de saldo (06/11/2026)
+
+**Commits:**
+- `fix: passa as chamadas de saldo pelo limitador por empresa (evita 429 e derruba a carga)`
+- `docs: registra o limite real da API medido e o ajuste das chamadas de saldo (secoes 3.24 e 3.25)`
+
+### O limite real da API (medido em producao, rota temporaria removida depois)
+
+A API avisa "ate 10 requisicoes por segundo **por conta conectada**". A duvida
+era se a cota e por empresa (4 empresas = 4 cotas) ou agregada. Medicao com
+chamadas em taxa fixa, disparadas da Vercel:
+
+| Cenario | Taxa | Chamadas | 429 | % |
+|---------|------|----------|-----|---|
+| 1 empresa x 9/s | 9/s | 73 | 0 | 0% |
+| 2 empresas x 9/s | 18/s | 146 | 1 | 0,7% |
+| 4 empresas x 9/s | 36/s | 292 | 12 | 4,1% |
+| 4 empresas x 4/s | 16/s | 132 | 0 | 0% |
+
+**Conclusion: o limite e POR EMPRESA** (10 req/s cada) — o limitador por
+empresa da secao 3.23 esta correto e permite ~36 req/s no total.
+
+### O que ainda furava a fila: as chamadas de SALDO
+
+`buscarSaldos` busca o saldo de **cada conta financeira** da empresa
+(LGP 25, Juvenal 17, JRM 6, Rosangela 6) com `fetch` CRU — ou seja, **fora
+do limitador** (3 por vez, com 800 ms de pausa entre lotes). Isso somava
+~3,75 req/s extras por empresa, estourava a cota de 10/s e fazia as buscas de
+baixa/detalhe tomarem 429 (e a carga do painel demorar 2 minutos).
+
+Correcoes:
+
+- as chamadas de saldo passam pelo **mesmo limitador por empresa** (e alimentam
+  o ajuste automatico de intervalo);
+- o trabalho virou uma **esteira** de 8 chamadas em voo (sem o atraso artificial
+  de 800 ms entre lotes): o limitador ja espaca as chamadas, entao nao ha mais
+  para esperar a chamada mais lenta de cada lote;
+- o `PATCH` de atualizacao de baixa (`atualizarBaixa`) tambem passou pelo
+  limitador.
+
+**Medicao local (LGP, 25 contas):**
+
+| Antes | Depois |
+|-------|--------|
+| 12,5 s (3 por rajada a cada 800 ms, sem limite) | **3,8 s** (107-123 ms entre chamadas) |
+
+### Por que ainda aparecem alguns 429
+
+Os 429 que restam nao sao do desenho do app: acontecem quando **duas cargas do
+painel correm ao mesmo tempo** (por exemplo, uma aba do navegador aberta +
+o clique do usuario). Os logs mostram 3 requisicoes simultaneas na mesma
+segunda (2x `getDashboard` + 1x `getEmpresaBreakdown`), e os 429 se
+dividem entre elas. Uma carga isolada nao toma 429.
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/contaazul.server.ts` | limitador unico por empresa para toda chamada da API; cache persistente do metodo (`detalhes_cache`); saldo na esteira e dentro do limitador |
+| `supabase/migrations/20261106000001_detalhes_cache.sql` | nova tabela `detalhes_cache` (aplicada no banco) |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
