@@ -327,11 +327,22 @@ function Dashboard() {
     refetchOnReconnect: false,
   });
 
+  // Estado do dashboard PARA O PERIODO ATUAL (o `data` acima pode ser o do
+  // periodo anterior enquanto o novo carrega).
+  const dashboardPronto =
+    queryClient.getQueryState(["dashboard", empresa, dataInicio, dataFim])?.status === "success";
+
   const { data: breakdown } = useQuery({
     queryKey: ["breakdown", empresa, dataInicio, dataFim],
     queryFn: () =>
       getEmpresaBreakdownFn({ data: { empresa, data_inicio: dataInicio, data_fim: dataFim } }),
-    enabled: !!dataInicio && !!dataFim,
+    // O breakdown (A Receber / A Pagar) so e buscado DEPOIS que o dashboard
+    // termina. As duas server functions fazem as MESMAS consultas na API da
+    // Conta Azul; rodando em paralelo, cada uma roda em uma instancia
+    // diferente da Vercel e o limite de 10 req/s POR EMPRESA e furado (a
+    // pagina virava 2-3x o trafego). O resultado era uma cadeia de 429, a
+    // funcao estourando o tempo limite e a tela presa em "Sincronizando...".
+    enabled: !!dataInicio && !!dataFim && dashboardPronto,
     staleTime: Infinity,
     gcTime: Infinity,
     placeholderData: keepPreviousData,
