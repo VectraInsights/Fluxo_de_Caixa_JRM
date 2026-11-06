@@ -51,12 +51,13 @@ const ROTULOS_PDF = (["recebidas", "pagos"] as const)
   .map((chave) => ROTULOS.find((item) => item.chave === chave))
   .filter((item): item is (typeof ROTULOS)[number] => !!item);
 
-// Resultado do periodo: A Receber - A Pagar. Considera APENAS as listas de
-// titulos em aberto (Faturamento e Pagos ficam de fora do calculo).
+// Resultado do periodo: RECEBIDOS - PAGOS (o caixa do periodo). As listas de
+// titulos em aberto (A Receber / A Pagar) e o Faturamento ficam de fora do
+// calculo.
 function calcularResultado(rel: RelatorioListas): number {
-  const receber = (rel.receber ?? []).reduce((s, t) => s + (Number(t.valor) || 0), 0);
-  const pagar = (rel.pagar ?? []).reduce((s, t) => s + (Number(t.valor) || 0), 0);
-  return receber - pagar;
+  const recebidas = (rel.recebidas ?? []).reduce((s, t) => s + (Number(t.valor) || 0), 0);
+  const pagos = (rel.pagos ?? []).reduce((s, t) => s + (Number(t.valor) || 0), 0);
+  return recebidas - pagos;
 }
 
 function formatarDataBR(iso: string): string {
@@ -428,7 +429,7 @@ export async function construirXlsx(rel: RelatorioListas): Promise<Uint8Array<Ar
   }`;
 
   // ---------------- Aba Resumo (visual dos cards do PDF) ----------------
-  // Mesmas 4 relacoes dos cards do PDF + o "Resultado" (A Receber - A Pagar).
+  // Mesmas 4 relacoes dos cards do PDF + o "Resultado" (Recebidos - Pagos).
   const resultado = calcularResultado(rel);
   const resumoLinhas: LinhaXlsx[] = [
     {
@@ -447,7 +448,7 @@ export async function construirXlsx(rel: RelatorioListas): Promise<Uint8Array<Ar
     });
   }
   resumoLinhas.push({
-    valores: ["Resultado (A receber - A pagar)", resultado, ""],
+    valores: ["Resultado (Recebidos - Pagos)", resultado, ""],
     tipo: "acento",
     cor: resultado >= 0 ? XLSX_CORES.verde : XLSX_CORES.vermelho,
   });
@@ -468,7 +469,7 @@ export async function construirXlsx(rel: RelatorioListas): Promise<Uint8Array<Ar
   const linhaGerado = linhaNota + 2;
   const enderecoNota = XLSX.utils.encode_cell({ r: linhaNota - 1, c: 0 });
   wsResumo[enderecoNota] = {
-    v: "Resultado = A Receber − A Pagar (Faturamento e Pagos não entram no cálculo)",
+    v: "Resultado = Recebidos − Pagos (Faturamento, A Receber e A Pagar não entram no cálculo)",
     t: "s",
     s: { font: { name: "Calibri", sz: 9, italic: true, color: { rgb: XLSX_CORES.subtitulo } } },
   };

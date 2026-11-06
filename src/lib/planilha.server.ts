@@ -80,6 +80,10 @@ const EMPRESA_POR_REMETENTE: Record<string, Dono> = {
   "COPRA": "JUVENAL",
   "AGRONORTE": "JUVENAL",
   "DESIGNTEX": "JUVENAL",
+  // Grafia errada que aparece na planilha ("DESINGTEX") — mesmo cliente.
+  "DESINGTEX": "JUVENAL",
+  "MODULO EMBALAGENS": "JUVENAL",
+  "ZAR PINTURAS": "JUVENAL",
   "AMAPA": "JUVENAL",
   "MODERNA": "JUVENAL",
   "ITABOX": "JUVENAL",
@@ -87,6 +91,17 @@ const EMPRESA_POR_REMETENTE: Record<string, Dono> = {
   "ESTHAMPA": "JUVENAL",
   "FIBRASA": "JUVENAL",
 };
+
+// Chave de regra: nome normalizado SEM espacos. Assim "S.A. GONDOLAS" e
+// "S.A.GONDOLAS" (duas grafias do mesmo cliente na planilha) caem na mesma
+// regra, em vez de um deles ir parar em "OUTROS".
+function chaveDeRegra(nome: string): string {
+  return normalizarNome(nome).replace(/\s+/g, "");
+}
+
+const REGRAS_POR_CHAVE = new Map<string, Dono>(
+  Object.entries(EMPRESA_POR_REMETENTE).map(([nome, dono]) => [chaveDeRegra(nome), dono]),
+);
 
 // Remove "(CIDADE - UF)", acentos e espacos duplicados; maiusculas.
 function normalizarNome(s: string): string {
@@ -283,7 +298,7 @@ export async function buscarFaturamentoPlanilha(
       mesesSemPlanilha.add(dias[i].slice(0, 7));
     } else {
       for (const [remetente, valor] of Object.entries(porRemetente)) {
-        const dono = EMPRESA_POR_REMETENTE[remetente] ?? "OUTROS";
+        const dono = REGRAS_POR_CHAVE.get(chaveDeRegra(remetente)) ?? "OUTROS";
         if (filtro !== null && dono !== filtro) continue;
         // "empresa" = chave da empresa dona (JUVENAL/ROSANGELA/ALVARENGA/OUTROS).
         // Permite separar o Faturamento por empresa no relatorio de "Todas".
