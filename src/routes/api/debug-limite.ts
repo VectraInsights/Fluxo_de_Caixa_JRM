@@ -24,7 +24,7 @@ export const Route = createFileRoute("/api/debug-limite")({
           .filter(Boolean);
         const rps = Number(url.searchParams.get("rps") || "9");
         const duracaoMs = Number(url.searchParams.get("ms") || "8000");
-        const alvoUrl = "https://api-v2.contaazul.com/v1/conta-financeira?pagina=1&tamanho_pagina=1";
+        const alvo = "https://api-v2.contaazul.com/v1/conta-financeira?pagina=1&tamanho_pagina=1";
 
         if (!empresas.length) {
           return Response.json({ erro: "use ?empresas=A,B,C&rps=9&ms=8000" }, { status: 400 });
@@ -36,38 +36,31 @@ export const Route = createFileRoute("/api/debug-limite")({
             const token = await obterToken(empresa);
             if (!token) return { empresa, erro: "sem token" };
             const intervalo = 1000 / Math.max(0.5, rps);
-            const fim = inicio + duracaoMs;
+            const fim = Date.now() + duracaoMs;
             let chamadas = 0;
             let ok = 0;
             let n429 = 0;
             let outros = 0;
             const porSegundo: Record<string, number> = {};
-            const emVoo: Promise<void>[] = [];
-            // Dispara as chamadas em PARALELO na taxa pedida (a API responde em
-            // ~800 ms: uma chamada por vez mediria latencia, nao taxa).
             while (Date.now() < fim) {
-              const n = chamadas++;
-              const alvo = inicio + n * intervalo;
-              const espera = alvo - Date.now();
+              const alvo2 = inicio + chamadas * intervalo;
+              const espera = alvo2 - Date.now();
               if (espera > 0) await new Promise((r) => setTimeout(r, espera));
               const s = String(Math.floor((Date.now() - inicio) / 1000));
               porSegundo[s] = (porSegundo[s] || 0) + 1;
-              emVoo.push(
-                (async () => {
-                  try {
-                    const res = await fetch(alvoUrl, {
-                      headers: { Authorization: `Bearer ${token}` },
-                    });
-                    if (res.status === 429) n429++;
-                    else if (res.ok) ok++;
-                    else outros++;
-                  } catch {
-                    outros++;
-                  }
-                })(),
-              );
+              try {
+                const res = await fetch(alvo, {
+                  headers: { Authorization: `Bearer ${token}` },
+                });
+                chamadas++;
+                if (res.status === 429) n429++;
+                else if (res.ok) ok++;
+                else outros++;
+              } catch {
+                chamadas++;
+                outros++;
+              }
             }
-            await Promise.all(emVoo);
             return {
               empresa,
               chamadas,
