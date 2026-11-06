@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiAutorizarRouteImport } from './routes/api/autorizar'
 import { Route as ApiCallbackRouteImport } from './routes/api/callback'
 import { Route as ApiDebugBaixasRouteImport } from './routes/api/debug-baixas'
+import { Route as ApiDebugLimiteRouteImport } from './routes/api/debug-limite'
 import { Route as ApiDebugPagasRouteImport } from './routes/api/debug-pagas'
 import { Route as ApiDebugRecebidosRouteImport } from './routes/api/debug-recebidos'
 import { Route as ApiCronPrewarmBaixasRouteImport } from './routes/api/cron/prewarm-baixas'
@@ -36,6 +37,11 @@ const ApiCallbackRoute = ApiCallbackRouteImport.update({
 const ApiDebugBaixasRoute = ApiDebugBaixasRouteImport.update({
   id: '/api/debug-baixas',
   path: '/api/debug-baixas',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDebugLimiteRoute = ApiDebugLimiteRouteImport.update({
+  id: '/api/debug-limite',
+  path: '/api/debug-limite',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiDebugPagasRoute = ApiDebugPagasRouteImport.update({
@@ -64,6 +70,7 @@ export interface FileRoutesByFullPath {
   '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
   '/api/debug-baixas': typeof ApiDebugBaixasRoute
+  '/api/debug-limite': typeof ApiDebugLimiteRoute
   '/api/debug-pagas': typeof ApiDebugPagasRoute
   '/api/debug-recebidos': typeof ApiDebugRecebidosRoute
   '/api/cron/prewarm-baixas': typeof ApiCronPrewarmBaixasRoute
@@ -74,6 +81,7 @@ export interface FileRoutesByTo {
   '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
   '/api/debug-baixas': typeof ApiDebugBaixasRoute
+  '/api/debug-limite': typeof ApiDebugLimiteRoute
   '/api/debug-pagas': typeof ApiDebugPagasRoute
   '/api/debug-recebidos': typeof ApiDebugRecebidosRoute
   '/api/cron/prewarm-baixas': typeof ApiCronPrewarmBaixasRoute
@@ -85,6 +93,7 @@ export interface FileRoutesById {
   '/api/autorizar': typeof ApiAutorizarRoute
   '/api/callback': typeof ApiCallbackRoute
   '/api/debug-baixas': typeof ApiDebugBaixasRoute
+  '/api/debug-limite': typeof ApiDebugLimiteRoute
   '/api/debug-pagas': typeof ApiDebugPagasRoute
   '/api/debug-recebidos': typeof ApiDebugRecebidosRoute
   '/api/cron/prewarm-baixas': typeof ApiCronPrewarmBaixasRoute
@@ -97,6 +106,7 @@ export interface FileRouteTypes {
     | '/api/autorizar'
     | '/api/callback'
     | '/api/debug-baixas'
+    | '/api/debug-limite'
     | '/api/debug-pagas'
     | '/api/debug-recebidos'
     | '/api/cron/prewarm-baixas'
@@ -107,6 +117,7 @@ export interface FileRouteTypes {
     | '/api/autorizar'
     | '/api/callback'
     | '/api/debug-baixas'
+    | '/api/debug-limite'
     | '/api/debug-pagas'
     | '/api/debug-recebidos'
     | '/api/cron/prewarm-baixas'
@@ -117,6 +128,7 @@ export interface FileRouteTypes {
     | '/api/autorizar'
     | '/api/callback'
     | '/api/debug-baixas'
+    | '/api/debug-limite'
     | '/api/debug-pagas'
     | '/api/debug-recebidos'
     | '/api/cron/prewarm-baixas'
@@ -128,6 +140,7 @@ export interface RootRouteChildren {
   ApiAutorizarRoute: typeof ApiAutorizarRoute
   ApiCallbackRoute: typeof ApiCallbackRoute
   ApiDebugBaixasRoute: typeof ApiDebugBaixasRoute
+  ApiDebugLimiteRoute: typeof ApiDebugLimiteRoute
   ApiDebugPagasRoute: typeof ApiDebugPagasRoute
   ApiDebugRecebidosRoute: typeof ApiDebugRecebidosRoute
   ApiCronPrewarmBaixasRoute: typeof ApiCronPrewarmBaixasRoute
@@ -162,6 +175,13 @@ declare module '@tanstack/react-router' {
       path: '/api/debug-baixas'
       fullPath: '/api/debug-baixas'
       preLoaderRoute: typeof ApiDebugBaixasRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/debug-limite': {
+      id: '/api/debug-limite'
+      path: '/api/debug-limite'
+      fullPath: '/api/debug-limite'
+      preLoaderRoute: typeof ApiDebugLimiteRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/debug-pagas': {
@@ -200,6 +220,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAutorizarRoute: ApiAutorizarRoute,
   ApiCallbackRoute: ApiCallbackRoute,
   ApiDebugBaixasRoute: ApiDebugBaixasRoute,
+  ApiDebugLimiteRoute: ApiDebugLimiteRoute,
   ApiDebugPagasRoute: ApiDebugPagasRoute,
   ApiDebugRecebidosRoute: ApiDebugRecebidosRoute,
   ApiCronPrewarmBaixasRoute: ApiCronPrewarmBaixasRoute,
