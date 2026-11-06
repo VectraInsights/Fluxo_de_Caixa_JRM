@@ -309,7 +309,9 @@ function montarTabelaXlsx(XLSX: any, t: TabelaXlsx) {
       const estilo: any = {
         font: { name: "Calibri", sz: 11, bold: true, color: { rgb: XLSX_CORES.titulo } },
         fill: { fgColor: { rgb: XLSX_CORES.total } },
-        alignment: { horizontal: c === 0 ? "left" : "right", vertical: "center" },
+        // O rotulo "TOTAL" (coluna A) fica CENTRALIZADO na celula mesclada;
+        // o VALOR continua alinhado a direita.
+        alignment: { horizontal: c === 0 ? "center" : "right", vertical: "center" },
         border: { ...xlsxBorda(), top: { style: "double", color: { rgb: XLSX_CORES.cabecalho } } },
       };
       if (t.colunaMoeda === c) estilo.numFmt = XLSX_MOEDA;
@@ -696,7 +698,8 @@ export async function exportarPdf(rel: RelatorioListas) {
 
   // Linha de TOTAL: todas as colunas ANTES do valor (Data, Descricao,
   // Fornecedor/Cliente, Banco e Metodo) sao MESCLADAS em uma celula so, com o
-  // rotulo "TOTAL". O VALOR continua na ultima coluna, na sua propria celula.
+  // rotulo "TOTAL" CENTRALIZADO. O VALOR continua na ultima coluna, na sua
+  // propria celula.
   // O merge e feito no hook didParseCell: o autoTable le o colSpan da celula
   // depois dos hooks (applyColSpans), entao a mesclagem e respeitada.
   const mesclarLinhaTotal = (data: any, indiceTotal: number, nColunas: number) => {
@@ -705,6 +708,8 @@ export async function exportarPdf(rel: RelatorioListas) {
     if (data.column.index === 0) {
       data.cell.text = "TOTAL";
       data.cell.colSpan = colunaValor; // colunas 0 .. colunaValor-1
+      // Rotulo centralizado na celula mesclada (nao na coluna Data).
+      data.cell.styles.halign = "center";
     } else if (data.column.index < colunaValor) {
       data.cell.text = "";
     }
