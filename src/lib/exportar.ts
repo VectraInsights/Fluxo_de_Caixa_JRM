@@ -295,6 +295,16 @@ function montarTabelaXlsx(XLSX: any, t: TabelaXlsx) {
   // Linha de total
   if (t.total) {
     const r = 4 + t.linhas.length;
+    // O rotulo "TOTAL" vai para a PRIMEIRA celula e todas as colunas ate o
+    // VALOR sao MESCLADAS em uma celula so. O valor continua na ultima coluna,
+    // na sua propria celula (com o formato de moeda).
+    const iRotulo = t.total.findIndex((v) => String(v ?? "").trim().toUpperCase() === "TOTAL");
+    const rotulo = iRotulo >= 0 ? String(t.total[iRotulo]) : "TOTAL";
+    ws[XLSX.utils.encode_cell({ r, c: 0 })] = { t: "s", v: rotulo };
+    for (let c = 1; c < nCol - 1; c++) {
+      // Celulas cobertas pelo merge: ficam vazias (so a primeira aparece).
+      delete ws[XLSX.utils.encode_cell({ r, c })];
+    }
     for (let c = 0; c < nCol; c++) {
       const estilo: any = {
         font: { name: "Calibri", sz: 11, bold: true, color: { rgb: XLSX_CORES.titulo } },
@@ -306,6 +316,16 @@ function montarTabelaXlsx(XLSX: any, t: TabelaXlsx) {
       if (t.colunaInteiro === c) estilo.numFmt = XLSX_INTEIRO;
       definir(r, c, estilo);
     }
+    // As celulas cobertas pelo merge ficam realmente VAZIAS (so o estilo):
+    // e assim que o proprio Excel grava uma celula dentro de uma area
+    // mesclada — evita o aviso de "conteudo a reparar" ao abrir o arquivo.
+    for (let c = 1; c < nCol - 1; c++) {
+      const cel = ws[XLSX.utils.encode_cell({ r, c })];
+      if (!cel) continue;
+      delete cel.t;
+      delete cel.v;
+      delete cel.f;
+    }
   }
 
   // Larguras, alturas, merges e autofiltro
@@ -315,6 +335,11 @@ function montarTabelaXlsx(XLSX: any, t: TabelaXlsx) {
     { s: { r: 0, c: 0 }, e: { r: 0, c: nCol - 1 } },
     { s: { r: 1, c: 0 }, e: { r: 1, c: nCol - 1 } },
   ];
+  if (t.total) {
+    // Merge da linha de TOTAL: da primeira coluna ate a coluna ANTES do valor.
+    const r = 4 + t.linhas.length;
+    ws["!merges"].push({ s: { r, c: 0 }, e: { r, c: nCol - 2 } });
+  }
   if (t.autofiltro && t.linhas.length > 0) {
     ws["!autofilter"] = { ref: `A4:${XLSX.utils.encode_col(nCol - 1)}${fimCorpo}` };
   }
@@ -669,6 +694,22 @@ export async function exportarPdf(rel: RelatorioListas) {
   const { jsPDF } = await import("jspdf");
   const { default: autoTable } = await import("jspdf-autotable");
 
+  // Linha de TOTAL: todas as colunas ANTES do valor (Data, Descricao,
+  // Fornecedor/Cliente, Banco e Metodo) sao MESCLADAS em uma celula so, com o
+  // rotulo "TOTAL". O VALOR continua na ultima coluna, na sua propria celula.
+  // O merge e feito no hook didParseCell: o autoTable le o colSpan da celula
+  // depois dos hooks (applyColSpans), entao a mesclagem e respeitada.
+  const mesclarLinhaTotal = (data: any, indiceTotal: number, nColunas: number) => {
+    if (data.section !== "body" || data.row.index !== indiceTotal) return;
+    const colunaValor = nColunas - 1;
+    if (data.column.index === 0) {
+      data.cell.text = "TOTAL";
+      data.cell.colSpan = colunaValor; // colunas 0 .. colunaValor-1
+    } else if (data.column.index < colunaValor) {
+      data.cell.text = "";
+    }
+  };
+
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   // Entrelinha mais curta: cada linha da tabela ocupa menos altura -> mais
   // titulos por folha (o autoTable usa o fator do jsPDF).
@@ -804,6 +845,8 @@ export async function exportarPdf(rel: RelatorioListas) {
           data.cell.styles.fontStyle = "bold";
           data.cell.styles.fillColor = [240, 240, 240];
         }
+        // Linha de TOTAL: Data + Cliente mescladas (o valor fica na sua celula).
+        mesclarLinhaTotal(data, linhasFat.length, 3);
       },
       // Larguras fixas somando a largura util da pagina: a descricao quebra em
       // menos linhas e o PDF sai com menos folhas.
@@ -894,6 +937,10 @@ export async function exportarPdf(rel: RelatorioListas) {
         overflow: "linebreak",
       },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
+      // Linha de TOTAL: todas as colunas antes do VALOR em uma celula so.
+      didParseCell: (data: any) => {
+        mesclarLinhaTotal(data, body.length - 1, head[0].length);
+      },
       // Colunas com largura FIXA somando a largura util da pagina (antes o
       // maxWidth somava ~164 mm numa pagina de 297 mm: sobrava espaco vazio e
       // a descricao quebrava em mais linhas -> mais folhas para imprimir).
