@@ -1683,6 +1683,112 @@ git push origin main
 
 ---
 
+## 3.26 Cargas sequenciais na pagina: o breakdown so depois do dashboard (06/11/2026)
+
+**Commits:**
+- `fix: busca o breakdown (A Receber/A Pagar) depois do dashboard (evita 3 cargas paralelas e o estouro do limite de 60s)`
+- `docs: registra o sequenciamento das cargas da pagina e a validacao da exportacao em producao (secao 3.26)`
+
+### O problema
+
+A secao 3.25 mediu o limite da API (10 req/s **por empresa**) e deixou claro que
+o limitador so funciona **dentro de uma instancia**. Na pagina, porem, as tres
+server functions sao chamadas **em paralelo**:
+
+| Server fn | Origem | Peso |
+|------------|--------|------|
+| `getDashboard` | cards + listas de Pagos/Recebidos | pesado (API da Conta Azul) |
+| `getEmpresaBreakdown` | listas de A Receber/A Pagar | pesado (API da Conta Azul) |
+| `getFaturamento` | planilha de cargas (Google Sheets) | leve (nao usa a API da Conta Azul) |
+
+Cada uma roda em uma **instancia diferente da Vercel**, e cada instancia tem o
+**seu proprio limitador por empresa**. Resultado: 2-3x a cota da API, 429 em
+cascata, o retry estourando o tempo limite de 60 s da funcao e a tela presa em
+**"Sincronizando..."** (as vezes por varios minutos).
+
+Evidencia nos logs de 06/11/2026 (22:49-22:50 UTC): 3 requisicoes na mesma
+segunda (2x `getDashboard` + 1x `getEmpresaBreakdown`), **27 respostas 429** e
+uma requisicao que durou **49,3 s**.
+
+### O que mudou
+
+Em `src/routes/index.tsx`, a query do breakdown so e habilitada **depois**
+que a query do dashboard do periodo atual termina com sucesso:
+
+```tsx
+const dashboardPronto =
+  queryClient.getQueryState(["dashboard", empresa, dataInicio, dataFim])?.status === "success";
+
+const { data: breakdown } = useQuery({
+  queryKey: ["breakdown", empresa, dataInicio, dataFim],
+  queryFn: () => getEmpresaBreakdownFn({ ... }),
+  enabled: !!dataInicio && !!dataFim && dashboardPronto,
+  // ...
+});
+```
+
+O `getFaturamento` continua em paralelo: ele le a **planilha do Google
+Sheets** e nao consome a cota da Conta Azul.
+
+### Medicoes (producao, "todas", nov/2026)
+
+| Chamada isolada | 1a | 2a |
+|------------------|----|----|
+| `getDashboard` | **7,1 s** | **1,1 s** |
+| `getEmpresaBreakdown` (4 empresas) | **6,4 s** | - |
+| `getEmpresaBreakdown` (1 empresa) | 4,4 s | - |
+
+Com o sequenciamento, a pagina carrega o dashboard e depois o breakdown, sem
+estourar o limite de 60 s e sem 429 (no log do dia: dashboard em **3,9 s** com
+o cache de baixas quente).
+
+Totais conferidos (iguais em todas as rodadas): **pagas 295 (R$ 1.030.651,11)**
+e **recebidas 78 (R$ 567.911,55)**, **0 titulos sem baixa**.
+
+### Validacao da exportacao em producao (PDF e XLSX)
+
+Exportados direto da pagina em producao ("Todas as Empresas", 01-30/11/2026):
+
+**PDF** (17 paginas)
+
+- cabecalho: Faturamento R$ 538.064,12 | Recebidos R$ 567.911,55 | Pagos R$ 1.030.651,11;
+- **0 celulas de banco vazio** — os bancos vem da **baixa** (Sicoob 3109, Sicoob,
+  Sicoob 3049, Bradesco, Itau, Caixa);
+- datas **reais de pagamento** (03 a 06/11/2026) nas tabelas de titulos (as
+  datas futuras 07 e 09/11 aparecem so na tabela de Faturamento, que e a
+  programacao de carga);
+- linha de **TOTAL com 2 celulas** (rotulo mesclado + valor), rotulo
+  **centralizado** (x do texto = 362,5 = centro da celula mesclada 28,3-722,8).
+
+**XLSX** (6 abas: Resumo, Faturamento, A Receber, A Pagar, Pagos, Recebidos)
+
+| Aba | Qtd. | TOTAL |
+|-----|------|-------|
+| A Receber | 106 | R$ 4.836.825,25 |
+| A Pagar | 522 | R$ 3.875.522,03 |
+| Pagos | 295 | R$ 1.030.651,11 |
+| Recebidos | 78 | R$ 567.911,55 |
+
+- linha de TOTAL: rotulo mesclado (`A:G`) **centralizado**, valor na ultima
+  coluna **alinhado a direita**;
+- aba Resumo: **Resultado (Recebidos - Pagos) = R$ -462.739,56**
+  (567.911,55 - 1.030.651,11).
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/routes/index.tsx` | breakdown so e buscado depois que o dashboard termina |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
