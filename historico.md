@@ -185,9 +185,17 @@ Uma aba por dia, com o nome igual ao numero do dia ("01".."31"). Coluna B = REME
 | ECONOMART | Juvenal |
 | ESTHAMPA | Juvenal |
 | FIBRASA | Juvenal |
+| DESINGTEX | Juvenal | *(grafia errada de DESIGNTEX)*
+| MODULO EMBALAGENS | Juvenal |
+| ZAR PINTURAS | Juvenal |
 
 **ATENCAO — Alvarenga:** nao existe (e nao vai existir) no dropdown de empresas. Ela aparece
 APENAS na visao "Todas as Empresas". Remetente sem regra cai em "OUTROS" (entra no "todas").
+
+**Casamento sem espacos:** a regra e procurada pelo nome normalizado **sem espacos** —
+"S.A. GONDOLAS" e "S.A.GONDOLAS" (duas grafias do mesmo cliente) caem na mesma regra.
+As grafias que nao batem com nenhuma regra (ex.: "DESINGTEX", "MODULO EMBALAGENS" e
+"ZAR PINTURAS" ate 06/11/2026) caiam em "OUTROS".
 
 **Valores:** parser estrito pt-BR, mesmo criterio do SUM do Sheets (`R$ 23.000,00` vale;
 `21,999.10` e texto invalido e nao conta; `Pendente` nao conta).
@@ -348,20 +356,20 @@ Cliente/Fornecedor, mesmos totais — so o visual.
 
 ---
 
-## 3.6 Resultado dos relatorios (A Receber − A Pagar)
+## 3.6 Resultado dos relatorios (Recebidos − Pagos)
 
-O relatorio ganha um valor de **Resultado**, calculado **apenas com "A Receber" e
-"A Pagar"**:
+O relatorio ganha um valor de **Resultado**, calculado **apenas com "Recebidos" e
+"Pagos"** (o caixa do periodo):
 
 ```
-Resultado = total de A Receber − total de A Pagar
+Resultado = total de Recebidos − total de Pagos
 ```
 
-Faturamento e Pagos **nao entram** no calculo.
+Faturamento, A Receber e A Pagar **nao entram** no calculo.
 
 | Parte | Onde aparece |
 |-------|--------------|
-| XLSX | aba "Resumo", linha "Resultado (A receber - A pagar)" (verde/vermelho conforme o sinal) + nota explicativa abaixo da tabela |
+| XLSX | aba "Resumo", linha "Resultado (Recebidos - Pagos)" (verde/vermelho conforme o sinal) + nota explicativa abaixo da tabela |
 
 O **titulo do PDF** e so **"Fluxo de Caixa"** (antes era "Fluxo de Caixa —
 Faturamento, A Receber, A Pagar e Pagos").
@@ -371,11 +379,10 @@ Faturamento, A Receber, A Pagar e Pagos").
 > O Resultado continua **apenas no XLSX** (aba "Resumo") — e por isso
 > `calcularResultado()` nao e mais chamado pelo `exportarPdf`.
 
-> **Nota:** o commit `5cd6da6` tinha tirado Faturamento e Pagos do resumo; o
-> `8ca4056` volta os 4 cards e acrescenta o card/linha "Resultado".
-
-Implementacao: `calcularResultado(rel)` em `exportar.ts` (soma de `rel.receber` menos
-soma de `rel.pagar`).
+> **Nota (06/11/2026):** o calculo mudou de **A Receber − A Pagar** para
+> **Recebidos − Pagos** (o caixa do periodo). A implementacao esta em
+> `calcularResultado(rel)` em `exportar.ts` (soma de `rel.recebidas` menos soma de
+> `rel.pagos`).
 
 ---
 
@@ -1345,6 +1352,58 @@ de moeda.
 | Arquivo | Mudanca |
 |---------|---------|
 | `src/lib/exportar.ts` | `mesclarLinhaTotal` (PDF) e `montarTabelaXlsx` (XLSX) |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+## 3.22 Regras dos novos clientes + Resultado do XLSX (Recebidos - Pagos) (06/11/2026)
+
+**Commits:**
+- `fix: cadastra as regras dos novos clientes e troca o Resultado do XLSX para Recebidos - Pagos`
+- `docs: registra as novas regras de cliente e o Resultado Recebidos - Pagos (secao 3.22)`
+
+### 1. Regras de direcionamento do Faturamento
+
+Clientes que apareciam na planilha sem regra (caiam em "OUTROS" e nao entravam no
+faturamento da empresa dona):
+
+| Cliente (planilha) | Antes | Agora |
+|--------------------|-------|-------|
+| S.A. GONDOLAS (com espaco) | OUTROS | **Rosangela** (mesma regra do "S.A.GONDOLAS") |
+| DESINGTEX | OUTROS | **Juvenal** (grafia errada do DESIGNTEX) |
+| MODULO EMBALAGENS | OUTROS | **Juvenal** |
+| ZAR PINTURAS | OUTROS | **Juvenal** |
+
+O casamento da regra passou a ignorar **espacos**: a chave e o nome normalizado sem
+espacos (`chaveDeRegra`), entao "S.A. GONDOLAS" e "S.A.GONDOLAS" caem na mesma
+regra, sem precisar duplicar a entrada no mapa.
+
+### 2. Resultado do XLSX = Recebidos − Pagos
+
+A aba "Resumo" do XLSX mostra o **caixa do periodo**:
+
+```
+Resultado = total de Recebidos − total de Pagos
+```
+
+| Item | Antes | Agora |
+|------|-------|-------|
+| Linha do Resumo | "Resultado (A receber - A pagar)" | "Resultado (Recebidos - Pagos)" |
+| Nota abaixo da tabela | "Resultado = A Receber − A Pagar ..." | "Resultado = Recebidos − Pagos (Faturamento, A Receber e A Pagar não entram no cálculo)" |
+| Calculo | A Receber − A Pagar | Recebidos − Pagos |
+
+O PDF nao tem card de Resultado (continua so com Faturamento, Recebidos e Pagos).
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/planilha.server.ts` | `EMPRESA_POR_REMETENTE` (DESINGTEX, MODULO EMBALAGENS, ZAR PINTURAS), `chaveDeRegra` e `REGRAS_POR_CHAVE` (casamento sem espacos) |
+| `src/lib/exportar.ts` | `calcularResultado` (Recebidos − Pagos), rotulo e nota da aba Resumo |
 
 ### Como reverter (sem reescrever o historico ja publicado)
 
