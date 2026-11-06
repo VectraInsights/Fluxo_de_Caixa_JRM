@@ -1266,6 +1266,53 @@ git revert --no-edit <hash_do_commit>
 git push origin main
 ```
 
+## 3.20 Linha de TOTAL mesclada no PDF e no XLSX (06/11/2026)
+
+**Commit:** `fix: mescla as celulas da linha de TOTAL no PDF e no XLSX`
+
+### O que era
+
+Nas tabelas exportadas (PDF e XLSX) a linha de TOTAL ocupava uma celula por
+coluna: a celula "Data" ficava vazia, o rotulo "TOTAL" aparecia na coluna
+"Descricao" e o valor na ultima coluna. O resultado era uma linha com varias
+caixas vazias e o rotulo "TOTAL" no meio da tabela, longe do valor.
+
+### O que mudou
+
+| Item | Antes | Agora |
+|------|-------|-------|
+| PDF - Faturamento | Data vazia + "TOTAL" na coluna Cliente | Data + Cliente mescladas (rotulo "TOTAL") e valor na propria celula |
+| PDF - Recebidos/Pagos | Data/Descricao/Fornecedor/Cliente/Banco/Metodo vazias + "TOTAL" na coluna Descricao | todas as colunas antes do VALOR mescladas em uma celula so (rotulo "TOTAL") e o valor na propria celula |
+| XLSX - todas as abas | rotulo "TOTAL" na coluna B | rotulo "TOTAL" na coluna A, com as colunas ate o VALOR mescladas (`!merges`) |
+
+Vale para **todas** as linhas de TOTAL: Faturamento, A Receber, A Pagar, Pagos e
+Recebidos. O VALOR nunca entra no merge - continua na ultima coluna, no seu
+formato de moeda.
+
+### Como foi feito
+
+- **PDF**: o `jspdf-autotable` (5.0.9) aplica os `colSpan` depois dos hooks,
+  por isso o merge e feito no hook `didParseCell`: a celula da coluna 0 recebe
+  o rotulo "TOTAL" e `colSpan` = (numero de colunas - 1). As celulas
+  intermediarias sao apagadas, entao a linha de TOTAL sai sem as linhas
+  verticais internas (uma celula larga + a celula do valor).
+- **XLSX**: o rotulo vai para a coluna A, as celulas cobertas pelo merge ficam
+  vazias (so o estilo, como o proprio Excel grava) e a area e registrada em
+  `ws["!merges"]` (da coluna A ate a penultima coluna da linha do total).
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/exportar.ts` | `mesclarLinhaTotal` (PDF) e os merges da linha de TOTAL em `montarTabelaXlsx` (XLSX) |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
