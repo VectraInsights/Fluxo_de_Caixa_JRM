@@ -1412,6 +1412,133 @@ git revert --no-edit <hash_do_commit>
 git push origin main
 ```
 
+## 3.23 Velocidade da carga: limitador por empresa, janela menor, cache duradouro e pre-aquecimento (06/11/2026)
+
+**Commits:**
+- `fix: acelera a carga do painel (limitador por empresa, janela menor, cache duradouro e pre-aquecimento)`
+- `docs: registra as otimizacoes de velocidade do painel (secao 3.23)`
+
+### O diagnostico (medido em producao em 06/11/2026)
+
+| Cenario | Tempo | Observacao |
+|----------|-------|------------|
+| "Todas as empresas", nov/2026 (cache quente) | 1,1 s (2a chamada) / 12 s (1a, instancia fria da Vercel) | resultado completo |
+| "Todas as empresas", set/2026 (2.610 titulos, cache frio) | 63,4 s na 1a rodada e 55,5 s na 2a | 2.069 -> 1.619 titulos ainda sem baixa |
+
+Cada rodada do painel enriquecia ~450-540 titulos (9 req/s) e o front refaz a
+consulta 6x: o mes fechava em **5-7 minutos**, e ate la as datas eram de
+vencimento e o banco ficava vazio.
+
+### Por que nao existe atalho na API (verificado na documentacao e na API real)
+
+- A **API de Baixas** so tem `GET /v1/financeiro/eventos-financeiros/parcelas/{id}/baixa`
+  (por parcela), POST, PATCH, DELETE e GET por `baixa_id`. **Nao existe
+  listagem em lote** (developers.contaazul.com/docs/acquittance-apis-openapi.md).
+- A **listagem** (`/v1/financeiro/contas-a-pagar`, `/contas-a-receber`) **nao traz
+  a baixa**. O JSON real do item tem so: `id, descricao, data_vencimento, status,
+  status_traduzido, total, nao_pago, pago, data_criacao, data_alteracao,
+  data_competencia, categorias, centros_custo, fornecedor/cliente` — sem
+  `data_pagamento`, sem `baixas`, sem `conta_financeira`.
+- O campo `pago` da listagem e a **face**, nao o liquido. Exemplo real (LGP):
+  `total=61.784,96 / pago=59.390,00`, e a baixa mostra `valor_bruto=59.390`,
+  `juros=2.394,96`, `valor_liquido=61.784,96`. Portanto nao da para usar `pago`
+  (o valor do titulo ficaria errado) — a baixa continua indispensavel.
+
+### O que mudou
+
+**1. Limitador de taxa POR EMPRESA (antes era global)**
+
+A API cobra **10 req/s por conta conectada** — e cada empresa conectada tem o
+seu proprio token, ou seja, a sua propria cota. O limitador era global (um
+unico 9 req/s para as 4 empresas), o que desperdicava ~75% da capacidade.
+
+Teste em producao: 4 empresas em paralelo a 9 req/s cada = **35,4 req/s
+agregados**, com 3 respostas 429 em 792 chamadas (0,4%).
+
+| Cenario | Antes (global) | Agora (por empresa) |
+|----------|----------------|---------------------|
+| 2 empresas em paralelo (set/2026) | 51,6 s | **25,8 s** (2x) |
+| 4 empresas ("todas") | 1 cota de 9 req/s | 4 cotas de 9 req/s (ate 4x) |
+
+**2. Janela de vencimento da listagem: 365 -> 180 dias**
+
+A API exige `data_vencimento_de/_ate` mesmo quando o filtro real e por data de
+pagamento — mas a janela e o que define o custo da listagem:
+
+| Janela | 1a pagina (producao) |
+|--------|----------------------|
+| 365 dias | 3,4-5,9 s |
+| 180 dias | **0,5-0,9 s** (5-10x) |
+
+Os totais (`itens_totais`) foram **identicos** nas duas janelas em 5 periodos x
+4 empresas (jan, abr, jul, set e nov/2026), e a API respeita o filtro (janela
+impossivel devolve 0 itens) — ou seja, nenhum titulo pago no periodo fica de
+fora.
+
+**3. Cache de baixa com TTL por recencia do pagamento**
+
+A baixa e imutavel, entao o cache pode durar mais:
+
+| Tipo de titulo | TTL | Por que |
+|----------------|-----|---------|
+| Pago nos ultimos 7 dias (mes em andamento) | 12 h | e o que ainda pode ser corrigido |
+| Periodo ja fechado | **30 dias** | depois da 1a busca o mes nao e mais buscado |
+
+A validade e contada a partir de `atualizado_em` (quando a baixa foi buscada
+na API), nao do momento da leitura — o cache nao "renova" sozinho.
+
+**4. Pre-aquecimento por cron**
+
+Rota `/api/cron/prewarm-baixas` (cron da Vercel, 1x/dia as 03:30 UTC): busca
+as baixas do mes corrente e do anterior de todas as empresas em segundo plano.
+E o mesmo trabalho que o painel faria ao abrir — so que adiantado, de
+madrugada, sem ninguem esperando. O resultado do cache e identico ao que o
+painel produziria.
+
+**Extras:** a leitura do cache do Supabase passou a fazer os lotes (200 ids) em
+PARALELO (4 por vez) — em um mes grande (2.600 titulos) a leitura serial gastava
+~6 s so para montar a lista do que ja estava em cache.
+
+### Variaveis de ambiente novas
+
+| Variavel | Padrao | Para que serve |
+|----------|--------|----------------|
+| `JRM_BAIXAS_POR_SEGUNDO` | 9 | req/s de baixa POR EMPRESA |
+| `JRM_BAIXAS_TTL_HORAS` | 12 | TTL do cache (pagamento recente) |
+| `JRM_BAIXAS_TTL_LONGO_DIAS` | 30 | TTL do cache (periodo fechado) |
+| `JRM_BAIXAS_RECENTE_DIAS` | 7 | o que conta como "recente" |
+| `JRM_JANELA_VENCIMENTO_DIAS` | 180 | janela de vencimento da listagem |
+| `JRM_PREAQUECER_MESES` | 2 | meses cobertos pelo pre-aquecimento |
+| `JRM_PREAQUECER_ORCAMENTO_MS` | 40000 | tempo maximo do pre-aquecimento |
+
+### Verificacoes
+
+- **Titulos identicos** com 180 e 365 dias (153/54 e 116/10 em nov/2026;
+  1.196/245 e 853/142 em set/2026) e **totais identicos** aos da producao.
+- **Pre-aquecimento local** (mock do Supabase + API real): nov/2026 da Juvenal
+  em 14,2 s, com Pagas 235.609,71 e Recebidas 455.108,80 — os mesmos valores
+  do painel em producao.
+- **TTL**: 7 de 7 casos OK (hoje, 3 dias, 6 dias, 8 dias, 5 meses, sem data e
+  duas baixas com uma recente).
+- **Paralelismo**: 2 empresas em paralelo, 51,6 s -> 25,8 s.
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/contaazul.server.ts` | limitador por empresa, TTL por recencia, janela de 180 dias, leitura do cache em paralelo, `preAquecerBaixas()` |
+| `src/routes/api/cron/prewarm-baixas.ts` | rota do cron de pre-aquecimento (protegida pelo `CRON_SECRET`) |
+| `vercel.json` | cron diario do pre-aquecimento (03:30 UTC) |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
