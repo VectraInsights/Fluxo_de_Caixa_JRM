@@ -15,6 +15,7 @@ import { Route as ApiCallbackRouteImport } from './routes/api/callback'
 import { Route as ApiDebugBaixasRouteImport } from './routes/api/debug-baixas'
 import { Route as ApiDebugPagasRouteImport } from './routes/api/debug-pagas'
 import { Route as ApiDebugRecebidosRouteImport } from './routes/api/debug-recebidos'
+import { Route as ApiCronPrewarmBaixasRouteImport } from './routes/api/cron/prewarm-baixas'
 import { Route as ApiCronRenovarTokensRouteImport } from './routes/api/cron/renovar-tokens'
 
 const IndexRoute = IndexRouteImport.update({
@@ -47,6 +48,11 @@ const ApiDebugRecebidosRoute = ApiDebugRecebidosRouteImport.update({
   path: '/api/debug-recebidos',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiCronPrewarmBaixasRoute = ApiCronPrewarmBaixasRouteImport.update({
+  id: '/api/cron/prewarm-baixas',
+  path: '/api/cron/prewarm-baixas',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiCronRenovarTokensRoute = ApiCronRenovarTokensRouteImport.update({
   id: '/api/cron/renovar-tokens',
   path: '/api/cron/renovar-tokens',
@@ -60,6 +66,7 @@ export interface FileRoutesByFullPath {
   '/api/debug-baixas': typeof ApiDebugBaixasRoute
   '/api/debug-pagas': typeof ApiDebugPagasRoute
   '/api/debug-recebidos': typeof ApiDebugRecebidosRoute
+  '/api/cron/prewarm-baixas': typeof ApiCronPrewarmBaixasRoute
   '/api/cron/renovar-tokens': typeof ApiCronRenovarTokensRoute
 }
 export interface FileRoutesByTo {
@@ -69,6 +76,7 @@ export interface FileRoutesByTo {
   '/api/debug-baixas': typeof ApiDebugBaixasRoute
   '/api/debug-pagas': typeof ApiDebugPagasRoute
   '/api/debug-recebidos': typeof ApiDebugRecebidosRoute
+  '/api/cron/prewarm-baixas': typeof ApiCronPrewarmBaixasRoute
   '/api/cron/renovar-tokens': typeof ApiCronRenovarTokensRoute
 }
 export interface FileRoutesById {
@@ -79,6 +87,7 @@ export interface FileRoutesById {
   '/api/debug-baixas': typeof ApiDebugBaixasRoute
   '/api/debug-pagas': typeof ApiDebugPagasRoute
   '/api/debug-recebidos': typeof ApiDebugRecebidosRoute
+  '/api/cron/prewarm-baixas': typeof ApiCronPrewarmBaixasRoute
   '/api/cron/renovar-tokens': typeof ApiCronRenovarTokensRoute
 }
 export interface FileRouteTypes {
@@ -90,6 +99,7 @@ export interface FileRouteTypes {
     | '/api/debug-baixas'
     | '/api/debug-pagas'
     | '/api/debug-recebidos'
+    | '/api/cron/prewarm-baixas'
     | '/api/cron/renovar-tokens'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -99,6 +109,7 @@ export interface FileRouteTypes {
     | '/api/debug-baixas'
     | '/api/debug-pagas'
     | '/api/debug-recebidos'
+    | '/api/cron/prewarm-baixas'
     | '/api/cron/renovar-tokens'
   id:
     | '__root__'
@@ -108,6 +119,7 @@ export interface FileRouteTypes {
     | '/api/debug-baixas'
     | '/api/debug-pagas'
     | '/api/debug-recebidos'
+    | '/api/cron/prewarm-baixas'
     | '/api/cron/renovar-tokens'
   fileRoutesById: FileRoutesById
 }
@@ -118,6 +130,7 @@ export interface RootRouteChildren {
   ApiDebugBaixasRoute: typeof ApiDebugBaixasRoute
   ApiDebugPagasRoute: typeof ApiDebugPagasRoute
   ApiDebugRecebidosRoute: typeof ApiDebugRecebidosRoute
+  ApiCronPrewarmBaixasRoute: typeof ApiCronPrewarmBaixasRoute
   ApiCronRenovarTokensRoute: typeof ApiCronRenovarTokensRoute
 }
 
@@ -165,6 +178,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiDebugRecebidosRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/cron/prewarm-baixas': {
+      id: '/api/cron/prewarm-baixas'
+      path: '/api/cron/prewarm-baixas'
+      fullPath: '/api/cron/prewarm-baixas'
+      preLoaderRoute: typeof ApiCronPrewarmBaixasRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/cron/renovar-tokens': {
       id: '/api/cron/renovar-tokens'
       path: '/api/cron/renovar-tokens'
@@ -182,6 +202,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiDebugBaixasRoute: ApiDebugBaixasRoute,
   ApiDebugPagasRoute: ApiDebugPagasRoute,
   ApiDebugRecebidosRoute: ApiDebugRecebidosRoute,
+  ApiCronPrewarmBaixasRoute: ApiCronPrewarmBaixasRoute,
   ApiCronRenovarTokensRoute: ApiCronRenovarTokensRoute,
 }
 export const routeTree = rootRouteImport

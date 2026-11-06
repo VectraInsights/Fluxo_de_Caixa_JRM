@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/renovar-tokens",
       "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/cron/prewarm-baixas",
+      "schedule": "30 3 * * *"
     }
   ]
 }

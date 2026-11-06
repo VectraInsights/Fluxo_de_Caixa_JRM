@@ -345,14 +345,47 @@ const BAIXA_CACHE_VERSAO = 2;
 // filtrado pelo periodo — assim o mesmo cache serve para qualquer intervalo
 // (um titulo pode ter baixas em meses diferentes).
 const baixaCache = new Map<string, { exp: number; baixas: any[] | null }>();
-const BAIXA_TTL_MS = 12 * 60 * 60 * 1000; // 12 horas: a baixa nao muda
+
+// TTL do cache de baixa. A baixa e IMUTAVEL (o ERP nao a altera; so e
+// corrigida raramente), entao o cache pode durar bem mais que as 12 horas:
+//   - titulo pago nos ultimos BAIXA_RECENTE_DIAS (o mes em andamento): TTL
+//     curto — e o que ainda pode ser corrigido pela empresa;
+//   - titulo de periodo ja fechado: TTL longo — depois da 1a busca o mes nao
+//     e mais buscado na API (o reload passa a ser instantaneo).
+const BAIXA_TTL_MS = Number(process.env.JRM_BAIXAS_TTL_HORAS || "12") * 60 * 60 * 1000;
+const BAIXA_TTL_LONGO_MS =
+  Number(process.env.JRM_BAIXAS_TTL_LONGO_DIAS || "30") * 24 * 60 * 60 * 1000;
+const BAIXA_RECENTE_DIAS = Number(process.env.JRM_BAIXAS_RECENTE_DIAS || "7");
 const BAIXA_TTL_MS_VAZIO = 60 * 1000; // erro/404 nao fica horas no cache
 const CHUNK_CACHE_BANCO = 200; // ids por consulta/upsert no Supabase
 
+/**
+ * TTL de uma baixa conforme a RECENCIA do pagamento: pagamento nos ultimos
+ * dias usa o TTL curto (12 h); pagamento de periodo ja fechado usa o TTL
+ * longo (30 dias).
+ */
+export function ttlDaBaixa(baixas: any[]): number {
+  const limite = Date.now() - BAIXA_RECENTE_DIAS * 24 * 60 * 60 * 1000;
+  for (const b of baixas) {
+    const dp = typeof b?.data_pagamento === "string" ? b.data_pagamento : null;
+    if (!dp) continue;
+    const ts = Date.parse(`${dp}T00:00:00Z`);
+    if (Number.isFinite(ts) && ts >= limite) return BAIXA_TTL_MS;
+  }
+  return BAIXA_TTL_LONGO_MS;
+}
+
 // ------------------- Limite de requisicoes da API de baixas -------------------
 //
-// A Conta Azul aceita 10 requisicoes por SEGUNDO por conta conectada:
+// A Conta Azul aceita 10 requisicoes por SEGUNDO POR CONTA CONECTADA:
 //   "Limite de requisicoes excedido: ate 10 por segundo por conta conectada".
+// Cada empresa conectada tem o seu proprio token, ou seja, a sua propria
+// conta: o limite NAO e global para o app.
+//
+// Medido em producao (06/11/2026): 4 empresas em paralelo, 9 req/s cada
+// (35,4 req/s no agregado) -> 792 chamadas com apenas 3 respostas 429 (0,4%).
+// Antes o limitador era global (um unico 9 req/s para as 4 empresas), o que
+// desperdicava ~75% da capacidade.
 //
 // Disparando 32 chamadas em paralelo, uma parte das baixas voltava 429 e o
 // titulo ficava SEM baixa: no relatorio saia a data de VENCIMENTO (errada) e
@@ -362,35 +395,49 @@ const CHUNK_CACHE_BANCO = 200; // ids por consulta/upsert no Supabase
 const BAIXAS_POR_SEGUNDO = Number(process.env.JRM_BAIXAS_POR_SEGUNDO || "9"); // folga sobre o limite de 10
 const BAIXA_INTERVALO_MIN_MS = 1000 / Math.max(1, BAIXAS_POR_SEGUNDO);
 const BAIXA_INTERVALO_MAX_MS = 3000;
-let baixaIntervaloMs = BAIXA_INTERVALO_MIN_MS;
-let baixaProximoSlot = 0; // instante do proximo pedido liberado
-let baixaApos429 = false; // houve 429 recente: nao alivia o intervalo ainda
+
+// Estado do limitador POR EMPRESA (cada conta conectada tem a sua propria
+// cota de 10 req/s).
+type EstadoLimite = { intervaloMs: number; proximoSlot: number; apos429: boolean };
+const limitesBaixa = new Map<string, EstadoLimite>();
+
+function estadoLimite(empresa: string): EstadoLimite {
+  let e = limitesBaixa.get(empresa);
+  if (!e) {
+    e = { intervaloMs: BAIXA_INTERVALO_MIN_MS, proximoSlot: 0, apos429: false };
+    limitesBaixa.set(empresa, e);
+  }
+  return e;
+}
 
 /** Espera a vez deste pedido na fila (espaca as chamadas na taxa da API). */
-async function esperarVagaBaixa(): Promise<void> {
+async function esperarVagaBaixa(empresa: string): Promise<void> {
+  const e = estadoLimite(empresa);
   const agora = Date.now();
-  const slot = Math.max(agora, baixaProximoSlot);
-  baixaProximoSlot = slot + baixaIntervaloMs;
+  const slot = Math.max(agora, e.proximoSlot);
+  e.proximoSlot = slot + e.intervaloMs;
   const espera = slot - agora;
   if (espera > 0) await new Promise((r) => setTimeout(r, espera));
 }
 
 /** A API recusou por limite de taxa: aumenta o intervalo entre as chamadas. */
-function baixaRecebeu429(): void {
-  baixaApos429 = true;
-  baixaIntervaloMs = Math.min(baixaIntervaloMs * 2, BAIXA_INTERVALO_MAX_MS);
+function baixaRecebeu429(empresa: string): void {
+  const e = estadoLimite(empresa);
+  e.apos429 = true;
+  e.intervaloMs = Math.min(e.intervaloMs * 2, BAIXA_INTERVALO_MAX_MS);
 }
 
 /** A chamada deu certo: depois de uma sequencia de acertos, alivia o intervalo. */
-function baixaDeuCerto(): void {
-  if (baixaApos429) {
+function baixaDeuCerto(empresa: string): void {
+  const e = estadoLimite(empresa);
+  if (e.apos429) {
     // so alivia depois de uma sequencia de acertos (evita oscilar)
-    baixaApos429 = false;
-    baixaIntervaloMs = Math.min(baixaIntervaloMs, BAIXA_INTERVALO_MAX_MS);
+    e.apos429 = false;
+    e.intervaloMs = Math.min(e.intervaloMs, BAIXA_INTERVALO_MAX_MS);
     return;
   }
-  if (baixaIntervaloMs > BAIXA_INTERVALO_MIN_MS) {
-    baixaIntervaloMs = Math.max(BAIXA_INTERVALO_MIN_MS, baixaIntervaloMs * 0.92);
+  if (e.intervaloMs > BAIXA_INTERVALO_MIN_MS) {
+    e.intervaloMs = Math.max(BAIXA_INTERVALO_MIN_MS, e.intervaloMs * 0.92);
   }
 }
 
@@ -398,12 +445,30 @@ function baixaDeuCerto(): void {
 // ~2 s na API, entao sao necessarios ~20 em voo para sustentar 9 req/s.
 const CONCORRENCIA_BAIXAS = 24;
 
+// Janela de VENCIMENTO usada nas listagens de pagas/recebidas.
+//
+// A API exige data_vencimento_de/_ate mesmo quando o filtro real e por data
+// de pagamento (orientacao oficial Conta Azul) — mas a janela e exatamente o
+// que define o custo da listagem: com 365 dias a 1a pagina levava 3,4-5,9 s
+// (medido em producao em 05/11 e 06/11/2026); com 180 dias cai para
+// 0,5-0,9 s (5-10x). Os totais (`itens_totais`) foram IDENTICOS nas duas
+// janelas em 5 periodos x 4 empresas (jan, abr, jul, set e nov/2026) e a API
+// respeita o filtro (uma janela impossivel devolve 0 itens) — ou seja, nenhum
+// titulo pago no periodo fica de fora.
+const JANELA_VENCIMENTO_DIAS = Number(process.env.JRM_JANELA_VENCIMENTO_DIAS || "180");
+
 // Orcamento de tempo da busca de baixas. A funcao da Vercel tem 60 s de
-// limite (plano Hobby) e a API so aceita 10 req/s: em um mes grande (1.300
-// titulos) nao da para buscar tudo de uma vez. A busca para quando o orcamento
-// acaba e o que sobrou fica para a proxima carga — o cache no Supabase garante
-// que cada carga avanca (e o painel refaz a consulta sozinho).
-const PRAZO_BAIXAS_MS = Number(process.env.JRM_PRAZO_BAIXAS_MS || "42000");
+// limite (plano Hobby) e a API so aceita 10 req/s POR EMPRESA: em um mes
+// grande (1.300 titulos) nao da para buscar tudo de uma vez. A busca para
+// quando o orcamento acaba e o que sobrou fica para a proxima carga — o
+// cache no Supabase garante que cada carga avanca (e o painel refaz a
+// consulta sozinho).
+let prazoBaixasMs = Number(process.env.JRM_PRAZO_BAIXAS_MS || "42000");
+
+/** Ajusta o orcamento de tempo da busca de baixas (usado pelo pre-aquecimento). */
+export function definirPrazoBaixas(ms: number): void {
+  prazoBaixasMs = Math.max(1000, ms);
+}
 
 // Quando o cache do Supabase falha (tabela ainda nao criada, sem permissao,
 // Supabase fora do ar), nao insistir a cada requisição: espera 30 min.
@@ -887,6 +952,111 @@ export async function executarRenovacaoEmLote(): Promise<{
     falhados,
     detalhes: resultados,
   };
+}
+
+// ------------------- Pre-aquecimento do cache de baixas -------------------
+//
+// O painel so demora quando o cache NAO tem a baixa do titulo (a API da Conta
+// Azul nao tem listagem em lote: e 1 chamada por parcela). Este job roda 1x
+// por dia (cron da Vercel, de madrugada) e busca as baixas do mes corrente e
+// do anterior em segundo plano: quando o usuario abre o painel, o cache ja
+// esta pronto e a carga e instantanea.
+//
+// O trabalho e sempre o MESMO que o painel faria — por isso o cache fica
+// igual (e o resultado e o mesmo). A diferenca e QUANDO ele acontece: de
+// madrugada, sem ninguem esperando.
+
+/** Periodos (meses) cobertos pelo pre-aquecimento: mes atual e anteriores. */
+function periodosDoPreAquecimento(quantos: number): { ini: string; fim: string }[] {
+  const out: { ini: string; fim: string }[] = [];
+  const hoje = new Date();
+  for (let k = 0; k < quantos; k++) {
+    const ini = new Date(Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth() - k, 1));
+    const fim = new Date(Date.UTC(ini.getUTCFullYear(), ini.getUTCMonth() + 1, 0));
+    out.push({
+      ini: ini.toISOString().slice(0, 10),
+      fim: fim.toISOString().slice(0, 10),
+    });
+  }
+  return out;
+}
+
+export async function preAquecerBaixas(opcoes?: {
+  meses?: number;
+  orcamentoMs?: number;
+}): Promise<{
+  empresas: number;
+  periodos: number;
+  orcamentoMs: number;
+  resumo: Array<{
+    empresa: string;
+    periodo: string;
+    pagas: number;
+    recebidas: number;
+    pendentes: number;
+    sem_baixa: number;
+  }>;
+}> {
+  const meses = Math.max(1, opcoes?.meses ?? Number(process.env.JRM_PREAQUECER_MESES || "2"));
+  const orcamentoMs = Math.max(
+    5000,
+    opcoes?.orcamentoMs ?? Number(process.env.JRM_PREAQUECER_ORCAMENTO_MS || "40000"),
+  );
+  const sb = getSupabase();
+  const { data: linhas } = await sb.from("tokens").select("empresa").neq("status", "ERRO");
+  const empresas = [
+    ...new Set((linhas || []).map((l: any) => l.empresa as string).filter(Boolean)),
+  ];
+  const periodos = periodosDoPreAquecimento(meses);
+  const fim = Date.now() + orcamentoMs;
+
+  // Dentro do cron a funcao tem 60 s de limite: a busca de baixas de cada
+  // empresa para antes disso (e o que sobrou fica para a proxima execucao — o
+  // cache no Supabase guarda o que ja foi buscado).
+  const prazoOriginal = prazoBaixasMs;
+  definirPrazoBaixas(Math.min(prazoOriginal, Math.max(5000, orcamentoMs - 15000)));
+  const resumo: Array<{
+    empresa: string;
+    periodo: string;
+    pagas: number;
+    recebidas: number;
+    pendentes: number;
+    sem_baixa: number;
+  }> = [];
+
+  try {
+    // Cada empresa tem a SUA cota de 9 req/s (o limitador e por empresa), por
+    // isso as empresas sao processadas em PARALELO.
+    await Promise.all(
+      empresas.map(async (emp) => {
+        for (const p of periodos) {
+          if (Date.now() >= fim) return;
+          const [pagas, recebidas] = await Promise.all([
+            buscarPagas(emp, p.ini, p.fim),
+            buscarRecebidas(emp, p.ini, p.fim),
+          ]);
+          resumo.push({
+            empresa: emp,
+            periodo: `${p.ini}..${p.fim}`,
+            pagas: pagas.dados.length,
+            recebidas: recebidas.dados.length,
+            pendentes: (pagas.baixas_pendentes || 0) + (recebidas.baixas_pendentes || 0),
+            sem_baixa: (pagas.sem_baixa || 0) + (recebidas.sem_baixa || 0),
+          });
+        }
+      }),
+    );
+  } finally {
+    definirPrazoBaixas(prazoOriginal);
+  }
+
+  const pendentesTotal = resumo.reduce((s, r) => s + r.pendentes, 0);
+  log(
+    "info",
+    `pre-aquecimento: ${empresas.length} empresa(s), ${resumo.length} periodo(s), ${pendentesTotal} baixa(s) ainda pendente(s)`,
+  );
+
+  return { empresas: empresas.length, periodos: periodos.length, orcamentoMs, resumo };
 }
 
 // Uma conta financeira retornada pela API da Conta Azul, com o motivo de ela
@@ -1823,10 +1993,10 @@ async function buscarPagasInterna(
   }
   const tokenRef = { token: tokenInicial };
 
-  // Janela de vencimento de 12 meses: a API exige data_vencimento_de/_ate mesmo
-  // quando o filtro real e por data de pagamento (orientacao oficial Conta Azul).
+  // Janela de vencimento: a API exige data_vencimento_de/_ate mesmo quando o
+  // filtro real e por data de pagamento (ver JANELA_VENCIMENTO_DIAS).
   const vencInicio = new Date(dataInicio + "T00:00:00Z");
-  vencInicio.setUTCDate(vencInicio.getUTCDate() - 365);
+  vencInicio.setUTCDate(vencInicio.getUTCDate() - JANELA_VENCIMENTO_DIAS);
   const vencFim = new Date(dataFim + "T00:00:00Z");
   vencFim.setUTCDate(vencFim.getUTCDate() + 30);
   const venc = {
@@ -2200,8 +2370,8 @@ async function buscarBaixaDaParcela(
   let renoveuToken = false;
 
   for (let tentativa = 0; tentativa < 4; tentativa++) {
-    // Fila por tempo: respeita o limite de 10 req/s da API.
-    await esperarVagaBaixa();
+    // Fila por tempo: respeita o limite de 10 req/s da API (POR EMPRESA).
+    await esperarVagaBaixa(empresa);
     try {
       res = await fetch(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
     } catch (e) {
@@ -2219,7 +2389,7 @@ async function buscarBaixaDaParcela(
       }
     }
     if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
-      baixaRecebeu429();
+      baixaRecebeu429(empresa);
       const espera = 800 * Math.pow(2, tentativa);
       log("warn", `baixa ${parcelaId}: ${res.status} (limite da API, espera ${espera}ms)`);
       await sleep(espera);
@@ -2255,11 +2425,13 @@ async function buscarBaixaDaParcela(
     return { baixas: null, status: "falha" };
   }
 
-  baixaDeuCerto();
+  baixaDeuCerto(empresa);
   const lista: any[] = Array.isArray(j) ? j : j ? [j] : [];
   if (!lista.length) return guardar(null, BAIXA_TTL_MS_VAZIO);
-  baixaCache.set(chave, { exp: Date.now() + BAIXA_TTL_MS, baixas: lista.map(compactarBaixa) });
-  return { baixas: baixaCache.get(chave)!.baixas, status: "ok" };
+  // TTL conforme a recencia do pagamento (periodo fechado = cache longo).
+  const compactadas = lista.map(compactarBaixa);
+  baixaCache.set(chave, { exp: Date.now() + ttlDaBaixa(compactadas), baixas: compactadas });
+  return { baixas: compactadas, status: "ok" };
 }
 
 // ------------------- Cache persistente das baixas (Supabase) -----------------
@@ -2269,40 +2441,64 @@ async function buscarBaixaDaParcela(
 
 /**
  * Le as baixas ja cacheadas no Supabase para as parcelas informadas.
+ *
+ * A validade e contada a partir de `atualizado_em` (quando a baixa foi
+ * buscada na API) e do TTL que a RECENCIA do pagamento pede: pagamento dos
+ * ultimos dias expira em 12 h, pagamento de periodo fechado em 30 dias.
  */
 async function lerBaixasDoSupabase(
   empresa: string,
   parcelaIds: string[],
-): Promise<Map<string, any[]>> {
-  const out = new Map<string, any[]>();
+): Promise<Map<string, { baixas: any[]; exp: number }>> {
+  const out = new Map<string, { baixas: any[]; exp: number }>();
   if (!parcelaIds.length) return out;
   if (Date.now() < cacheBancoIndisponivelAte) return out;
 
   try {
     const sb = getSupabase();
+    // Os ids sao lidos em LOTE (CHUNK_CACHE_BANCO por consulta) e os lotes
+    // correm em PARALELO: em um mes grande (2.600 titulos) a leitura serial
+    // gastava ~6 s so para montar a lista do que ja estava em cache.
+    const lotes: string[][] = [];
     for (let i = 0; i < parcelaIds.length; i += CHUNK_CACHE_BANCO) {
       // A coluna e UUID: ids fora do padrao sao descartados (evita erro de cast).
       const ids = parcelaIds
         .slice(i, i + CHUNK_CACHE_BANCO)
         .filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
-      if (!ids.length) continue;
-      const { data, error } = await sb
-        .from("baixas_cache")
-        .select("parcela_id, baixa")
-        .eq("empresa", empresa)
-        .in("parcela_id", ids);
-      if (error) {
-        cacheBancoIndisponivelAte = Date.now() + 30 * 60 * 1000;
-        log("warn", `cache de baixas (Supabase) indisponivel: ${error.message}`);
-        return out;
-      }
-      for (const row of data || []) {
-        const b = row?.baixa;
-        // Linhas gravadas em outra versao do formato sao ignoradas: a baixa e
-        // buscada de novo na API (e regravida no formato novo).
-        if (!Array.isArray(b) || !b.length) continue;
-        if (b[0]?.v !== BAIXA_CACHE_VERSAO) continue;
-        out.set(String(row.parcela_id), b);
+      if (ids.length) lotes.push(ids);
+    }
+    const CONC_LOTES = 4;
+    for (let i = 0; i < lotes.length; i += CONC_LOTES) {
+      const grupo = lotes.slice(i, i + CONC_LOTES);
+      const respostas = await Promise.all(
+        grupo.map(async (ids) => {
+          const { data, error } = await sb
+            .from("baixas_cache")
+            .select("parcela_id, baixa, atualizado_em")
+            .eq("empresa", empresa)
+            .in("parcela_id", ids);
+          if (error) {
+            cacheBancoIndisponivelAte = Date.now() + 30 * 60 * 1000;
+            log("warn", `cache de baixas (Supabase) indisponivel: ${error.message}`);
+            return null;
+          }
+          return data || [];
+        }),
+      );
+      for (const linhas of respostas) {
+        if (!linhas) continue;
+        for (const row of linhas as any[]) {
+          const b = row?.baixa;
+          // Linhas gravadas em outra versao do formato sao ignoradas: a baixa e
+          // buscada de novo na API (e regravida no formato novo).
+          if (!Array.isArray(b) || !b.length) continue;
+          if (b[0]?.v !== BAIXA_CACHE_VERSAO) continue;
+          // Expirada: a API e consultada de novo.
+          const lidaEm = Date.parse(String(row.atualizado_em || "")) || Date.now();
+          const exp = lidaEm + ttlDaBaixa(b);
+          if (exp <= Date.now()) continue;
+          out.set(String(row.parcela_id), { baixas: b, exp });
+        }
       }
     }
   } catch (e) {
@@ -2404,13 +2600,14 @@ export async function enriquecerComBaixas(
   const doBanco = await lerBaixasDoSupabase(empresa, idsSemCache);
   const aindaFaltam: string[] = [];
   for (const parcelaId of idsSemCache) {
-    const b = doBanco.get(parcelaId);
-    if (b && b.length) {
-      baixasPorParcela.set(parcelaId, b);
-      // Tambem guarda em memoria (12 h) para as proximas consultas.
+    const entrada = doBanco.get(parcelaId);
+    if (entrada && entrada.baixas.length) {
+      baixasPorParcela.set(parcelaId, entrada.baixas);
+      // Tambem guarda em memoria (mesma validade do cache do banco) para as
+      // proximas consultas.
       baixaCache.set(`${empresa}:${parcelaId}`, {
-        exp: Date.now() + BAIXA_TTL_MS,
-        baixas: b,
+        exp: entrada.exp,
+        baixas: entrada.baixas,
       });
     } else {
       aindaFaltam.push(parcelaId);
@@ -2424,7 +2621,7 @@ export async function enriquecerComBaixas(
   const statusPorParcela = new Map<string, StatusBaixa>();
   let pendentes = 0;
   if (aindaFaltam.length) {
-    const prazo = Date.now() + PRAZO_BAIXAS_MS;
+    const prazo = Date.now() + prazoBaixasMs;
     let idx = 0;
     async function worker() {
       while (true) {
@@ -2656,10 +2853,10 @@ async function buscarRecebidasInterna(
   }
   const tokenRef = { token: tokenInicial };
 
-  // Janela de vencimento de 12 meses: a API exige data_vencimento_de/_ate
-  // mesmo quando o filtro real e por data de recebimento.
+  // Janela de vencimento: a API exige data_vencimento_de/_ate mesmo quando o
+  // filtro real e por data de recebimento (ver JANELA_VENCIMENTO_DIAS).
   const vencInicio = new Date(dataInicio + "T00:00:00Z");
-  vencInicio.setUTCDate(vencInicio.getUTCDate() - 365);
+  vencInicio.setUTCDate(vencInicio.getUTCDate() - JANELA_VENCIMENTO_DIAS);
   const vencFim = new Date(dataFim + "T00:00:00Z");
   vencFim.setUTCDate(vencFim.getUTCDate() + 30);
   const venc = {
