@@ -359,6 +359,23 @@ const BAIXA_RECENTE_DIAS = Number(process.env.JRM_BAIXAS_RECENTE_DIAS || "7");
 const BAIXA_TTL_MS_VAZIO = 60 * 1000; // erro/404 nao fica horas no cache
 const CHUNK_CACHE_BANCO = 200; // ids por consulta/upsert no Supabase
 
+// ------------------- Cache persistente do METODO de pagamento -----------------
+//
+// A forma de pagamento (BOLETO, DINHEIRO, PIX...) de um titulo nao muda
+// depois de lancada. O cache em memoria (detalheCache, 5 min) some a cada
+// cold start da Vercel: a cada nova instancia o painel refazia ~100 chamadas
+// "detalhe do titulo" — e essas chamadas saiam em rajada, tomavam 429 e
+// alongavam a carga para ~2 minutos.
+//
+// Com a tabela public.detalhes_cache o metodo sobrevive ao cold start e e
+// compartilhado entre as instancias: a 2a carga do dia nao faz nenhuma
+// chamada de detalhe.
+//
+// TTL: 12 h (o metodo e estavel; 12 h da para a empresa corrigir um lancamento
+// e ainda assim nao pagar o preco de refazer as chamadas todo dia).
+const DETALHE_TTL_BANCO_MS =
+  Number(process.env.JRM_DETALHES_TTL_HORAS || "12") * 60 * 60 * 1000;
+
 /**
  * TTL de uma baixa conforme a RECENCIA do pagamento: pagamento nos ultimos
  * dias usa o TTL curto (12 h); pagamento de periodo ja fechado usa o TTL
@@ -375,7 +392,7 @@ export function ttlDaBaixa(baixas: any[]): number {
   return BAIXA_TTL_LONGO_MS;
 }
 
-// ------------------- Limite de requisicoes da API de baixas -------------------
+// ------------------- Limite de requisicoes da API (POR EMPRESA) ----------------
 //
 // A Conta Azul aceita 10 requisicoes por SEGUNDO POR CONTA CONECTADA:
 //   "Limite de requisicoes excedido: ate 10 por segundo por conta conectada".
@@ -386,6 +403,11 @@ export function ttlDaBaixa(baixas: any[]): number {
 // (35,4 req/s no agregado) -> 792 chamadas com apenas 3 respostas 429 (0,4%).
 // Antes o limitador era global (um unico 9 req/s para as 4 empresas), o que
 // desperdicava ~75% da capacidade.
+//
+// IMPORTANTE: o limite vale para TODA chamada a API da empresa (baixas,
+// listagens e detalhes do metodo de pagamento). Antes, a busca do metodo
+// saia em rajada (4 por vez, sem limite) e tomava 429 em cima das baixas —
+// era o que deixava a carga do painel levar 2 minutos.
 //
 // Disparando 32 chamadas em paralelo, uma parte das baixas voltava 429 e o
 // titulo ficava SEM baixa: no relatorio saia a data de VENCIMENTO (errada) e
@@ -399,19 +421,19 @@ const BAIXA_INTERVALO_MAX_MS = 3000;
 // Estado do limitador POR EMPRESA (cada conta conectada tem a sua propria
 // cota de 10 req/s).
 type EstadoLimite = { intervaloMs: number; proximoSlot: number; apos429: boolean };
-const limitesBaixa = new Map<string, EstadoLimite>();
+const limitesApi = new Map<string, EstadoLimite>();
 
 function estadoLimite(empresa: string): EstadoLimite {
-  let e = limitesBaixa.get(empresa);
+  let e = limitesApi.get(empresa);
   if (!e) {
     e = { intervaloMs: BAIXA_INTERVALO_MIN_MS, proximoSlot: 0, apos429: false };
-    limitesBaixa.set(empresa, e);
+    limitesApi.set(empresa, e);
   }
   return e;
 }
 
 /** Espera a vez deste pedido na fila (espaca as chamadas na taxa da API). */
-async function esperarVagaBaixa(empresa: string): Promise<void> {
+async function esperarVagaApi(empresa: string): Promise<void> {
   const e = estadoLimite(empresa);
   const agora = Date.now();
   const slot = Math.max(agora, e.proximoSlot);
@@ -421,14 +443,14 @@ async function esperarVagaBaixa(empresa: string): Promise<void> {
 }
 
 /** A API recusou por limite de taxa: aumenta o intervalo entre as chamadas. */
-function baixaRecebeu429(empresa: string): void {
+function apiRecebeu429(empresa: string): void {
   const e = estadoLimite(empresa);
   e.apos429 = true;
   e.intervaloMs = Math.min(e.intervaloMs * 2, BAIXA_INTERVALO_MAX_MS);
 }
 
 /** A chamada deu certo: depois de uma sequencia de acertos, alivia o intervalo. */
-function baixaDeuCerto(empresa: string): void {
+function apiDeuCerto(empresa: string): void {
   const e = estadoLimite(empresa);
   if (e.apos429) {
     // so alivia depois de uma sequencia de acertos (evita oscilar)
@@ -474,6 +496,11 @@ export function definirPrazoBaixas(ms: number): void {
 // Supabase fora do ar), nao insistir a cada requisição: espera 30 min.
 let cacheBancoIndisponivelAte = 0;
 
+// O mesmo para o cache de DETALHES (metodo de pagamento), mas separado: se a
+// tabela `detalhes_cache` ainda nao existir, o cache de BAIXAS (que e o
+// critico para as datas) continua funcionando normalmente.
+let cacheDetalhesIndisponivelAte = 0;
+
 // Modo de exibicao do valor do titulo:
 //   "face"   = valor cheio do titulo (valor_bruto da baixa)
 //   "liquido" = o que saiu/entrou no caixa (valor_bruto - desconto + juros + multa)
@@ -512,17 +539,27 @@ export function limparCacheDetalhes() {
 }
 
 // ------------------- Retry helper ------------------------------------
+//
+// `empresa` (opcional) e a chave da COTA da API: quando informado, TODA
+// tentativa passa pelo mesmo limitador por empresa (10 req/s por conta
+// conectada) das buscas de baixa. Sem isso, a busca do metodo de pagamento
+// saia em rajada e tomava 429 em cima das baixas — era o que deixava a
+// carga do painel levar 2 minutos.
 async function fetchComRetry(
   url: string,
   init: RequestInit,
   tentativas = 5,
+  empresa?: string,
 ): Promise<Response> {
   let ultErro: any = null;
   for (let i = 0; i < tentativas; i++) {
     try {
+      // Fila por tempo: respeita o limite de 10 req/s da API (POR EMPRESA).
+      if (empresa) await esperarVagaApi(empresa);
       const r = await fetch(url, init);
       // 429 / 5xx: retry com backoff
       if (r.status === 429 || (r.status >= 500 && r.status < 600)) {
+        if (empresa) apiRecebeu429(empresa);
         if (i < tentativas - 1) {
           let espera = 300 * Math.pow(2, i);
           const retryAfter = r.headers.get("retry-after");
@@ -539,6 +576,8 @@ async function fetchComRetry(
           continue;
         }
       }
+      // Resposta boa (inclusive 4xx definitivo): alivia o intervalo.
+      if (empresa) apiDeuCerto(empresa);
       return r;
     } catch (e) {
       ultErro = e;
@@ -595,6 +634,7 @@ async function fetchPaginaRobusta(
         url,
         { headers: { Authorization: `Bearer ${tokenRef.token}` } },
         2,
+        empresa,
       );
     } catch (e) {
       log("warn", `fetchPagina ${empresa} falha de rede (tentativa ${tentativa}/2): ${String(e).slice(0, 100)}`);
@@ -1095,6 +1135,8 @@ async function listarContasFinanceiras(
     const res = await fetchComRetry(
       `https://api-v2.contaazul.com/v1/conta-financeira?pagina=${pagina}&tamanho_pagina=100`,
       { headers: { Authorization: `Bearer ${token}` } },
+      5,
+      empresa,
     );
 
     // Token expirado no meio da paginacao: renova uma vez e refaz a pagina.
@@ -1538,6 +1580,103 @@ export function filtrarPorBancos(
   });
 }
 
+/**
+ * Le do Supabase os METODOS de pagamento ja buscados (tabela
+ * public.detalhes_cache).
+ *
+ * A validade e contada a partir de `atualizado_em` (12 h) — a leitura nao
+ * renova o cache: so a busca na API renova.
+ */
+async function lerDetalhesDoSupabase(
+  empresa: string,
+  tituloIds: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!tituloIds.length) return out;
+  if (Date.now() < cacheDetalhesIndisponivelAte) return out;
+
+  try {
+    const sb = getSupabase();
+    const lotes: string[][] = [];
+    for (let i = 0; i < tituloIds.length; i += CHUNK_CACHE_BANCO) {
+      // A coluna e UUID: ids fora do padrao sao descartados (evita erro de cast).
+      const ids = tituloIds
+        .slice(i, i + CHUNK_CACHE_BANCO)
+        .filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
+      if (ids.length) lotes.push(ids);
+    }
+    const CONC_LOTES = 4;
+    for (let i = 0; i < lotes.length; i += CONC_LOTES) {
+      const grupo = lotes.slice(i, i + CONC_LOTES);
+      const respostas = await Promise.all(
+        grupo.map(async (ids) => {
+          const { data, error } = await sb
+            .from("detalhes_cache")
+            .select("titulo_id, metodo, atualizado_em")
+            .eq("empresa", empresa)
+            .in("titulo_id", ids);
+          if (error) {
+            cacheDetalhesIndisponivelAte = Date.now() + 30 * 60 * 1000;
+            log("warn", `cache de detalhes (Supabase) indisponivel: ${error.message}`);
+            return null;
+          }
+          return data || [];
+        }),
+      );
+      for (const linhas of respostas) {
+        if (!linhas) continue;
+        for (const row of linhas as any[]) {
+          const metodo = typeof row?.metodo === "string" ? row.metodo.trim() : "";
+          // So metodos preenchidos sao cacheados (um titulo sem metodo pode ser
+          // preenchido depois pela empresa — nao vale guardar o vazio).
+          if (!metodo) continue;
+          const lidaEm = Date.parse(String(row.atualizado_em || "")) || Date.now();
+          // Expirado: a API e consultada de novo.
+          if (lidaEm + DETALHE_TTL_BANCO_MS <= Date.now()) continue;
+          out.set(String(row.titulo_id), metodo);
+        }
+      }
+    }
+  } catch (e) {
+    cacheDetalhesIndisponivelAte = Date.now() + 30 * 60 * 1000;
+    log("warn", `cache de detalhes (Supabase) falhou: ${(e as Error)?.message}`);
+  }
+  return out;
+}
+
+/**
+ * Grava (upsert em lote) os metodos de pagamento novos no cache do Supabase.
+ */
+async function gravarDetalhesNoSupabase(
+  empresa: string,
+  itens: { titulo_id: string; metodo: string }[],
+): Promise<void> {
+  if (!itens.length) return;
+  if (Date.now() < cacheDetalhesIndisponivelAte) return;
+  try {
+    const sb = getSupabase();
+    for (let i = 0; i < itens.length; i += CHUNK_CACHE_BANCO) {
+      const lote = itens.slice(i, i + CHUNK_CACHE_BANCO).map((x) => ({
+        empresa,
+        titulo_id: x.titulo_id,
+        metodo: x.metodo,
+        atualizado_em: new Date().toISOString(),
+      }));
+      const { error } = await sb
+        .from("detalhes_cache")
+        .upsert(lote, { onConflict: "empresa,titulo_id" });
+      if (error) {
+        cacheDetalhesIndisponivelAte = Date.now() + 30 * 60 * 1000;
+        log("warn", `cache de detalhes (Supabase) falhou ao gravar: ${error.message}`);
+        return;
+      }
+    }
+  } catch (e) {
+    cacheDetalhesIndisponivelAte = Date.now() + 30 * 60 * 1000;
+    log("warn", `cache de detalhes (Supabase) falhou ao gravar: ${(e as Error)?.message}`);
+  }
+}
+
 async function buscarDetalheFormaPagamento(
   empresa: string,
   endpoint: string,
@@ -1600,13 +1739,13 @@ async function buscarViaCobrancas(
   try {
     const url = `https://api-v2.contaazul.com/v1/cobranca/buscar?recebimento_id=${recebimentoId}`;
     // Busca secundaria (metodo): poucas tentativas para nao atrasar o dashboard
-    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
+    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2, empresa);
     
     if (res.status === 401) {
       const novo = await renovarToken(empresa);
       if (!novo) return { metodo: null, erro: true };
       tokenRef.token = novo;
-      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1);
+      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1, empresa);
     }
     
     if (!res.ok) {
@@ -1643,13 +1782,13 @@ async function buscarParcelaDetalhesPorId(
     let tentativasReauth = 0;
     try {
       // Busca secundaria (metodo): poucas tentativas para nao atrasar o dashboard
-      let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
+      let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2, empresa);
       if (res.status === 401 && tentativasReauth < 1) {
         const novo = await renovarToken(empresa);
         if (!novo) return { metodo: null, erro: true };
         tokenRef.token = novo;
         tentativasReauth++;
-        res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1);
+        res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1, empresa);
       }
 
       if (!res.ok) {
@@ -1701,7 +1840,7 @@ async function buscarMetodoPorListaReceber(
     const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-receber?${params}`;
     // Busca secundaria (classificacao de metodo): poucas tentativas para nao
     // atrasar o dashboard em dias com muitos titulos.
-    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2);
+    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2, empresa);
 
     if (res.status === 401 && tentativasReauth < 1) {
       const novo = await renovarToken(empresa);
@@ -1711,7 +1850,7 @@ async function buscarMetodoPorListaReceber(
       }
       tokenRef.token = novo;
       tentativasReauth++;
-      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1);
+      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1, empresa);
     }
     if (!res.ok) {
       log("warn", `buscarMetodoPorListaReceber ${empresa} pg=${pagina} status=${res.status}`);
@@ -1872,6 +2011,16 @@ async function buscarV2Interna(
   let boletos = 0;
   let comMetodo = 0;
 
+  // Cache persistente dos metodos (Supabase): evita as ~100 chamadas de
+  // detalhe a cada cold start da Vercel. A leitura e em LOTE (1 consulta por
+  // 200 titulos, 4 lotes em paralelo).
+  const metodosDoBanco = await lerDetalhesDoSupabase(
+    empresa,
+    brutos.map((b) => String(b.id)).filter(Boolean),
+  );
+  const metodosNovos: { titulo_id: string; metodo: string }[] = [];
+  let doCache = 0;
+
   async function worker() {
     while (true) {
       const meu = idx++;
@@ -1885,6 +2034,11 @@ async function buscarV2Interna(
       }
 
       if (!metodo) {
+        metodo = metodosDoBanco.get(String(b.id)) ?? null;
+        if (metodo) doCache++;
+      }
+
+      if (!metodo) {
         const resDet = await buscarDetalheFormaPagamento(empresa, endpoint, b.id, tokenRef);
         metodo = resDet.metodo;
         if (resDet.erro) {
@@ -1892,6 +2046,9 @@ async function buscarV2Interna(
           // Nao marca a consulta como falha (evita erro falso de sincronizacao).
           falhaDetalhe = true;
         }
+        // Metodo novo (nao-nulo): guarda no cache persistente para a proxima
+        // carga nao precisar chamar a API de novo.
+        if (metodo) metodosNovos.push({ titulo_id: String(b.id), metodo });
       } else {
         log("info", `${empresa} item ${String(b.id).slice(0, 8)} data=${b.data} valor=${b.valor} classificado de lista como: ${metodo}`);
       }
@@ -1915,9 +2072,11 @@ async function buscarV2Interna(
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCORRENCIA, brutos.length) }, worker));
+  // Grava os metodos novos no cache persistente (1 chamada por 200 titulos).
+  if (metodosNovos.length) await gravarDetalhesNoSupabase(empresa, metodosNovos);
   log(
     "info",
-    `${empresa} a_receber=${brutos.length} com_metodo=${comMetodo} boletos=${boletos}`,
+    `${empresa} a_receber=${brutos.length} com_metodo=${comMetodo} boletos=${boletos} | cache: ${doCache} do banco, ${metodosNovos.length} novos`,
   );
 
   if (falhaDetalhe) {
@@ -2371,7 +2530,7 @@ async function buscarBaixaDaParcela(
 
   for (let tentativa = 0; tentativa < 4; tentativa++) {
     // Fila por tempo: respeita o limite de 10 req/s da API (POR EMPRESA).
-    await esperarVagaBaixa(empresa);
+    await esperarVagaApi(empresa);
     try {
       res = await fetch(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
     } catch (e) {
@@ -2389,7 +2548,7 @@ async function buscarBaixaDaParcela(
       }
     }
     if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
-      baixaRecebeu429(empresa);
+      apiRecebeu429(empresa);
       const espera = 800 * Math.pow(2, tentativa);
       log("warn", `baixa ${parcelaId}: ${res.status} (limite da API, espera ${espera}ms)`);
       await sleep(espera);
@@ -2425,7 +2584,7 @@ async function buscarBaixaDaParcela(
     return { baixas: null, status: "falha" };
   }
 
-  baixaDeuCerto(empresa);
+  apiDeuCerto(empresa);
   const lista: any[] = Array.isArray(j) ? j : j ? [j] : [];
   if (!lista.length) return guardar(null, BAIXA_TTL_MS_VAZIO);
   // TTL conforme a recencia do pagamento (periodo fechado = cache longo).
@@ -2998,7 +3157,7 @@ export async function inspecionarPrimeirosRecebimentos(
   });
   const endpoint = "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar";
   const url = `https://api-v2.contaazul.com${endpoint}?${params}`;
-  const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } });
+  const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 5, empresa);
   if (!res.ok) return { erro: `lista ${res.status}` };
   const j: any = await res.json();
   const itens: any[] = (j.itens || []).slice(0, limite);
@@ -3055,7 +3214,7 @@ export async function buscarBaixaPorId(
   const url = `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/baixa/${baixaId}`;
   let res = await fetchComRetry(url, {
     headers: { Authorization: `Bearer ${tokenRef.token}` },
-  }, 2);
+  }, 2, empresa);
 
   if (res.status === 401) {
     const novo = await renovarToken(empresa);
@@ -3063,7 +3222,7 @@ export async function buscarBaixaPorId(
       tokenRef.token = novo;
       res = await fetchComRetry(url, {
         headers: { Authorization: `Bearer ${novo}` },
-      }, 1);
+      }, 1, empresa);
     } else {
       return { dados: null, ok: false };
     }
@@ -3115,7 +3274,7 @@ export async function buscarBaixaPorParcela(
   const url = `https://api-v2.contaazul.com/v1/financeiro/eventos-financeiros/parcelas/${parcelaId}/baixa`;
   let res = await fetchComRetry(url, {
     headers: { Authorization: `Bearer ${tokenRef.token}` },
-  }, 2);
+  }, 2, empresa);
 
   if (res.status === 401) {
     const novo = await renovarToken(empresa);
@@ -3123,7 +3282,7 @@ export async function buscarBaixaPorParcela(
       tokenRef.token = novo;
       res = await fetchComRetry(url, {
         headers: { Authorization: `Bearer ${novo}` },
-      }, 1);
+      }, 1, empresa);
     } else {
       return { dados: null, ok: false };
     }
@@ -3262,14 +3421,14 @@ export async function buscarTransferenciasJuros(
   const url = `https://api-v2.contaazul.com/v1/financeiro/transferencias${params.toString() ? "?" + params.toString() : ""}`;
   let res = await fetchComRetry(url, {
     headers: { Authorization: `Bearer ${tokenInicial}` },
-  }, 2);
+  }, 2, empresa);
 
   if (res.status === 401) {
     const novo = await renovarToken(empresa);
     if (novo) {
       res = await fetchComRetry(url, {
         headers: { Authorization: `Bearer ${novo}` },
-      }, 1);
+      }, 1, empresa);
     } else {
       return { dados: [], ok: false };
     }
