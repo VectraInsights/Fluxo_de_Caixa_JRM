@@ -1860,6 +1860,36 @@ node --no-warnings --experimental-transform-types test-prewarm.mts 2
 
 **RESULTADO: OK** nos dois cenarios.
 
+### Verificacao em producao (07/11/2026)
+
+Cron disparado na mao (`vercel crons run /api/cron/prewarm-baixas`) na versao
+publicada, e o log da execucao:
+
+| Etapa | Empresa | Resultado |
+|-------|---------|-----------|
+| Fase 1 (mes corrente, **refresh forcado**) | LGP | 10/10 e 116/116 titulos — `cache banco 0, API 116` |
+| | JRM | 8/8 e 1/1 — `cache banco 0, API 8` |
+| | Rosangela | 18/18 e 13/13 — `cache banco 0, API 18` |
+| | Juvenal | 54/54 e 153/153 — `cache banco 0, API 153` |
+| Fase 2 (out/2026, mes fechado, **sem** refresh) | JRM / Rosangela / LGP | `cache banco 4, API 0` / `97, API 0` / `130, API 0` — cache reutilizado |
+| | Juvenal | `cache banco 173, API 61` — so os que ainda nao estavam no cache |
+
+- execucao completa em **38,3 s** (limite da funcao na Vercel: 60 s);
+- **2 respostas 429** no meio do caminho, absorvidas pelo retry (todos os
+  titulos terminaram com `0 pendentes`);
+- cache no Supabase: **3.363 linhas** (antes 2.813), com as escritas do mes
+  corrente em 07/11 14:56-14:57 UTC.
+
+**Carga do painel logo depois do cron:**
+
+| | Antes da correcao | Depois |
+|---|-------------------|--------|
+| 1a carga ("todas", nov/2026) | 27,9 s | **7,1 s** |
+| 2a carga | 1,3 s | **1,0 s** |
+
+Totais iguais em todas as medicoes: pagas **295 (R$ 1.030.651,11)**, recebidas
+**78 (R$ 567.911,55)**, **0 titulos sem baixa**.
+
 ### Arquivos
 
 | Arquivo | Mudanca |
