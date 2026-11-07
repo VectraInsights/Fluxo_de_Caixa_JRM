@@ -1789,6 +1789,93 @@ git push origin main
 
 ---
 
+## 3.27 Pre-aquecimento que realmente renova o cache do mes corrente (07/11/2026)
+
+**Commits:**
+- `fix: o pre-aquecimento renova as baixas do mes em andamento (o cron rodava antes do TTL de 12h vencer)`
+- `docs: registra o diagnostico do pre-aquecimento e a correcao do refresh forcado (secao 3.27)`
+
+### O problema (achado em 07/11/2026, na 1a carga do dia)
+
+Medindo a carga de "todas" (nov/2026) as 13:56 UTC de 07/11, a 1a chamada
+levou **27,9 s** (a 2a, 1,3 s). O esperado era ~7 s: o cache de baixas devia
+estar aquecido pelo cron da madrugada.
+
+Investigando o cache no Supabase (`baixas_cache`):
+
+| Momento | Escritas no cache |
+|---------|-------------------|
+| 05/11 19:00 UTC | 625 (uso do painel) |
+| 06/11 18:00 UTC | 991 (uso do painel) |
+| **07/11 04:00 UTC** | **916 (o cron rodou)** |
+| 07/11 13:00 UTC | 281 (a medicao) |
+
+O cron **rodou** (escreveu 916 linhas as 04:00 UTC), mas **nao renovou o que
+importava**. Motivo: o TTL das baixas recentes e de **12 h** e o painel e usado
+no fim da tarde (escritas as 18:55 UTC de 06/11) — essas entradas so vencem
+as **06:55 UTC de 07/11**. O cron das **03:30 UTC** rodou **antes** do
+vencimento, encontrou tudo "fresco" e nao buscou nada de novo. Resultado: a
+primeira carga do dia seguinte pagava a API inteira (~28 s).
+
+Ou seja: o pre-aquecimento funcionava, mas na hora errada — e, mesmo na hora
+certa, ele nao renova o que ainda esta dentro do TTL.
+
+### O que mudou
+
+**1. Refresh FORCADO no mes em andamento (`src/lib/contaazul.server.ts`)**
+
+O pre-aquecimento agora ignora o cache das baixas do **mes corrente** e as
+busca de novo na API, gravando o resultado com a data de gravacao nova.
+Flag `forcarRefreshBaixas`, ligada so durante a execucao do cron:
+
+| Cache | Onde | Com o refresh forcado |
+|-------|------|-----------------------|
+| baixa (memoria) | `buscarBaixaDaParcela` | ignorado |
+| baixa (Supabase) | `lerBaixasDoSupabase` | ignorado (a linha e rebuscada) |
+| lista (memoria, 2 min) | `buscarPagas` / `buscarRecebidas` | ignorado |
+
+O **mes corrente** e a fase 1 do pre-aquecimento; os **meses ja fechados**
+(TTL longo de 30 dias) continuam na fase 2, sem refresh forcado — o cache deles
+so precisa ser preenchido, nao renovado.
+
+**2. Horario do cron (`vercel.json`): 03:30 UTC -> 08:00 UTC**
+
+O cache renovado as 08:00 UTC fica valido por 12 h (ate as 20:00 UTC), o que
+cobre o horario de uso do painel (15h-16h, hora de Sao Paulo). Antes, a
+renovacao (quando existia) valia so ate as 15:30 UTC.
+
+### Teste executado (API da Conta Azul e Supabase FALSOS, mock local)
+
+```bash
+node --no-warnings --experimental-transform-types test-prewarm.mts 1
+node --no-warnings --experimental-transform-types test-prewarm.mts 2
+```
+
+| Cenario | Resultado |
+|----------|-----------|
+| 1a execucao (popula o cache) | 4 chamadas de baixa, 2 linhas no cache |
+| 2a execucao (mes corrente) | **+4 chamadas** (as baixas foram re-buscadas) e cache regravado |
+| 2a execucao (2 meses) | **+4 chamadas** — so o mes corrente e forcado |
+| chamada normal (sem o cron) | **+0 chamadas** — o cache continua sendo reutilizado |
+
+**RESULTADO: OK** nos dois cenarios.
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/contaazul.server.ts` | `forcarRefreshBaixas` + `definirForcarRefreshBaixas()`; o pre-aquecimento forca o refresh do mes corrente (fases 1 e 2) |
+| `vercel.json` | cron de pre-aquecimento: `30 3 * * *` -> `0 8 * * *` |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
