@@ -492,6 +492,23 @@ export function definirPrazoBaixas(ms: number): void {
   prazoBaixasMs = Math.max(1000, ms);
 }
 
+// Refresh FORCADO das baixas: quando ligado, o cache (memoria e Supabase) e
+// ignorado e a baixa e buscada de novo na API. E o que o pre-aquecimento usa
+// no mes EM ANDAMENTO.
+//
+// Motivo (medido em 07/11/2026): o TTL das baixas recentes e de 12 h, mas o
+// painel e usado no fim da tarde (escritas no cache as 18:55 UTC). O cron de
+// pre-aquecimento rodava as 03:30 UTC — ANTES dessas entradas vencerem (so
+// vencem as 06:55 UTC) — entao encontrava tudo "fresco" e nao renovava nada:
+// a primeira carga do dia seguinte pagava a API inteira (~28 s). Forcando o
+// refresh no mes corrente, o cron sempre renova o que o usuario vai ver.
+let forcarRefreshBaixas = false;
+
+/** Liga/desliga o refresh forcado das baixas (usado pelo pre-aquecimento). */
+export function definirForcarRefreshBaixas(valor: boolean): void {
+  forcarRefreshBaixas = valor;
+}
+
 // Quando o cache do Supabase falha (tabela ainda nao criada, sem permissao,
 // Supabase fora do ar), nao insistir a cada requisição: espera 30 min.
 let cacheBancoIndisponivelAte = 0;
@@ -1067,27 +1084,45 @@ export async function preAquecerBaixas(opcoes?: {
   try {
     // Cada empresa tem a SUA cota de 9 req/s (o limitador e por empresa), por
     // isso as empresas sao processadas em PARALELO.
-    await Promise.all(
-      empresas.map(async (emp) => {
-        for (const p of periodos) {
-          if (Date.now() >= fim) return;
-          const [pagas, recebidas] = await Promise.all([
-            buscarPagas(emp, p.ini, p.fim),
-            buscarRecebidas(emp, p.ini, p.fim),
-          ]);
-          resumo.push({
-            empresa: emp,
-            periodo: `${p.ini}..${p.fim}`,
-            pagas: pagas.dados.length,
-            recebidas: recebidas.dados.length,
-            pendentes: (pagas.baixas_pendentes || 0) + (recebidas.baixas_pendentes || 0),
-            sem_baixa: (pagas.sem_baixa || 0) + (recebidas.sem_baixa || 0),
-          });
-        }
-      }),
-    );
+    //
+    // Fase 1 — mes EM ANDAMENTO (periodos[0]): as baixas sao buscadas de novo
+    // na API mesmo que ainda estejam no cache (refresh forcado). E o que o
+    // usuario vai ver: sem isso o cron pode rodar antes do TTL de 12 h vencer
+    // e nao renovar nada (medido em 07/11/2026).
+    const processarPeriodo = async (emp: string, p: { ini: string; fim: string }) => {
+      if (Date.now() >= fim) return;
+      const [pagas, recebidas] = await Promise.all([
+        buscarPagas(emp, p.ini, p.fim),
+        buscarRecebidas(emp, p.ini, p.fim),
+      ]);
+      resumo.push({
+        empresa: emp,
+        periodo: `${p.ini}..${p.fim}`,
+        pagas: pagas.dados.length,
+        recebidas: recebidas.dados.length,
+        pendentes: (pagas.baixas_pendentes || 0) + (recebidas.baixas_pendentes || 0),
+        sem_baixa: (pagas.sem_baixa || 0) + (recebidas.sem_baixa || 0),
+      });
+    };
+
+    definirForcarRefreshBaixas(true);
+    try {
+      const mesCorrente = periodos[0];
+      if (mesCorrente) {
+        await Promise.all(empresas.map((emp) => processarPeriodo(emp, mesCorrente)));
+      }
+    } finally {
+      definirForcarRefreshBaixas(false);
+    }
+
+    // Fase 2 — meses ja fechados: o TTL delas e longo (30 dias) e o cache
+    // precisa ser apenas preenchido, nao renovado.
+    for (const p of periodos.slice(1)) {
+      await Promise.all(empresas.map((emp) => processarPeriodo(emp, p)));
+    }
   } finally {
     definirPrazoBaixas(prazoOriginal);
+    definirForcarRefreshBaixas(false);
   }
 
   const pendentesTotal = resumo.reduce((s, r) => s + r.pendentes, 0);
@@ -2133,6 +2168,12 @@ export async function buscarPagas(
   dataInicio: string,
   dataFim: string,
 ): Promise<ResultadoLista> {
+  // Refresh forcado (pre-aquecimento): o cache de lista (2 min) tambem e
+  // contornado, senao a listagem ja enriquecida seria devolvida sem buscar as
+  // baixas de novo na API.
+  if (forcarRefreshBaixas) {
+    return await buscarPagasInterna(empresa, dataInicio, dataFim);
+  }
   const cacheKey = `pagas:${empresa}:${dataInicio}:${dataFim}`;
   const r = await lerOuCriar(
     listCache,
@@ -2524,7 +2565,9 @@ async function buscarBaixaDaParcela(
   const chave = `${empresa}:${parcelaId}`;
   const agora = Date.now();
   const cached = baixaCache.get(chave);
-  if (cached && cached.exp > agora) {
+  // Refresh forcado (pre-aquecimento): o cache de memoria e ignorado e a
+  // baixa e buscada de novo na API.
+  if (!forcarRefreshBaixas && cached && cached.exp > agora) {
     // No cache so entra "vazio" (1 min) e "ok" (12 h) — nunca "falha".
     return { baixas: cached.baixas, status: cached.baixas ? "ok" : "vazio" };
   }
@@ -2667,6 +2710,10 @@ async function lerBaixasDoSupabase(
           // buscada de novo na API (e regravida no formato novo).
           if (!Array.isArray(b) || !b.length) continue;
           if (b[0]?.v !== BAIXA_CACHE_VERSAO) continue;
+          // Refresh forcado (pre-aquecimento do mes corrente): a linha do banco
+          // e IGNORADA para a baixa ser buscada de novo na API (e regravada
+          // com a nova data).
+          if (forcarRefreshBaixas) continue;
           // Expirada: a API e consultada de novo.
           const lidaEm = Date.parse(String(row.atualizado_em || "")) || Date.now();
           const exp = lidaEm + ttlDaBaixa(b);
@@ -2764,7 +2811,15 @@ export async function enriquecerComBaixas(
     const parcelaId = String(item.id);
     const chave = `${empresa}:${parcelaId}`;
     const cached = baixaCache.get(chave);
-    if (cached && cached.exp > Date.now() && cached.baixas && cached.baixas.length) {
+    // Com o refresh forcado (pre-aquecimento do mes corrente) o cache de
+    // memoria e ignorado: a baixa e buscada de novo na API.
+    if (
+      !forcarRefreshBaixas &&
+      cached &&
+      cached.exp > Date.now() &&
+      cached.baixas &&
+      cached.baixas.length
+    ) {
       baixasPorParcela.set(parcelaId, cached.baixas);
     } else {
       idsSemCache.push(parcelaId);
@@ -2996,6 +3051,10 @@ export async function buscarRecebidas(
   dataInicio: string,
   dataFim: string,
 ): Promise<ResultadoLista> {
+  // Refresh forcado (pre-aquecimento): contorna o cache de lista (ver buscarPagas).
+  if (forcarRefreshBaixas) {
+    return await buscarRecebidasInterna(empresa, dataInicio, dataFim);
+  }
   const cacheKey = `recebidas:${empresa}:${dataInicio}:${dataFim}`;
   const r = await lerOuCriar(
     listCache,

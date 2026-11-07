@@ -7,7 +7,7 @@
     },
     {
       "path": "/api/cron/prewarm-baixas",
-      "schedule": "30 3 * * *"
+      "schedule": "0 8 * * *"
     }
   ]
 }
