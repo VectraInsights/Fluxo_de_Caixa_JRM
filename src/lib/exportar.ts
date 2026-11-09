@@ -608,7 +608,10 @@ const CHAVES_EMPRESA_FATURAMENTO = ["JUVENAL", "ROSANGELA", "ALVARENGA"] as cons
 const ROTULO_EMPRESA: Record<string, string> = {
   JUVENAL: "Juvenal",
   ROSANGELA: "Rosângela",
-  ALVARENGA: "Alvarenga",
+  // A chave ALVARENGA (faturamento ORTHOCRIN) e a conta "ALVARENGA
+  // TRANSPORTES" da LGP: sao a MESMA transportadora, entao o bloco do PDF
+  // usa o nome completo nos dois casos.
+  ALVARENGA: "Alvarenga Transportes",
   OUTROS: "Outros",
 };
 

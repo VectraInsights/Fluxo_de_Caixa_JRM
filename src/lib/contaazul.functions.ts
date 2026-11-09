@@ -28,9 +28,14 @@ import {
   type BaixaDetalhe,
   type TransferenciaJuros,
   type AtualizarBaixaInput,
+  type ItemLancamento,
 } from "./contaazul.server";
 import { buscarFaturamentoPlanilha, limparCachePlanilha, lerTituloPlanilha, mesDoTitulo } from "./planilha.server";
-import { bancosPermitidosDaEmpresa } from "./bancos";
+import {
+  bancosPermitidosDaEmpresa,
+  separarPorTransportadora,
+  type ListasPorEmpresa,
+} from "./bancos";
 
 export const listarEmpresas = createServerFn({ method: "GET" }).handler(async () => {
   const sb = getSupabase();
@@ -354,6 +359,13 @@ async function resolverEmpresas(empresa: string): Promise<string[]> {
   return [empresa.trim()];
 }
 
+// ------------------- Blocos por transportadora -------------------
+// As listas de titulos de uma empresa sao separadas em blocos por
+// TRANSPORTADORA (separarPorTransportadora, em bancos.ts): os titulos de
+// contas de OUTRA transportadora — hoje a "ALVARENGA TRANSPORTES", dentro da
+// conta da LGP — saem do bloco da empresa dona da conta e formam o bloco
+// delas, como se fossem de outra transportadora no PDF/XLSX.
+
 export const getDashboard = createServerFn({ method: "GET" })
   .validator((d) =>
     z
@@ -385,7 +397,15 @@ export const getDashboard = createServerFn({ method: "GET" })
           );
           empresasComProblema.add(emp);
           dadosIncompletos.add(emp); // sem token, os totais sao 0: a tela tenta de novo
-          return { empresa: emp, bancos: [], rec: [], desp: [], pagas: [], recebidas: [] };
+          return {
+            empresa: emp,
+            bancos: [],
+            rec: [],
+            desp: [],
+            pagas: [],
+            recebidas: [],
+            blocos: new Map<string, ListasPorEmpresa<ItemLancamento>>(),
+          };
         }
         const [sal, rec, desp, pagas, recebidas] = await Promise.all([
           buscarSaldos(emp, token),
@@ -476,15 +496,18 @@ export const getDashboard = createServerFn({ method: "GET" })
         // listas nem nos cards.
         const contasMap = mapaContaParaBanco(sal.todas);
         const bancosOk = bancosPermitidosDaEmpresa(emp);
+        // Nome do banco de cada titulo (vai para o PDF/XLSX). Precisa vir
+        // ANTES do filtro: o banco da BAIXA (a conta realmente usada no
+        // pagamento) tem prioridade sobre o vinculo da listagem, e e ele que
+        // decide se o titulo fica no relatorio.
+        aplicarBancoAosTitulos(rec.dados, contasMap);
+        aplicarBancoAosTitulos(desp.dados, contasMap);
+        aplicarBancoAosTitulos(pagas.dados, contasMap);
+        aplicarBancoAosTitulos(recebidas.dados, contasMap);
         const recF = filtrarPorBancos(rec.dados, contasMap, bancosOk);
         const despF = filtrarPorBancos(desp.dados, contasMap, bancosOk);
         const pagasF = filtrarPorBancos(pagas.dados, contasMap, bancosOk);
         const recebidasF = filtrarPorBancos(recebidas.dados, contasMap, bancosOk);
-        // Nome do banco de cada titulo (vai para o PDF/XLSX).
-        aplicarBancoAosTitulos(recF, contasMap);
-        aplicarBancoAosTitulos(despF, contasMap);
-        aplicarBancoAosTitulos(pagasF, contasMap);
-        aplicarBancoAosTitulos(recebidasF, contasMap);
         const removidos =
           rec.dados.length - recF.length +
           (desp.dados.length - despF.length) +
@@ -504,6 +527,15 @@ export const getDashboard = createServerFn({ method: "GET" })
           desp: despF,
           pagas: pagasF,
           recebidas: recebidasF,
+          // Blocos por transportadora: os titulos de contas de OUTRA
+          // transportadora (ex.: "ALVARENGA TRANSPORTES" dentro da LGP) saem
+          // do bloco da LGP e formam o bloco delas no relatorio.
+          blocos: separarPorTransportadora(emp, contasMap, {
+            receber: recF,
+            pagar: despF,
+            pagos: pagasF,
+            recebidas: recebidasF,
+          }),
         };
       }),
     );
@@ -597,43 +629,43 @@ export const getDashboard = createServerFn({ method: "GET" })
 
     // Detalhamento de Pagos e Recebidas por empresa — fonte única da verdade
     // para as listas, evitando divergência com o card do dashboard.
+    //
+    // A chave do bloco e a TRANSPORTADORA dona da conta financeira do titulo:
+    // os titulos de contas de outra transportadora (ex.: "ALVARENGA
+    // TRANSPORTES" dentro da LGP) formam um bloco proprio, como se fossem
+    // de outra transportadora no relatorio.
+    const paraDetalhe = (i: ItemLancamento): TituloDetalhe => ({
+      data: i.data,
+      valor: i.valor,
+      metodo: i.metodo ?? null,
+      descricao: i.descricao ?? null,
+      terceiro: i.terceiro ?? null,
+      categoria: i.categoria ?? null,
+      banco: i.banco ?? null,
+      juros: i.juros,
+      multa: i.multa,
+      desconto: i.desconto,
+      valor_pago: i.valor_pago,
+    });
     const detalhamento = {
       pagos: [] as { empresa: string; titulos: TituloDetalhe[] }[],
       recebidas: [] as { empresa: string; titulos: TituloDetalhe[] }[],
     };
     for (const r of resultados) {
-      detalhamento.pagos.push({
-        empresa: r.empresa,
-        titulos: r.pagas.map((i) => ({
-          data: i.data,
-          valor: i.valor,
-          metodo: i.metodo ?? null,
-          descricao: i.descricao ?? null,
-          terceiro: i.terceiro ?? null,
-          categoria: i.categoria ?? null,
-          banco: i.banco ?? null,
-          juros: i.juros,
-          multa: i.multa,
-          desconto: i.desconto,
-          valor_pago: i.valor_pago,
-        })),
-      });
-      detalhamento.recebidas.push({
-        empresa: r.empresa,
-        titulos: r.recebidas.map((i) => ({
-          data: i.data,
-          valor: i.valor,
-          metodo: i.metodo ?? null,
-          descricao: i.descricao ?? null,
-          terceiro: i.terceiro ?? null,
-          categoria: i.categoria ?? null,
-          banco: i.banco ?? null,
-          juros: i.juros,
-          multa: i.multa,
-          desconto: i.desconto,
-          valor_pago: i.valor_pago,
-        })),
-      });
+      for (const [nome, listas] of r.blocos) {
+        const temTitulos = listas.pagos.length > 0 || listas.recebidas.length > 0;
+        // A empresa dona da conta sempre aparece (mesmo sem titulo no
+        // periodo); as outras transportadoras so entram quando tem titulo.
+        if (!temTitulos && nome !== r.empresa) continue;
+        detalhamento.pagos.push({
+          empresa: nome,
+          titulos: listas.pagos.map(paraDetalhe),
+        });
+        detalhamento.recebidas.push({
+          empresa: nome,
+          titulos: listas.recebidas.map(paraDetalhe),
+        });
+      }
     }
 
     return {
@@ -727,17 +759,19 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
     };
 
     // Empresas em paralelo — compartilha as mesmas requisições com o getDashboard
-    return await Promise.all(
-      empresas.map(async (emp): Promise<EmpresaBreakdown> => {
+    const porEmpresa = await Promise.all(
+      empresas.map(async (emp): Promise<EmpresaBreakdown[]> => {
         const token = await obterToken(emp);
         if (!token) {
-          return {
-            empresa: emp,
-            receber: { total: 0, titulos: [] },
-            pagar: { total: 0, titulos: [] },
-            pagos: { total: 0, titulos: [] },
-            recebidas: { total: 0, titulos: [] },
-          };
+          return [
+            {
+              empresa: emp,
+              receber: { total: 0, titulos: [] },
+              pagar: { total: 0, titulos: [] },
+              pagos: { total: 0, titulos: [] },
+              recebidas: { total: 0, titulos: [] },
+            },
+          ];
         }
         const [sal, rec, desp, pagas, recebidas] = await Promise.all([
           // As contas financeiras (bancos) sao necessarias para saber de qual
@@ -751,20 +785,33 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
         // Filtra pelos bancos exibidos no painel (mesma regra do getDashboard).
         const contasMap = mapaContaParaBanco(sal.todas);
         const bancosOk = bancosPermitidosDaEmpresa(emp);
-        // Nome do banco de cada titulo (vai para o PDF/XLSX).
+        // Nome do banco de cada titulo (vai para o PDF/XLSX). Vem ANTES do
+        // filtro: o banco da BAIXA tem prioridade sobre o vinculo da
+        // listagem e e ele que decide se o titulo fica no relatorio.
         const comBanco = (itens: any[]) => {
           aplicarBancoAosTitulos(itens, contasMap);
           return itens;
         };
-        return {
-          empresa: emp,
-          receber: montar(comBanco(filtrarPorBancos(rec.dados, contasMap, bancosOk))),
-          pagar: montar(comBanco(filtrarPorBancos(desp.dados, contasMap, bancosOk))),
-          pagos: montar(comBanco(filtrarPorBancos(pagas.dados, contasMap, bancosOk))),
-          recebidas: montar(comBanco(filtrarPorBancos(recebidas.dados, contasMap, bancosOk))),
+        const listas = {
+          receber: filtrarPorBancos(comBanco(rec.dados), contasMap, bancosOk),
+          pagar: filtrarPorBancos(comBanco(desp.dados), contasMap, bancosOk),
+          pagos: filtrarPorBancos(comBanco(pagas.dados), contasMap, bancosOk),
+          recebidas: filtrarPorBancos(comBanco(recebidas.dados), contasMap, bancosOk),
         };
+        // Um bloco por transportadora: os titulos de contas de OUTRA
+        // transportadora (ex.: "ALVARENGA TRANSPORTES" dentro da LGP) saem do
+        // bloco da LGP e formam o bloco delas.
+        const blocos = separarPorTransportadora(emp, contasMap, listas);
+        return [...blocos.entries()].map(([nome, l]) => ({
+          empresa: nome,
+          receber: montar(l.receber),
+          pagar: montar(l.pagar),
+          pagos: montar(l.pagos),
+          recebidas: montar(l.recebidas),
+        }));
       }),
     );
+    return porEmpresa.flat();
   });
 
 // ============================================================================

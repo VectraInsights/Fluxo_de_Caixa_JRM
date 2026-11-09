@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { bancoPermitido } from "./bancos";
+import { bancoPermitido, empresaDaConta } from "./bancos";
 
 // Singleton: cria o cliente uma única vez por processo (seguro pois as
 // credenciais são env vars imutáveis durante o ciclo de vida do servidor).
@@ -1609,11 +1609,20 @@ export function aplicarBancoAosTitulos(
 
 // Filtra os titulos pelos bancos EXIBIDOS no dashboard.
 //
-// Regra (conservadora, para nunca perder dinheiro da lista sem querer):
-//  - titulo sem conta financeira (ou com conta que nao esta no mapa): MANTIDO
-//    (nao da para saber de qual banco veio);
-//  - titulo de um banco conhecido e que NAO esta na lista permitida: REMOVIDO;
-//  - titulo de um banco permitido: MANTIDO.
+// Regra (o banco REALMENTE usado e o da BAIXA, quando ela existe):
+//  - `i.banco` tem PRIORIDADE: e o nome da conta financeira usada no
+//    pagamento/recebimento (vem da baixa, via enriquecerComBaixas). Sem
+//    baixa, cai no vinculo da listagem (conta_id -> mapa de contas);
+//  - titulo sem banco conhecido (sem baixa e sem conta): MANTIDO
+//    (nao da para saber de qual banco veio) — conservador, para nunca
+//    perder dinheiro da lista sem querer;
+//  - titulo de uma conta de OUTRA transportadora (ex.: "ALVARENGA
+//    TRANSPORTES" dentro da LGP): MANTIDO, mas ele sai do bloco da empresa
+//    dona da conta e passa a ser apresentado da transportadora dona da
+//    conta (ver empresaDoTitulo);
+//  - titulo de um banco conhecido e que NAO esta na lista permitida: REMOVIDO
+//    (Cartao de Credito, Banco do Brasil, Daycoval, P.F., Devolucao,
+//    Garantia, Veloe...).
 //
 // Lista de bancos vazia = nao filtra nada.
 export function filtrarPorBancos(
@@ -1623,9 +1632,14 @@ export function filtrarPorBancos(
 ): ItemLancamento[] {
   if (!permitidos || permitidos.length === 0) return itens;
   return (itens ?? []).filter((i) => {
-    if (!i.conta_id) return true;
-    const banco = contaParaBanco.get(String(i.conta_id));
+    // A baixa tem prioridade; sem ela, usa a conta da listagem.
+    const banco =
+      i.banco || (i.conta_id ? contaParaBanco.get(String(i.conta_id)) : undefined);
+    // Sem banco conhecido: mantem (conservador).
     if (!banco) return true;
+    // Conta de outra transportadora: mantem (vai para o bloco dela).
+    if (empresaDaConta(banco)) return true;
+    // Banco conhecido: so passa se estiver na lista exibida no painel.
     return permitidos.some((p) => bancoPermitido(banco, p));
   });
 }
