@@ -1906,6 +1906,119 @@ git push origin main
 
 ---
 
+## 3.28 Filtro de bancos decide pelo banco da baixa e a Alvarenga vira transportadora separada (09/11/2026)
+
+**Commits:**
+- `fix: o filtro de bancos decide pelo banco da baixa e a Alvarenga vira transportadora separada no relatorio`
+- `docs: registra a correcao do filtro de bancos e o bloco proprio da Alvarenga Transportes (secao 3.28)`
+
+### O problema (dois, no mesmo filtro)
+
+**1. Titulos de contas que nao sao bancos vazavam para o relatorio.**
+
+O `filtrarPorBancos` antigo so olhava o `conta_id` da LISTAGEM e o mapa de
+contas — e ignorava `i.banco`, que e o nome da conta financeira **usada na
+baixa** (o pagamento de verdade). Como ha titulos cujo vinculo na listagem
+nao bate com a conta usada, contas como CARTÃO DE CRÉDITO, Banco do Brasil,
+Daycoval, P.F., Devolucao e Garantia apareciam no relatorio.
+
+Medicao em producao (dashboard, `checa-cartoes.mjs`, 09/11/2026), titulos de
+ago-dez/2026 com banco fora dos 4 bancos exibidos:
+
+| Empresa | Lista | Conta | Qtd | Valor |
+|---------|-------|-------|-----|-------|
+| LGP | Pagos | ALVARENGA TRANSPORTES | 21 | R$ 12.644,99 |
+| LGP | Pagos | CARTÃO DE CRÉDITO | 95 | R$ 47.423,07 |
+| LGP | Pagos | Devolução | 5 | R$ 64.501,05 |
+| LGP | Pagos | P.F. | 3 | R$ 7.397,52 |
+| LGP | Recebidos | Daycoval | 8 | R$ 5.649.044,01 |
+| JRM | Pagos | P.F. | 1 | R$ 12.960,00 |
+| Juvenal | Pagos | Garantia | 1 | R$ 8.800,79 |
+| Juvenal | Pagos/Recebidos | Sicoob 3049 | 904 | R$ 1.978.699,96 |
+| Juvenal | Pagos | (sem banco) | 892 | R$ 1.968.311,72 |
+
+**2. A "ALVARENGA TRANSPORTES" nao era tratada como transportadora.**
+
+Dentro da conta da Conta Azul da LGP existe a conta financeira **ALVARENGA
+TRANSPORTES** (ICMS Alvarenga, compra do fornecedor da Alvarenga, seguro
+RC-V/RCTR-C, PIS/COFINS...). O usuario queria esses titulos **fora** do bloco
+da LGP e com bloco **proprio** no PDF, como se fosse outra transportadora.
+
+### O que mudou
+
+**1. Lista unica dos 4 bancos (`src/lib/bancos.ts`)**
+
+`BANCOS_DO_GRUPO = ["BRADESCO", "ITAU", "SICOOB 3049", "SICOOB 3109"]` passa a
+ser a fonte unica para **todas** as empresas (`BANCOS_POR_EMPRESA` e
+`BANCOS_PADRAO` apontam para ela). Antes, `BANCOS_PADRAO` (usado por quem nao
+esta no mapa, ex.: Juvenal) era `["ITAU", "SICOOB", "SICOOB 3109", "BRADESCO"]`
+— sem o 3049, o que faria sumir **R$ 1,98M** de titulos reais do Juvenal.
+
+**2. O filtro decide pelo banco da BAIXA (`filtrarPorBancos`, `contaazul.server.ts`)**
+
+Ordem de decisao, do mais confiavel para o menos:
+
+1. `i.banco` (conta usada na baixa) — **tem prioridade**;
+2. sem baixa, o vinculo da listagem (`conta_id` -> mapa de contas);
+3. sem banco conhecido: **mantido** (conservador — Juvenal tem ~890 titulos/mes
+   sem banco e nao podem sumir da lista);
+4. conta de OUTRA transportadora (`empresaDaConta`): **mantido**, porem sai do
+   bloco da empresa dona da conta (item 3 abaixo);
+5. banco conhecido fora dos 4: **removido** (Cartao, BB, Daycoval, P.F.,
+   Devolucao, Garantia, Veloe...).
+
+Para isso `aplicarBancoAosTitulos` passou a rodar **antes** do filtro (o nome
+do banco precisa existir para a decisao); a ordem antiga fazia o filtro ver
+so o `conta_id`.
+
+**3. A conta ALVARENGA TRANSPORTES vira uma transportadora propria (`bancos.ts`)**
+
+- `EMPRESA_POR_CONTA`: mapa "conta financeira" -> "transportadora" (hoje so a
+  ALVARENGA TRANSPORTES -> "Alvarenga Transportes");
+- `empresaDaConta(nome)`: devolve a transportadora dona de uma conta;
+- `empresaDoTitulo(titulo, mapa, empresaPadrao)`: transportadora dona de um
+  titulo (banco da baixa primeiro, depois a conta da listagem);
+- `separarPorTransportadora(...)`: reparte as 4 listas de uma empresa em
+  **blocos** por transportadora.
+
+`getDashboard` (detalhamento de Pagos/Recebidas) e `getEmpresaBreakdown`
+(A Receber/A Pagar) agora devolvem **um bloco por transportadora**: os
+titulos da conta ALVARENGA saem do bloco "LGP Transportes" e viram o bloco
+"Alvarenga Transportes". No `exportar.ts`, a chave `ALVARENGA` (faturamento
+ORTHOCRIN, que ja existia na planilha) passa a se chamar **"Alvarenga
+Transportes"** — faturamento e titulos caem no MESMO bloco.
+
+O XLSX nao precisa de agrupamento: a coluna "Empresa" das abas passa a
+mostrar "Alvarenga Transportes" nos titulos daquela conta.
+
+### Testes executados (API da Conta Azul e Supabase FALSOS / PDF e XLSX reais)
+
+Tres suites locais, todas verdes:
+
+| Suite | O que cobre |
+|-------|-------------|
+| `test-blocos.mts` | 14 casos do `filtrarPorBancos` (prioridade da baixa, remocao de Cartao/BB/Daycoval/P.F./Devolucao/Garantia/Veloe, manutencao de sem-banco e de Sicoob 3049/3109), `empresaDoTitulo`, `separarPorTransportadora` (2 blocos, 1 bloco quando nao ha titulos de outra transportadora) e a lista exibida das 5 empresas |
+| `test-pdf-blocos.mts` | PDF real com visao "Todas": bloco "Alvarenga Transportes" em pagina propria, com os titulos dela e o faturamento ORTHOCRIN; bloco "LGP Transportes" sem nenhum titulo da Alvarenga; bloco "Juvenal" so com faturamento; nenhuma mencao a CARTÃO DE CRÉDITO / Banco do Brasil / Daycoval / P.F. / Devolução / Garantia / Veloe |
+| `test-xlsx-blocos.mts` | XLSX real: coluna "Empresa" com as duas transportadoras em A Receber/A Pagar/Pagos/Recebidos, linha TOTAL com o valor certo e Resultado = Recebidos − Pagos |
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/bancos.ts` | `BANCOS_DO_GRUPO` (4 bancos) unico para todas as empresas; `EMPRESA_POR_CONTA`, `empresaDaConta`, `empresaDoTitulo`, `separarPorTransportadora` |
+| `src/lib/contaazul.server.ts` | `filtrarPorBancos` decide pelo banco da baixa; mantem conta de outra transportadora e titulo sem banco |
+| `src/lib/contaazul.functions.ts` | `aplicarBancoAosTitulos` antes do filtro; `detalhamento` e `getEmpresaBreakdown` em blocos por transportadora |
+| `src/lib/exportar.ts` | rotulo `ALVARENGA` = "Alvarenga Transportes" |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
