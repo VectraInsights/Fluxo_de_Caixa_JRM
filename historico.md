@@ -2001,6 +2001,33 @@ Tres suites locais, todas verdes:
 | `test-pdf-blocos.mts` | PDF real com visao "Todas": bloco "Alvarenga Transportes" em pagina propria, com os titulos dela e o faturamento ORTHOCRIN; bloco "LGP Transportes" sem nenhum titulo da Alvarenga; bloco "Juvenal" so com faturamento; nenhuma mencao a CARTÃO DE CRÉDITO / Banco do Brasil / Daycoval / P.F. / Devolução / Garantia / Veloe |
 | `test-xlsx-blocos.mts` | XLSX real: coluna "Empresa" com as duas transportadoras em A Receber/A Pagar/Pagos/Recebidos, linha TOTAL com o valor certo e Resultado = Recebidos − Pagos |
 
+### Verificacao em producao (09/11/2026)
+
+Deploy do commit `d6dcb32` no ar e checagem com `checa-cartoes.mjs "todas"
+2026-08-01 2026-12-31` (mesma janela da medicao inicial), direto no serverFn
+de producao:
+
+| Indicador | Antes (09/11, baseline) | Depois |
+|-----------|------------------------|--------|
+| Card Contas Pagas | R$ 24.084.312,37 | **R$ 23.943.229,94** |
+| Card Contas Recebidas | R$ 21.113.171,11 | **R$ 15.464.127,10** |
+| Titulos com banco fora dos 4 (Cartao, BB, Daycoval, P.F., Devolucao, Garantia) | 113 (105 pagos + 8 recebidos) | **0** |
+| Blocos de Pagos | — | LGP (2296) \| **Alvarenga Transportes (21)** \| Rosangela (301) \| JRM (73) \| Juvenal (3588) |
+| Blocos de Recebidas | — | LGP (383) \| **Alvarenga Transportes (0)** \| Rosangela (243) \| JRM (17) \| Juvenal (802) |
+
+As diferencas dos cards fecham exatamente com a medicao inicial:
+
+- Pagas: **-R$ 141.082,43** = CARTAO 47.423,07 + Devolucao 64.501,05 +
+  P.F. 7.397,52 + P.F. JRM 12.960,00 + Garantia 8.800,79;
+- Recebidas: **-R$ 5.649.044,01** = Daycoval (8 titulos da LGP);
+- Os 21 titulos da conta Alvarenga (R$ 12.644,99) continuam nos cards (a
+  separacao muda so as LISTAS), agora no bloco proprio.
+
+O unico grupo que ainda aparece como "fora da lista" sao **364 titulos com
+banco vazio (R$ 1.016.674,56)** — todos mantidos de proposito pela regra
+conservadora (sem banco conhecido, mantem; a maior parte e do Juvenal, que
+nao tem vinculo de conta na listagem).
+
 ### Arquivos
 
 | Arquivo | Mudanca |
