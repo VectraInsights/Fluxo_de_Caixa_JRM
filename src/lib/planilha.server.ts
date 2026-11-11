@@ -84,6 +84,12 @@ const EMPRESA_POR_REMETENTE: Record<string, Dono> = {
   "DESINGTEX": "JUVENAL",
   "MODULO EMBALAGENS": "JUVENAL",
   "ZAR PINTURAS": "JUVENAL",
+  // Rio Quimica S.A. (Sao Jose do Rio Preto - SP). A chave vira
+  // "RIOQUIMICA.S.A" (sem espacos); as variantes cobrem a mesma planilha
+  // escrita com ponto final, so "RIOQUIMICA" ou com outro sufixo.
+  "RIOQUIMICA S.A": "JUVENAL",
+  "RIOQUIMICA S.A.": "JUVENAL",
+  "RIOQUIMICA": "JUVENAL",
   "AMAPA": "JUVENAL",
   "MODERNA": "JUVENAL",
   "ITABOX": "JUVENAL",
