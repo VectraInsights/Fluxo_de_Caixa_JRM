@@ -188,6 +188,7 @@ Uma aba por dia, com o nome igual ao numero do dia ("01".."31"). Coluna B = REME
 | DESINGTEX | Juvenal | *(grafia errada de DESIGNTEX)*
 | MODULO EMBALAGENS | Juvenal |
 | ZAR PINTURAS | Juvenal |
+| RIOQUIMICA S.A | Juvenal |
 
 **ATENCAO — Alvarenga:** nao existe (e nao vai existir) no dropdown de empresas. Ela aparece
 APENAS na visao "Todas as Empresas". Remetente sem regra cai em "OUTROS" (entra no "todas").
@@ -2036,6 +2037,88 @@ nao tem vinculo de conta na listagem).
 | `src/lib/contaazul.server.ts` | `filtrarPorBancos` decide pelo banco da baixa; mantem conta de outra transportadora e titulo sem banco |
 | `src/lib/contaazul.functions.ts` | `aplicarBancoAosTitulos` antes do filtro; `detalhamento` e `getEmpresaBreakdown` em blocos por transportadora |
 | `src/lib/exportar.ts` | rotulo `ALVARENGA` = "Alvarenga Transportes" |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+---
+
+## 3.29 RIOQUIMICA S.A vira cliente da Juvenal no faturamento (11/11/2026)
+
+**Commits:**
+- `fix: cadastra a regra da RIOQUIMICA S.A no faturamento (Juvenal)`
+- `docs: registra a regra da RIOQUIMICA S.A como cliente da Juvenal (secao 3.29)`
+
+### O problema
+
+O remetente **RIOQUIMICA S.A (SAO JOSE DO RIO PRETO - SP)** da planilha de
+cargas nao tinha regra de direcionamento em `EMPRESA_POR_REMETENTE`, entao
+caia em **OUTROS**: o valor nao entrava no faturamento de NENHUMA empresa no
+dropdown (nao aparecia na visao da Juvenal).
+
+Medicao no painel (`clientes-regra.mjs`, nov/2026, antes do deploy):
+
+| Cliente | Painel | Regra nova | Valor |
+|---------|--------|------------|-------|
+| RIOQUIMICA S.A | OUTROS | **JUVENAL** | R$ 25.000,00 |
+
+O usuario confirmou: **esse cliente e da Juvenal**.
+
+### O que mudou
+
+`src/lib/planilha.server.ts` — tres chaves novas em `EMPRESA_POR_REMETENTE`,
+todas apontando para `JUVENAL`:
+
+| Chave na planilha | Chave da regra (normalizada, sem espacos) |
+|-------------------|-------------------------------------------|
+| `RIOQUIMICA S.A` | `RIOQUIMICA.S.A` |
+| `RIOQUIMICA S.A.` (com ponto final) | `RIOQUIMICA.S.A.` |
+| `RIOQUIMICA` (sem sufixo) | `RIOQUIMICA` |
+
+O casamento e feito por `chaveDeRegra` = nome normalizado **sem espacos**
+(cidade entre parenteses, acentos e maiusculas ja tratados por
+`normalizarNome`), entao as tres grafias cobrem o formato real da planilha
+(`RIOQUIMICA S.A (SAO JOSE DO RIO PRETO - SP)`) e as variantes de escrita.
+
+### Teste executado
+
+- `npx tsc --noEmit` — sem erros; `npm run build` — OK.
+- `clientes-regra.mjs` (chama o `getFaturamento` de producao e compara o
+  `empresa` de cada cliente com as regras locais): nov/2026 com 13 clientes,
+  **1 divergencia (a propria RIOQUIMICA, em OUTROS)** antes do deploy.
+
+### Verificacao em producao (11/11/2026)
+
+Deploy do commit `f0b29dd` no ar; as duas checagens no serverFn de producao:
+
+**1. `clientes-regra.mjs` (nov/2026, todas) — antes vs depois:**
+
+| Indicador | Antes (11/11, pre-deploy) | Depois |
+|-----------|---------------------------|--------|
+| RIOQUIMICA S.A no painel | OUTROS | **JUVENAL** |
+| Clientes sem regra (OUTROS) | 1 | **0** |
+| Divergentes (painel x regra) | 1 | **0** |
+
+**2. `visao-juvenal.mjs` (visao "Juvenal Transportes", nov/2026):**
+
+| Indicador | Valor |
+|-----------|-------|
+| Total do faturamento da Juvenal | **R$ 585.297,49** (9 clientes) |
+| RIOQUIMICA S.A nessa visao | **R$ 25.000,00** (6o maior cliente) |
+
+O total da visao "todas" **nao muda** (R$ 751.845,20, igual antes): o valor
+ja era contado em OUTROS — o que muda e ele passar a entrar na visao
+**Juvenal**, que sobe R$ 25.000,00.
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/planilha.server.ts` | `EMPRESA_POR_REMETENTE`: RIOQUIMICA S.A (+ variantes) -> JUVENAL |
 
 ### Como reverter (sem reescrever o historico ja publicado)
 
