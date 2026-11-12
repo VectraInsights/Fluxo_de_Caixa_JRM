@@ -2260,6 +2260,53 @@ git push origin main
 
 ---
 
+## 3.31 Renomeia a secao do PDF para "Transferencias entre contas de mesma titularidade" (12/11/2026)
+
+**Commits:**
+- `fix: renomeia a secao do PDF para "Transferencias entre contas de mesma titularidade"`
+- `docs: registra a mudanca de rotulo da secao de transferencias (secao 3.31)`
+
+### O pedido
+
+Tirar o rotulo **"(informativo — fora dos totais)"** da faixa da secao de
+transferencias no PDF e deixar **so "Transferencias entre contas de mesma
+titularidade"**.
+
+### O que mudou
+
+- `src/lib/exportar.ts` — texto da faixa do cabecalho da secao:
+  - antes: `Transferencias entre contas (informativo — fora dos totais) — R$ X`
+  - agora: `Transferencias entre contas de mesma titularidade — R$ X`
+- Comportamento **nao mudou**: a secao continua aparecendo so no PDF (no fim
+  de cada bloco de empresa e na visao de empresa unica), continua FORA de
+  cards, totais, graficos e XLSX, e a tabela continua sem linha de TOTAL
+  somada. Apenas o texto do cabecalho foi alterado.
+
+### Testes executados (todos verdes)
+
+- `test-transferencias-export.mts`: assercoes atualizadas — confere o novo
+  rotulo, confere que "informativo" e "fora dos totais" NAO aparecem mais no
+  PDF, e continua validando totais identicos com e sem transferencias +
+  XLSX identico. **Resultado: OK (21 assercoes).**
+- Regressao: `test-pdf-blocos`, `test-pdf-banco`, `test-xlsx-blocos`,
+  `test-xlsx-banco`, `test-transferencias` — todas OK.
+- `npx tsc --noEmit` e `npm run build` sem erros.
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/exportar.ts` | texto da faixa de cabecalho da secao de transferencias no PDF |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
