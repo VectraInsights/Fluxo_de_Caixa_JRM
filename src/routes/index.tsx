@@ -628,6 +628,17 @@ function Dashboard() {
     setExportando(formato);
     setErroExportacao(null);
     try {
+      // Transferências entre contas da mesma titularidade: montadas direto do
+      // detalhamento (e não do consolidado) de propósito — são INFORMATIVAS e
+      // só o PDF usa; nenhum total/card/XLSX é afetado por elas.
+      const transferencias = (data?.detalhamento?.transferencias ?? []).flatMap((d) =>
+        (d.itens ?? []).map((t) => ({
+          ...t,
+          // data vem `string | null` da API; o formato do relatorio usa string.
+          data: t.data ?? "",
+          empresa: d.empresa,
+        })),
+      );
       const relatorio = {
         empresa,
         dataInicio,
@@ -637,6 +648,7 @@ function Dashboard() {
         pagos: consolidado.pagos.titulos,
         recebidas: consolidado.recebidas.titulos,
         faturamento: faturamento ?? { total: 0, porDia: [] },
+        transferencias,
       };
       if (formato === "pdf") await exportarPdf(relatorio);
       else await exportarXlsx(relatorio);

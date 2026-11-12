@@ -28,6 +28,19 @@ export type RelatorioListas = {
   pagos: LinhaExport[];
   recebidas: LinhaExport[];
   faturamento: FaturamentoExport;
+  // Transferências entre contas da mesma titularidade (tela de Transferências
+  // da Conta Azul). INFORMATIVAS: aparecem apenas no PDF, em seção propria, e
+  // não entram em nenhum total, card ou planilha.
+  transferencias?: TransferenciaExport[];
+};
+
+export type TransferenciaExport = {
+  empresa?: string;
+  data: string; // YYYY-MM-DD
+  descricao: string | null;
+  origem_conta: string | null; // conta de origem (ex.: "Bradesco")
+  destino_conta: string | null; // conta de destino (ex.: "Sicoob 3109")
+  valor: number;
 };
 
 const ROTULOS: {
@@ -635,6 +648,7 @@ type GrupoEmpresa = {
   faturamento: FaturamentoExport;
   recebidas: LinhaExport[];
   pagos: LinhaExport[];
+  transferencias: TransferenciaExport[];
 };
 
 // Separa o relatorio por empresa: cada grupo leva o Faturamento da empresa
@@ -652,6 +666,7 @@ function agruparPorEmpresa(rel: RelatorioListas): GrupoEmpresa[] {
         faturamento: { total: 0, porDia: [] },
         recebidas: [],
         pagos: [],
+        transferencias: [],
       };
       grupos.set(chave, g);
     }
@@ -680,10 +695,17 @@ function agruparPorEmpresa(rel: RelatorioListas): GrupoEmpresa[] {
   for (const t of rel.recebidas ?? []) grupo(chaveEmpresa(t.empresa || "")).recebidas.push(t);
   for (const t of rel.pagos ?? []) grupo(chaveEmpresa(t.empresa || "")).pagos.push(t);
 
+  // 2b) Transferências entre contas (informativas): mesma separação por
+  //     empresa dos títulos — o bloco recebe só as daquela transportadora.
+  for (const t of rel.transferencias ?? [])
+    grupo(chaveEmpresa(t.empresa || "")).transferencias.push(t);
+
   // 3) Nome de exibicao: o nome cadastrado quando existir (ex.: "Juvenal
   //    Transportes"), senao o nome amigavel da chave (ex.: "Alvarenga").
   for (const g of grupos.values()) {
-    const nomeReal = [...g.recebidas, ...g.pagos].find((t) => t.empresa)?.empresa;
+    const nomeReal = [...g.recebidas, ...g.pagos, ...g.transferencias].find(
+      (t) => t.empresa,
+    )?.empresa;
     if (nomeReal) g.nome = nomeReal;
   }
 
@@ -979,6 +1001,67 @@ export async function exportarPdf(rel: RelatorioListas) {
     return ((doc as any).lastAutoTable?.finalY ?? y + 30) + 10;
   };
 
+  // ------------------- Transferências (informativo) -------------------
+  // Transferências entre contas da mesma titularidade (tela de Transferências
+  // da Conta Azul). São INFORMATIVAS: esta seção é uma listagem de referência
+  // e NÃO entra em nenhum card, total, gráfico ou planilha — por isso a faixa
+  // já avisa "fora dos totais" e a tabela não tem linha de TOTAL somada.
+  const secaoTransferencias = (lista: TransferenciaExport[], yIni: number): number => {
+    let y = yIni;
+    const total = lista.reduce((s, t) => s + (Number(t.valor) || 0), 0);
+    const ordenada = [...lista].sort(
+      (a, b) =>
+        (a.data || "").localeCompare(b.data || "") ||
+        (Number(b.valor) || 0) - (Number(a.valor) || 0),
+    );
+
+    // Faixa cinza (cor neutra, fora da escala verde/vermelha de Recebidos/Pagos)
+    doc.setFillColor(71, 85, 105);
+    doc.rect(margem, y - 4.5, largura - margem * 2, 8, "F");
+    doc.setTextColor(255);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.text(
+      `Transferências entre contas (informativo — fora dos totais) — ${formatarValor(total)}`,
+      margem + 4,
+      y + 1,
+    );
+    doc.setTextColor(0);
+    y += 8;
+
+    const head = [["Data", "Descrição", "De (conta)", "Para (conta)", "Valor (R$)"]];
+    const body = ordenada.map((t) => [
+      t.data ? formatarDataBR(t.data) : "—",
+      t.descricao || "—",
+      t.origem_conta || "—",
+      t.destino_conta || "—",
+      formatarValor(t.valor),
+    ]);
+
+    autoTable(doc, {
+      startY: y,
+      head,
+      body,
+      theme: "grid",
+      styles: {
+        fontSize: 8.5,
+        cellPadding: 1,
+        overflow: "linebreak",
+      },
+      headStyles: { fillColor: [71, 85, 105], textColor: 255, fontStyle: "bold" },
+      columnStyles: {
+        0: { cellWidth: 18 },
+        1: { cellWidth: larguraUtil - 18 - 62 - 62 - 32 },
+        2: { cellWidth: 62 },
+        3: { cellWidth: 62 },
+        4: { cellWidth: 32, halign: "right" },
+      } as any,
+      margin: { top: 12, bottom: 12, left: margem, right: margem },
+    });
+
+    return ((doc as any).lastAutoTable?.finalY ?? y + 30) + 10;
+  };
+
   // Garante espaco para a faixa + um pedaco da tabela; se nao couber, abre
   // uma pagina nova (as secoes fluem, entao so muda quando nao ha espaco).
   const garantirEspaco = (yAtual: number, minimo = 34): number => {
@@ -1038,6 +1121,11 @@ export async function exportarPdf(rel: RelatorioListas) {
         y = garantirEspaco(y);
         y = secaoTitulos(item, lista, y);
       }
+      // Transferências entre contas: por último, só no PDF (informativo).
+      if (g.transferencias.length > 0) {
+        y = garantirEspaco(y);
+        y = secaoTransferencias(g.transferencias, y);
+      }
     }
   } else {
     // -------------------------------------------------------------------
@@ -1055,6 +1143,13 @@ export async function exportarPdf(rel: RelatorioListas) {
       if (!lista.length) continue;
       y = garantirEspaco(y);
       y = secaoTitulos(item, lista, y);
+    }
+
+    // Transferências entre contas: por último, só no PDF (informativo).
+    const transferencias = rel.transferencias ?? [];
+    if (transferencias.length > 0) {
+      y = garantirEspaco(y);
+      y = secaoTransferencias(transferencias, y);
     }
   }
 

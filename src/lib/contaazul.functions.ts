@@ -25,8 +25,10 @@ import {
   buscarBaixaPorParcela,
   atualizarBaixa,
   buscarTransferenciasJuros,
+  buscarTransferencias,
   type BaixaDetalhe,
   type TransferenciaJuros,
+  type TransferenciaConta,
   type AtualizarBaixaInput,
   type ItemLancamento,
 } from "./contaazul.server";
@@ -34,6 +36,7 @@ import { buscarFaturamentoPlanilha, limparCachePlanilha, lerTituloPlanilha, mesD
 import {
   bancosPermitidosDaEmpresa,
   separarPorTransportadora,
+  empresaDaConta,
   type ListasPorEmpresa,
 } from "./bancos";
 
@@ -336,6 +339,10 @@ export type DashboardData = {
   detalhamento: {
     pagos: { empresa: string; titulos: TituloDetalhe[] }[];
     recebidas: { empresa: string; titulos: TituloDetalhe[] }[];
+    // Transferências entre contas da mesma titularidade (tela de Transferências
+    // da Conta Azul). INFORMATIVAS: aparecem apenas no relatório PDF e NÃO
+    // entram em nenhum card, total, gráfico ou XLSX.
+    transferencias: { empresa: string; itens: TransferenciaConta[] }[];
   };
 };
 
@@ -365,6 +372,25 @@ async function resolverEmpresas(empresa: string): Promise<string[]> {
 // contas de OUTRA transportadora — hoje a "ALVARENGA TRANSPORTES", dentro da
 // conta da LGP — saem do bloco da empresa dona da conta e formam o bloco
 // delas, como se fossem de outra transportadora no PDF/XLSX.
+
+// Transferências entre contas da mesma titularidade, agrupadas pela
+// transportadora dona da conta de origem (ou de destino): contas de outra
+// transportadora (ex.: "ALVARENGA TRANSPORTES") formam o bloco delas; o
+// resto fica no bloco da empresa dona da conta (empresaPadrao).
+function agruparTransferencias(
+  empresaPadrao: string,
+  itens: TransferenciaConta[],
+): Map<string, TransferenciaConta[]> {
+  const mapa = new Map<string, TransferenciaConta[]>();
+  for (const t of itens) {
+    const nome =
+      empresaDaConta(t.origem_conta) || empresaDaConta(t.destino_conta) || empresaPadrao;
+    const lista = mapa.get(nome) ?? [];
+    lista.push(t);
+    mapa.set(nome, lista);
+  }
+  return mapa;
+}
 
 export const getDashboard = createServerFn({ method: "GET" })
   .validator((d) =>
@@ -405,9 +431,10 @@ export const getDashboard = createServerFn({ method: "GET" })
             pagas: [],
             recebidas: [],
             blocos: new Map<string, ListasPorEmpresa<ItemLancamento>>(),
+            transferencias: new Map<string, TransferenciaConta[]>(),
           };
         }
-        const [sal, rec, desp, pagas, recebidas] = await Promise.all([
+        const [sal, rec, desp, pagas, recebidas, transf] = await Promise.all([
           buscarSaldos(emp, token),
           buscarV2(
             emp,
@@ -423,7 +450,14 @@ export const getDashboard = createServerFn({ method: "GET" })
           ),
           buscarPagas(emp, data.data_inicio, data.data_fim),
           buscarRecebidas(emp, data.data_inicio, data.data_fim),
+          // Transferências entre contas da mesma titularidade (tela de
+          // Transferências da Conta Azul). Informativas: falha aqui NAO
+          // acende a bolinha nem gera aviso — só fica a linha no log.
+          buscarTransferencias(emp, data.data_inicio, data.data_fim),
         ]);
+        if (!transf.ok) {
+          log("warn", `${emp}: falha ao buscar transferências entre contas.`);
+        }
         const contasComFalha = sal.todas.filter((c) => c.erro);
         if (!sal.ok) {
           avisos.push(`${emp}: falha ao buscar saldos bancários.`);
@@ -536,6 +570,10 @@ export const getDashboard = createServerFn({ method: "GET" })
             pagos: pagasF,
             recebidas: recebidasF,
           }),
+          // Transferências agrupadas pela transportadora dona da conta
+          // (mesma regra dos títulos: conta "ALVARENGA TRANSPORTES" forma o
+          // bloco dela; o resto cai no bloco da empresa dona da conta).
+          transferencias: agruparTransferencias(emp, transf.dados),
         };
       }),
     );
@@ -650,6 +688,9 @@ export const getDashboard = createServerFn({ method: "GET" })
     const detalhamento = {
       pagos: [] as { empresa: string; titulos: TituloDetalhe[] }[],
       recebidas: [] as { empresa: string; titulos: TituloDetalhe[] }[],
+      // Transferências entre contas da mesma titularidade (informativas:
+      // só o relatório PDF mostra — nenhum card/total/XLSX usa).
+      transferencias: [] as { empresa: string; itens: TransferenciaConta[] }[],
     };
     for (const r of resultados) {
       for (const [nome, listas] of r.blocos) {
@@ -665,6 +706,12 @@ export const getDashboard = createServerFn({ method: "GET" })
           empresa: nome,
           titulos: listas.recebidas.map(paraDetalhe),
         });
+      }
+      // Só os blocos que TIVERAM transferência (ao contrário dos títulos,
+      // não há motivo para criar bloco vazio aqui).
+      for (const [nome, itens] of r.transferencias) {
+        if (itens.length === 0) continue;
+        detalhamento.transferencias.push({ empresa: nome, itens });
       }
     }
 

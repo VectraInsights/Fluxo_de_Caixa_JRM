@@ -3480,6 +3480,160 @@ export async function atualizarBaixa(
   }
 }
 
+// ------------------- Transferências entre contas (mesma titularidade) -------
+// Endpoint: GET /v1/financeiro/transferencias?data_inicio&data_fim[&pagina
+// &tamanho_pagina] — a tela de Transferências da Conta Azul.
+//
+// A API EXIGE os dois parâmetros com os nomes `data_inicio`/`data_fim`
+// (outros nomes, ex.: data_de/data_ate, devolvem HTTP 400), recusa janelas
+// maiores que UM ANO e devolve no máximo 10 itens por página por padrão
+// (paginação via `pagina`/`tamanho_pagina`; tamanho_pagina=500 funciona).
+// O JSON de cada item:
+//   { id, descricao, valor, data,
+//     origem:  { data, composicao_valor: {...}, conta_financeira: {id,nome,...} },
+//     destino: { data, composicao_valor: {juros,...}, conta_financeira: {...} } }
+export type TransferenciaConta = {
+  id: string;
+  data: string | null; // YYYY-MM-DD
+  descricao: string | null;
+  valor: number; // líquido da transferência
+  origem_conta: string | null; // nome da conta de origem (ex.: "Bradesco")
+  destino_conta: string | null; // nome da conta de destino (ex.: "Sicoob 3109")
+  juros_destino: number; // juros creditados na conta de destino
+};
+
+// Tamanho de página: 500 cobre tudo numa única chamada (a maior empresa tem
+// ~142 transferências/ano), mas o loop pagina até `itens_totais` por segurança.
+const TRANSFER_TAMANHO_PAGINA = 500;
+
+// Divide o período em janelas de NO MAXIMO 1 ano (limite da API). A janela
+// termina em ini + 1 ano - 1 dia, entao nenhuma janela excede um ano.
+function janelasDeUmAno(dataInicio: string, dataFim: string): { ini: string; fim: string }[] {
+  const janelas: { ini: string; fim: string }[] = [];
+  let ini = dataInicio;
+  while (ini <= dataFim) {
+    const d = new Date(ini + "T00:00:00Z");
+    d.setUTCFullYear(d.getUTCFullYear() + 1);
+    d.setUTCDate(d.getUTCDate() - 1);
+    const fimJanela = d.toISOString().slice(0, 10);
+    const fim = fimJanela < dataFim ? fimJanela : dataFim;
+    janelas.push({ ini, fim });
+    const prox = new Date(fim + "T00:00:00Z");
+    prox.setUTCDate(prox.getUTCDate() + 1);
+    ini = prox.toISOString().slice(0, 10);
+  }
+  return janelas;
+}
+
+// Converte um item cru da API para TransferenciaConta.
+function mapearTransferencia(t: any): TransferenciaConta {
+  const origem = t?.origem ?? {};
+  const destino = t?.destino ?? {};
+  const compDestino = destino.composicao_valor ?? {};
+  const juros =
+    typeof compDestino.juros === "number"
+      ? compDestino.juros
+      : compDestino.juros
+        ? Number(compDestino.juros)
+        : 0;
+  const liquidoOrigem = origem.composicao_valor?.valor_liquido;
+  const valor =
+    typeof t?.valor === "number"
+      ? t.valor
+      : typeof liquidoOrigem === "number"
+        ? liquidoOrigem
+        : 0;
+  return {
+    id: String(t?.id ?? ""),
+    data: t?.data ?? origem.data ?? null,
+    descricao: t?.descricao ?? null,
+    valor,
+    origem_conta: origem.conta_financeira?.nome ?? null,
+    destino_conta: destino.conta_financeira?.nome ?? null,
+    juros_destino: juros,
+  };
+}
+
+/**
+ * Lista as transferências entre contas da empresa (tela de Transferências da
+ * Conta Azul) no período, com paginação e janelas de até 1 ano.
+ *
+ * Uso INFORMATIVO (relatório PDF): o retorno não entra em nenhum card,
+ * total, gráfico ou XLSX.
+ */
+export async function buscarTransferencias(
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<{ dados: TransferenciaConta[]; ok: boolean }> {
+  if (!dataInicio || !dataFim || dataInicio > dataFim) {
+    log("warn", `buscarTransferencias ${empresa} periodo invalido: ${dataInicio}..${dataFim}`);
+    return { dados: [], ok: false };
+  }
+  let token = await obterToken(empresa);
+  if (!token) {
+    log("warn", `buscarTransferencias sem token: ${empresa}`);
+    return { dados: [], ok: false };
+  }
+
+  const itens: TransferenciaConta[] = [];
+  let ok = true;
+
+  for (const janela of janelasDeUmAno(dataInicio, dataFim)) {
+    let pagina = 1;
+    let totais = 0;
+    // Contador POR JANELA: `itens` acumula entre janelas, entao comparar o
+    // acumulado com itens_totais (que e da janela atual) faria a 2a janela
+    // parar de paginar antes da hora.
+    let coletadosNaJanela = 0;
+    do {
+      const url =
+        `https://api-v2.contaazul.com/v1/financeiro/transferencias` +
+        `?data_inicio=${janela.ini}&data_fim=${janela.fim}` +
+        `&pagina=${pagina}&tamanho_pagina=${TRANSFER_TAMANHO_PAGINA}`;
+      let res = await fetchComRetry(
+        url,
+        { headers: { Authorization: `Bearer ${token}` } },
+        2,
+        empresa,
+      );
+      if (res.status === 401) {
+        const novo = await renovarToken(empresa);
+        if (!novo) {
+          log("warn", `buscarTransferencias ${empresa}: token expirado e sem renovacao`);
+          return { dados: itens, ok: false };
+        }
+        token = novo;
+        res = await fetchComRetry(
+          url,
+          { headers: { Authorization: `Bearer ${token}` } },
+          1,
+          empresa,
+        );
+      }
+      if (!res.ok) {
+        log("warn", `buscarTransferencias ${empresa} status=${res.status} ${url.slice(-90)}`);
+        ok = false;
+        break;
+      }
+      const j: any = await res.json();
+      const batch: any[] = Array.isArray(j) ? j : (j.itens || []);
+      for (const t of batch) itens.push(mapearTransferencia(t));
+      coletadosNaJanela += batch.length;
+      totais = typeof j?.itens_totais === "number" ? j.itens_totais : coletadosNaJanela;
+      // Pagina vazia ou já checou tudo: evita loop infinito se a API mentir.
+      if (batch.length === 0) break;
+      pagina++;
+    } while (coletadosNaJanela < totais);
+    if (!ok) break;
+  }
+
+  if (itens.length > 0) {
+    log("info", `buscarTransferencias ${empresa}: ${itens.length} transferencia(s) ${dataInicio}..${dataFim}`);
+  }
+  return { dados: itens, ok };
+}
+
 /**
  * Lista transferências e extrai os juros da conta de destino.
  * Endpoint: GET /v1/financeiro/transferencias
@@ -3499,56 +3653,22 @@ export async function buscarTransferenciasJuros(
   dataInicio?: string,
   dataFim?: string,
 ): Promise<{ dados: TransferenciaJuros[]; ok: boolean }> {
-  const tokenInicial = await obterToken(empresa);
-  if (!tokenInicial) {
-    log("warn", `buscarTransferenciasJuros sem token: ${empresa}`);
-    return { dados: [], ok: false };
-  }
+  // A API exige data_inicio/data_fim: sem periodo a chamada devolve HTTP 400
+  // (era o que fazia esta funcao sempre retornar vazio). Padrao: ultimos 12 meses.
+  const hoje = new Date().toISOString().slice(0, 10);
+  const umAnoAtras = new Date();
+  umAnoAtras.setUTCFullYear(umAnoAtras.getUTCFullYear() - 1);
+  const ini = dataInicio || umAnoAtras.toISOString().slice(0, 10);
+  const fim = dataFim || hoje;
 
-  const params = new URLSearchParams();
-  if (dataInicio) params.set("data_de", dataInicio);
-  if (dataFim) params.set("data_ate", dataFim);
-
-  const url = `https://api-v2.contaazul.com/v1/financeiro/transferencias${params.toString() ? "?" + params.toString() : ""}`;
-  let res = await fetchComRetry(url, {
-    headers: { Authorization: `Bearer ${tokenInicial}` },
-  }, 2, empresa);
-
-  if (res.status === 401) {
-    const novo = await renovarToken(empresa);
-    if (novo) {
-      res = await fetchComRetry(url, {
-        headers: { Authorization: `Bearer ${novo}` },
-      }, 1, empresa);
-    } else {
-      return { dados: [], ok: false };
-    }
-  }
-
-  if (!res.ok) {
-    log("warn", `buscarTransferenciasJuros ${empresa} status=${res.status}`);
-    return { dados: [], ok: false };
-  }
-
-  const j: any = await res.json();
-  const itens: any[] = Array.isArray(j) ? j : (j.itens || []);
-
-  const dados: TransferenciaJuros[] = itens.map((t) => {
-    const destino = t.destino ?? {};
-    const composicao = destino.composicao_valor ?? {};
-    const juros = typeof composicao.juros === "number"
-      ? composicao.juros
-      : (composicao.juros ? Number(composicao.juros) : 0);
-
-    return {
-      id: String(t.id ?? ""),
-      data: t.data ?? t.data_transferencia ?? null,
-      destino_nome: destino.nome ?? destino.titular ?? null,
-      banco_destino: destino.banco ?? destino.conta_bancaria ?? null,
-      juros_destino: juros,
-      valor: t.valor ?? null,
-    };
-  });
-
-  return { dados, ok: true };
+  const { dados, ok } = await buscarTransferencias(empresa, ini, fim);
+  const juros: TransferenciaJuros[] = dados.map((t) => ({
+    id: t.id,
+    data: t.data,
+    destino_nome: t.destino_conta,
+    banco_destino: t.destino_conta,
+    juros_destino: t.juros_destino,
+    valor: t.valor,
+  }));
+  return { dados: juros, ok };
 }
