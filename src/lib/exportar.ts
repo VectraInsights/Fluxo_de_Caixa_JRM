@@ -1001,11 +1001,11 @@ export async function exportarPdf(rel: RelatorioListas) {
     return ((doc as any).lastAutoTable?.finalY ?? y + 30) + 10;
   };
 
-  // ------------------- Transferências (informativo) -------------------
+  // ------------------- Transferências entre contas -------------------
   // Transferências entre contas da mesma titularidade (tela de Transferências
   // da Conta Azul). São INFORMATIVAS: esta seção é uma listagem de referência
-  // e NÃO entra em nenhum card, total, gráfico ou planilha — por isso a faixa
-  // já avisa "fora dos totais" e a tabela não tem linha de TOTAL somada.
+  // e NÃO entra em nenhum card, total, gráfico ou planilha — por isso a
+  // tabela não tem linha de TOTAL somada.
   const secaoTransferencias = (lista: TransferenciaExport[], yIni: number): number => {
     let y = yIni;
     const total = lista.reduce((s, t) => s + (Number(t.valor) || 0), 0);
@@ -1022,7 +1022,7 @@ export async function exportarPdf(rel: RelatorioListas) {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(12);
     doc.text(
-      `Transferências entre contas (informativo — fora dos totais) — ${formatarValor(total)}`,
+      `Transferências entre contas de mesma titularidade — ${formatarValor(total)}`,
       margem + 4,
       y + 1,
     );
