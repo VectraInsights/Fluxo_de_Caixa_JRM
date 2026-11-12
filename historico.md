@@ -2129,6 +2129,137 @@ git push origin main
 
 ---
 
+## 3.30 Transferencias entre contas no PDF (informativo, fora dos totais) (12/11/2026)
+
+**Commits:**
+- `feat: mostra as transferencias entre contas no PDF (informativo, fora dos totais)`
+- `docs: registra as transferencias entre contas no PDF (secao 3.30)`
+
+### O pedido
+
+Puxar as **transferencias entre contas de mesma titularidade** da tela de
+Transferencias da Conta Azul e exibi-las **apenas no relatorio PDF, a carater
+informativo**: elas **nao podem somar nem diminuir** em nenhum card, total,
+grafico ou planilha.
+
+### O bug que impedia (sempre vazia)
+
+Ja existia a funcao `buscarTransferenciasJuros` (endpoint
+`GET /v1/financeiro/transferencias`, usada para juros), mas ela estava **sempre
+retornando vazio**:
+
+| Problema | Codigo antigo | API real |
+|----------|---------------|----------|
+| Nomes dos parametros | `data_de` / `data_ate` | exige **`data_inicio` / `data_fim`** (os nomes errados devolvem HTTP 400: "E necessario informar ambos os parametros") |
+| Campos do JSON | `destino.nome`, `destino.banco` | dados estao em **`origem/destino.conta_financeira.nome`** (e juros em `destino.composicao_valor.juros`) |
+| Paginacao | nenhuma (1 chamada) | devolve **10 itens por padrao**; precisa `pagina` + `tamanho_pagina` (500 funciona) — Juvenal tem **142** transferencias em 2026 |
+| Janela de data | nenhuma | intervalo maximo de **1 ANO** por chamada |
+
+### O que mudou
+
+**`src/lib/contaazul.server.ts`**
+- Nova `buscarTransferencias(empresa, dataInicio, dataFim)`: manda os params
+  certos, divide o periodo em **janelas de ate 1 ano** (`janelasDeUmAno`),
+  pagina ate `itens_totais` (contador **por janela** — comparar o acumulado
+  entre janelas com o total da janela atual fazia a 2a janela parar cedo,
+  bug pego no teste) e mapeia `TransferenciaConta` (id, data, descricao,
+  valor, origem_conta, destino_conta, juros_destino).
+- `buscarTransferenciasJuros` passou a ser uma camada sobre a nova funcao
+  (sem datas, usa os ultimos 12 meses — antes mandava nada e levava 400).
+- **Aviso:** falha na busca de transferencias NAO acende a bolinha de
+  sincronizacao nem gera aviso no painel (so log): elas sao informativas.
+
+**`src/lib/contaazul.functions.ts` (getDashboard)**
+- Busca em paralelo as transferencias de cada empresa e anexa em
+  `detalhamento.transferencias: { empresa, itens }[]`, agrupadas por
+  transportadora com a MESMA regra dos titulos (conta "ALVARENGA
+  TRANSPORTES" forma o bloco dela; o resto cai no bloco da empresa dona).
+- `resumo` (cards), receitas/despesas, saldo e listas **nao mudaram**.
+
+**`src/lib/exportar.ts` (PDF) + `src/routes/index.tsx`**
+- `RelatorioListas.transferencias` (opcional) montada no `exportar()` direto
+  do detalhamento — de proposito FORA do consolidado, para nao tocar em
+  nenhum total.
+- Secao **"Transferencias entre contas (informativo — fora dos totais)"**
+  no FIM de cada bloco de empresa (visao "Todas") e no fim da visao de
+  empresa unica: faixa cinza propria, colunas Data / Descricao / De (conta) /
+  Para (conta) / Valor, ordenada por data. Sem linha de TOTAL somada (o
+  total da faixa e informativo e ja avisa "fora dos totais").
+- **XLSX nao mudou**: `construirXlsx` nao le `transferencias`.
+
+### Testes executados (todos verdes)
+
+| Suite | O que cobre |
+|-------|-------------|
+| `test-transferencias.mts` (NOVA) | API mockada: params `data_inicio`/`data_fim` (nunca `data_de`/`data_ate`), janelas <= 1 ano em periodo de 2 anos, paginacao (2 paginas), mapeamento dos campos, juros do destino, periodo invalido, padrao de 12 meses sem datas — **30 assercoes** |
+| `test-transferencias-export.mts` (NOVA) | PDF com x sem transferencias: secao presente/ausente, cada transferencia no bloco certo (LGP x Alvarenga), contas Daycoval/BB aparecem SO na secao informativa, **totais de Faturamento/Recebidos/Pagos IDENTICOS** com e sem transferencias; XLSX com mesmas abas/Resumo e sem nenhuma transferencia vazando |
+| `test-blocos`, `test-pdf-blocos`, `test-xlsx-blocos`, `test-baixa`, `test-prewarm`, `test-pdf-banco`, `test-xlsx-banco` | regressao (todas OK) |
+
+`npx tsc --noEmit` e `npm run build` sem erros.
+
+### Verificacao em producao (12/11/2026)
+
+Deploy do commit do fix; `getDashboard` (todas, 2026-01-01..2026-12-31):
+
+| Indicador | Valor |
+|-----------|-------|
+| `detalhamento.transferencias` | **4 blocos, 240 itens, R$ 29.525.453,09** |
+| LGP Transportes | 91 itens (R$ 23.302.683,57) — ex.: CRÉD.TED-STR Daycoval -> Sicoob 3109 R$ 433.000,00 em 07/10 |
+| Juvenal Transportes | 142 itens (R$ 6.167.369,52) |
+| Rosangela / JRM | 5 itens / 2 itens |
+| Cards (nov/2026 e ago-dez/2026) | inalterados e funcionando (pagas R$ 2.558.859,76 em nov; R$ 24.757.100,34 em ago-dez) |
+
+Os numeros batem com o dump direto da API feito na investigacao (JRM 2,
+Juvenal 142, LGP 91, Rosangela 5). Contas envolvidas: Bradesco, Itau, Sicoob
+3049, Sicoob 3109, Daycoval e Banco do Brasil — todas de mesma titularidade
+(ao contrario dos TITULOS, que continuam filtrados pelos 4 bancos do grupo,
+as transferencias sao exibidas integralmente, pois sao movimentos entre
+contas proprias).
+
+### Bug CONHECIDO descoberto na investigacao (ainda pendente)
+
+Periodos com **mais de ~155 dias** devolvem **0 titulos em Pagos/Recebidas**
+sem nenhum aviso. Causa (confirmada consultando a API direto): o
+`buscarPagas`/`buscarRecebidas` manda
+`data_vencimento_de = inicio - 180 dias` e `data_vencimento_ate = fim + 30`,
+e a API recusa com **HTTP 400** quando essa janela passa de 365 dias:
+
+```
+http 400 | ERRO: O intervalo de data de vencimento excede o limite maximo
+permitido de 365 dias. Reduza o periodo e tente novamente.
+```
+
+| Periodo | Janela de vencimento | Resultado |
+|---------|----------------------|-----------|
+| nov/2026 (30 d) | 239 d | 200 OK |
+| ago-dez/2026 (153 d) | 362 d | 200 OK |
+| jan-jun/2026 (180 d) | 390 d | **400 -> 0 titulos** |
+| ano inteiro (364 d) | 574 d | **400 -> 0 titulos** |
+
+O 400 e tratado como "sem itens" (nao gera aviso nem `dados_incompletos`).
+**Esse bug e anterior a esta secao** (o diff do commit nao tocou em
+`data_vencimento`/`data_pagamento`) e a correcao proposta e buscar o periodo
+em **janelas de <= 155 dias** (vencimento janela <= 365 d) e unir os
+resultados — pendente de aprovacao do usuario.
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/contaazul.server.ts` | `buscarTransferencias` (params/janelas/paginacao/campos) + `buscarTransferenciasJuros` reescrita sobre ela |
+| `src/lib/contaazul.functions.ts` | busca em paralelo + `detalhamento.transferencias` por transportadora |
+| `src/lib/exportar.ts` | `TransferenciaExport`, `RelatorioListas.transferencias`, secao no PDF (bloco da empresa e empresa unica) |
+| `src/routes/index.tsx` | monta `transferencias` no relatorio a partir do detalhamento (fora do consolidado) |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
