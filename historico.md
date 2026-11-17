@@ -2407,6 +2407,64 @@ git push origin main
 
 ---
 
+## 3.33 Valor dos recebidos corrigido (baixa desatualizada no cache) + aportes/retiradas de capital em campo separado (17/11/2026)
+
+**Commits:**
+- `fix: corrige valor dos recebidos (baixa desatualizada no cache) e separa aportes/retiradas de capital em campo proprio`
+- `docs: registra a correcao do valor dos recebidos e o campo separado de aportes/retiradas (secao 3.33)`
+
+### O pedido
+
+O painel mostrava **R$ 4.384.602,32** para os recebidos do Daycoval da LGP em 16/11/2026 — valor que nem era o bruto (R$ 3.850.953,12) nem o liquido exigido (R$ 3.633.664,01). Os descontos estavam **trocados entre titulos** (ex.: LTRs 32701 mostrava desconto 95.827,85 que na verdade era do LTNs 3005-1).
+
+### A causa
+
+O **cache de baixas no Supabase** (`public.baixas_cache`) estava com a composicao ANTIGA de um titulo que a Conta Azul corrigiu depois da baixa ter sido buscada:
+- O pre-aquecimento do mes (cron `prewarm-baixas`) buscou a baixa às 15:36:54 e gravou no cache: bruto 1.710.488,67 / liquido 1.614.660,82.
+- A Conta Azul alterou o titulo às 15:44:22 (bruto 959.550,16 / liquido 903.416,46).
+- Como a baixa ja estava em cache com TTL longo (periodo fechado = 30 dias), as proximas cargas serviam a composicao antiga — o painel somava R$ 4.384.602,32 em vez de R$ 3.633.664,01.
+
+### A correcao
+
+**`src/lib/contaazul.server.ts`**
+- `ItemLancamento` ganhou `_data_alteracao` (momento em que o titulo foi alterado na listagem da Conta Azul) e `_parcial` (recebimento/pagamento parcial).
+- O cache em memoria e o cache do Supabase passaram a gravar `gravadoEm` (momento em que a baixa foi buscada na API).
+- Nova funcao `baixaDesatualizada(item, baixas, gravadoEm, modo)`: invalida a baixa em cache quando **1)** o titulo foi alterado depois de a baixa ser buscada (`data_alteracao` > momento da busca — sinal preciso) OU **2)** os valores da listagem (refeita a cada 2 min) nao batem com a composicao em cache — **2)** só vale se o cache ja tiver mais de 5 minutos (janela de confianca, para nao refazer a mesma chamada a cada reload).
+- Quando invalida, a baixa e buscada de novo na API (1 chamada por titulo) e o cache e regravado com a composicao atual.
+- `VALOR_RECEBIDAS` ja era `"liquido"`: com a baixa correta, o total Daycoval de 16/11 bate exatamente com a API (**R$ 3.633.664,01**).
+
+**`src/lib/aportes.ts` (novo)**
+- `ehMovimentoDeCapital()`: detecta um movimento de capital quando a categoria e "Aporte de Capital" / "Retirada de Capital" OU o terceiro (cliente/fornecedor) e uma das 4 transportadoras do grupo (LGP, Juvenal, JRM, Rosangela). Isso captura dinheiro que entra ou sai ENTRE empresas do grupo — nao e receita nem despesa da operacao.
+
+**`src/lib/contaazul.functions.ts`**
+- Os totais de `recebidas` e `pagas` (card "Contas Recebidas"/"Contas Pagas", `total_recebidas`/`total_pagas`) agora **excluem** movimentos de capital.
+- Novo campo `detalhamento.aportes` (entradas e saidas por transportadora) e novos campos no `resumo`: `total_aportes` (neto), `total_aportes_recebidas`, `total_aportes_pagas`.
+- A lista de Recebidos continua com a excecao do Daycoval (secao 3.32): o banco Nao aparece na relacao, mas o valor recebido nele SIM.
+
+### O que NAO mudou
+
+- Relacao de bancos do card: continua os 4 do grupo, sem Daycoval.
+- Transferencias entre contas: inalteradas (secao 3.30/3.31, somente PDF, informativas).
+- `VALOR_RECEBIDAS` continua `"liquido"`.
+- Regressao: `tsc`, `npm run build` e todas as 9 suítes de testes (`test-blocos` com +12 assercoes Daycoval, `test-pdf-blocos`, `test-xlsx-blocos`, `test-baixa`, `test-prewarm`, `test-transferencias`, `test-transferencias-export`, `test-pdf-banco`, `test-xlsx-banco`) verdes.
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/contaazul.server.ts` | `_data_alteracao`/`_parcial`; `baixaDesatualizada()`; cache guarda `gravadoEm`; invalida e refetch quando necessario |
+| `src/lib/aportes.ts` (novo) | `ehMovimentoDeCapital()` + constantes de transportadoras e categorias |
+| `src/lib/contaazul.functions.ts` | Totais excluem aportes; `detalhamento.aportes`; `resumo.total_aportes/*` |
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
