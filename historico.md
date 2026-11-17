@@ -2465,6 +2465,61 @@ git push origin main
 
 ---
 
+## 3.34 Períodos longos em recebidos/pagos (janela de vencimento > 365 dias) (17/11/2026)
+
+**Commits:**
+- `fix: corrige períodos longos em recebidos/pagos (janela de vencimento > 365 dias)`
+- `docs: registra a correção de períodos longos em recebidos/pagos (secao 3.34)`
+
+### O pedido
+
+Quando o usuário consulta um período maior que ~155 dias, `buscarPagas` e
+`buscarRecebidas` devolviam **0 títulos** com HTTP 400 da Conta Azul:
+
+> "O intervalo de data de vencimento excede o limite máximo permitido de 365 dias."
+
+### A causa
+
+O filtro de vencimento enviado à API é `[inicio - 180, fim + 30]`, cuja duração
+é `(fim - inicio) + 210` dias. Para períodos maiores que 155 dias isso excede 365
+dias e a API rejeita com HTTP 400.
+
+### A correção
+
+**`src/lib/contaazul.server.ts`**
+- Nova constante `MAX_DIAS_POR_JANELA = 155` (365 - 210 = 155, com margem).
+- Nova função `janelasDePeriodo(dataInicio, dataFim, maxDias)`: divide um período
+  em janelas de até `maxDias` dias, sem sobreposição (nenhum título duplicado).
+- `buscarPagasInterna` e `buscarRecebidasInterna`: quando o período excede
+  155 dias, dividem em janelas, consultam cada uma separadamente e mesclam os
+  resultados (dados, ok, incompleto, sem_baixa, sem_baixa_definitivo,
+  baixas_pendentes). A lógica de uma única janela ficou em
+  `buscarPagasParaJanela` / `buscarRecebidasParaJanela`.
+
+### O que NAO mudou
+
+- Períodos curtos (≤ 155 dias): comportamento inalterado, consulta direta.
+- O cache da lista (`listCache`) continua funcionando por período completo.
+- O filtro real continua sendo `data_pagamento_de/_ate`; a janela de vencimento
+  é só um parâmetro exigido pela API.
+- Exceção Daycoval (secao 3.32), valor líquido (secao 3.33) e aportes em campo
+  separado: inalterados.
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+### Arquivos
+
+| Arquivo | Mudança |
+|---------|---------|
+| `src/lib/contaazul.server.ts` | `MAX_DIAS_POR_JANELA`; `janelasDePeriodo()`; divisão em janelas em `buscarPagasInterna` e `buscarRecebidasInterna` |
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
