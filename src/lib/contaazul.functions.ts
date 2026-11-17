@@ -40,6 +40,7 @@ import {
   empresaDaConta,
   type ListasPorEmpresa,
 } from "./bancos";
+import { ehMovimentoDeCapital } from "./aportes";
 
 export const listarEmpresas = createServerFn({ method: "GET" }).handler(async () => {
   const sb = getSupabase();
@@ -318,6 +319,12 @@ export type DashboardData = {
     total_desconto_recebidas: number;
     total_juros_recebidas: number;
     total_multa_recebidas: number;
+    // Movimentos de capital (aportes/retiradas e dinheiro entre as
+    // transportadoras do grupo): INFORMATIVOS — nao entram em nenhum total
+    // de recebidos/pagos. `total_aportes` e o NETO (entradas - saidas).
+    total_aportes: number;
+    total_aportes_recebidas: number;
+    total_aportes_pagas: number;
     saldo_final: number;
   };
   avisos: string[];
@@ -344,6 +351,14 @@ export type DashboardData = {
     // da Conta Azul). INFORMATIVAS: aparecem apenas no relatório PDF e NÃO
     // entram em nenhum card, total, gráfico ou XLSX.
     transferencias: { empresa: string; itens: TransferenciaConta[] }[];
+    // Movimentos de capital (aportes/retiradas e dinheiro entre as
+    // transportadoras do grupo). INFORMATIVOS: ficam FORA dos totais de
+    // recebidos/pagos e aparecem em campo próprio (card, PDF e planilha).
+    aportes: {
+      empresa: string;
+      entradas: TituloDetalhe[];
+      saidas: TituloDetalhe[];
+    }[];
   };
 };
 
@@ -432,6 +447,7 @@ export const getDashboard = createServerFn({ method: "GET" })
             pagas: [],
             recebidas: [],
             blocos: new Map<string, ListasPorEmpresa<ItemLancamento>>(),
+            blocosAporte: new Map<string, ListasPorEmpresa<ItemLancamento>>(),
             transferencias: new Map<string, TransferenciaConta[]>(),
           };
         }
@@ -561,21 +577,43 @@ export const getDashboard = createServerFn({ method: "GET" })
           );
         }
 
+        // Movimentos de CAPITAL (aporte/retirada de capital ou dinheiro de uma
+        // transportadora do grupo para outra): NAO sao receita/despesa da
+        // operacao. Ficam fora dos totais de recebidos e pagos e vao para um
+        // campo separado (informativo).
+        const pagasAporte = pagasF.filter((i) => ehMovimentoDeCapital(i));
+        const recebidasAporte = recebidasF.filter((i) => ehMovimentoDeCapital(i));
+        const pagasOperacao = pagasF.filter((i) => !ehMovimentoDeCapital(i));
+        const recebidasOperacao = recebidasF.filter((i) => !ehMovimentoDeCapital(i));
+        if (pagasAporte.length || recebidasAporte.length) {
+          log(
+            "info",
+            `movimentos de capital ${emp}: ${pagasAporte.length} saida(s) e ${recebidasAporte.length} entrada(s) fora dos totais de pagos/recebidos`,
+          );
+        }
+
         return {
           empresa: emp,
           bancos: sal.lista,
           rec: recF,
           desp: despF,
-          pagas: pagasF,
-          recebidas: recebidasF,
+          pagas: pagasOperacao,
+          recebidas: recebidasOperacao,
           // Blocos por transportadora: os titulos de contas de OUTRA
           // transportadora (ex.: "ALVARENGA TRANSPORTES" dentro da LGP) saem
           // do bloco da LGP e formam o bloco delas no relatorio.
           blocos: separarPorTransportadora(emp, contasMap, {
             receber: recF,
             pagar: despF,
-            pagos: pagasF,
-            recebidas: recebidasF,
+            pagos: pagasOperacao,
+            recebidas: recebidasOperacao,
+          }),
+          // Blocos dos movimentos de capital (campo separado/informativo).
+          blocosAporte: separarPorTransportadora(emp, contasMap, {
+            receber: [],
+            pagar: [],
+            pagos: pagasAporte,
+            recebidas: recebidasAporte,
           }),
           // Transferências agrupadas pela transportadora dona da conta
           // (mesma regra dos títulos: conta "ALVARENGA TRANSPORTES" forma o
@@ -649,6 +687,16 @@ export const getDashboard = createServerFn({ method: "GET" })
       }
     }
 
+    // Movimentos de capital (INFORMATIVOS): nao entram em nenhum total acima.
+    let totalAportesRecebidas = 0;
+    let totalAportesPagas = 0;
+    for (const r of resultados) {
+      for (const [, listas] of r.blocosAporte) {
+        for (const i of listas.recebidas) totalAportesRecebidas += i.valor;
+        for (const i of listas.pagos) totalAportesPagas += i.valor;
+      }
+    }
+
     const receitas: number[] = [];
     const receitas_boleto: number[] = [];
     const despesas: number[] = [];
@@ -698,6 +746,13 @@ export const getDashboard = createServerFn({ method: "GET" })
       // Transferências entre contas da mesma titularidade (informativas:
       // só o relatório PDF mostra — nenhum card/total/XLSX usa).
       transferencias: [] as { empresa: string; itens: TransferenciaConta[] }[],
+      // Movimentos de capital (informativos: campo separado, fora dos totais
+      // de recebidos/pagos).
+      aportes: [] as {
+        empresa: string;
+        entradas: TituloDetalhe[];
+        saidas: TituloDetalhe[];
+      }[],
     };
     for (const r of resultados) {
       for (const [nome, listas] of r.blocos) {
@@ -713,6 +768,14 @@ export const getDashboard = createServerFn({ method: "GET" })
           empresa: nome,
           titulos: listas.recebidas.map(paraDetalhe),
         });
+      }
+      // Movimentos de capital: bloco proprio por transportadora (so entra quem
+      // tem aporte/retirada no periodo).
+      for (const [nome, listas] of r.blocosAporte) {
+        const entradas = listas.recebidas.map(paraDetalhe);
+        const saidas = listas.pagos.map(paraDetalhe);
+        if (!entradas.length && !saidas.length) continue;
+        detalhamento.aportes.push({ empresa: nome, entradas, saidas });
       }
       // Só os blocos que TIVERAM transferência (ao contrário dos títulos,
       // não há motivo para criar bloco vazio aqui).
@@ -742,6 +805,9 @@ export const getDashboard = createServerFn({ method: "GET" })
         total_desconto_recebidas: Math.round(totalDescontoRecebidas * 100) / 100,
         total_juros_recebidas: Math.round(totalJurosRecebidas * 100) / 100,
         total_multa_recebidas: Math.round(totalMultaRecebidas * 100) / 100,
+        total_aportes: Math.round((totalAportesRecebidas - totalAportesPagas) * 100) / 100,
+        total_aportes_recebidas: Math.round(totalAportesRecebidas * 100) / 100,
+        total_aportes_pagas: Math.round(totalAportesPagas * 100) / 100,
         saldo_final: saldo.length ? saldo[saldo.length - 1] : Math.round(totalBanco * 100) / 100,
       },
       avisos,

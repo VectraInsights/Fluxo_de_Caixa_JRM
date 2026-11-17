@@ -266,6 +266,14 @@ export type ItemLancamento = {
   // Valores originais brutos da API (usados internamente na enriquecimento de baixa)
   _pago?: number;
   _total?: number;
+  // Momento em que o TITULO foi alterado na Conta Azul (data_alteracao da
+  // listagem). Serve para invalidar a baixa em cache: se o titulo foi
+  // alterado depois de a baixa ter sido buscada, a baixa do cache pode estar
+  // com a composicao antiga (desconto/valor corrigidos depois).
+  _data_alteracao?: string;
+  // Recebimento/pagamento PARCIAL (nao_pago > 0): o valor da listagem e so a
+  // parte recebida/paga, entao nao serve para conferir a baixa em cache.
+  _parcial?: boolean;
 };
 
 // Resultado de uma busca de lista (Pagos / Recebidos / A Receber / A Pagar).
@@ -344,7 +352,9 @@ const BAIXA_CACHE_VERSAO = 2;
 // Cache em memoria: guarda as BAIXAS CRUAS (array), e nao o resultado ja
 // filtrado pelo periodo — assim o mesmo cache serve para qualquer intervalo
 // (um titulo pode ter baixas em meses diferentes).
-const baixaCache = new Map<string, { exp: number; baixas: any[] | null }>();
+// `gravadoEm` = momento em que a baixa foi buscada na API (para saber se o
+// titulo foi alterado depois disso — ver `baixaDesatualizada`).
+const baixaCache = new Map<string, { exp: number; baixas: any[] | null; gravadoEm?: number }>();
 
 // TTL do cache de baixa. A baixa e IMUTAVEL (o ERP nao a altera; so e
 // corrigida raramente), entao o cache pode durar bem mais que as 12 horas:
@@ -357,6 +367,10 @@ const BAIXA_TTL_LONGO_MS =
   Number(process.env.JRM_BAIXAS_TTL_LONGO_DIAS || "30") * 24 * 60 * 60 * 1000;
 const BAIXA_RECENTE_DIAS = Number(process.env.JRM_BAIXAS_RECENTE_DIAS || "7");
 const BAIXA_TTL_MS_VAZIO = 60 * 1000; // erro/404 nao fica horas no cache
+// Tempo de "confianca" no cache de baixa: logo apos buscar a baixa, uma
+// divergencia entre a listagem e a baixa nao invalida o cache (evita refazer a
+// mesma chamada em todo reload). Passado esse tempo, a divergencia invalida.
+const JANELA_CONFIANCA_CACHE_MS = 5 * 60 * 1000;
 const CHUNK_CACHE_BANCO = 200; // ids por consulta/upsert no Supabase
 
 // ------------------- Cache persistente do METODO de pagamento -----------------
@@ -2441,6 +2455,8 @@ async function processarPagasResposta(
       ...(parcelaId ? { parcela_id: String(parcelaId) } : {}),
       _pago: bruto,
       _total: liquido,
+      ...(i.data_alteracao ? { _data_alteracao: String(i.data_alteracao) } : {}),
+      ...(parcial ? { _parcial: true } : {}),
     });
   }
   if (comDesconto || comJuros) {
@@ -2450,6 +2466,60 @@ async function processarPagasResposta(
     );
   }
   return brutos;
+}
+
+/**
+ * A baixa em cache pode ficar DESATUALIZADA: a Conta Azul corrige o valor de
+ * um titulo (desconto/valor) depois da baixa lancada e o cache continua
+ * servindo a composicao antiga — o painel mostra um valor que nao existe mais
+ * (ex.: R$ 1.614.660,82 em vez de R$ 903.416,46 no Daycoval da LGP).
+ *
+ * Dois sinais invalidam a baixa em cache:
+ *   1) o TITULO foi alterado depois de a baixa ter sido buscada
+ *      (`data_alteracao` da listagem > momento da busca) — sinal preciso;
+ *   2) os valores da LISTAGEM (refeita a cada 2 min) nao batem com a
+ *      composicao da baixa em cache — sinal heuristico (so vale se o cache
+ *      ja tem idade suficiente, para nao refazer a chamada em todo reload).
+ *
+ * Quando invalida, a baixa e buscada de novo na API (1 chamada por titulo) e
+ * o cache e regravado com a composicao atual.
+ */
+export function baixaDesatualizada(
+  item: ItemLancamento,
+  baixas: any[] | null | undefined,
+  gravadoEm: number | undefined,
+  modo: "face" | "liquido",
+): boolean {
+  if (!baixas || !baixas.length) return false;
+
+  // 1) O titulo foi alterado depois de a baixa ser buscada.
+  if (gravadoEm && item._data_alteracao) {
+    const alterado = Date.parse(item._data_alteracao);
+    if (Number.isFinite(alterado) && alterado > gravadoEm) return true;
+  }
+
+  // 2) Os valores da listagem nao batem com a baixa em cache.
+  //    Recebidas ("liquido"): a listagem mostra o LIQUIDO (`total`).
+  //    Pagas ("face"): a listagem mostra o CHEIO (`pago`).
+  if (item._parcial) return false;
+  const esperado =
+    modo === "liquido" ? Number(item._total || 0) : Number(item._pago || 0);
+  if (esperado <= 0) return false;
+  let daCache = 0;
+  for (const b of baixas) {
+    const vc = b?.valor_composicao || {};
+    daCache +=
+      modo === "liquido"
+        ? Number(vc.valor_liquido || 0)
+        : Number(vc.valor_bruto || b?.valor_bruto || 0);
+  }
+  if (daCache <= 0) return false;
+  if (Math.abs(daCache - esperado) <= 0.01) return false;
+  // Heuristica: so invalida se a baixa do cache ja tem idade (evita refazer a
+  // mesma chamada a cada reload quando a listagem e a baixa divergem de
+  // verdade por um detalhe da API).
+  if (gravadoEm && Date.now() - gravadoEm < JANELA_CONFIANCA_CACHE_MS) return false;
+  return true;
 }
 
 /**
@@ -2575,13 +2645,16 @@ async function buscarBaixaDaParcela(
   empresa: string,
   parcelaId: string,
   tokenRef: { token: string },
+  forcar: boolean = false,
 ): Promise<{ baixas: any[] | null; status: StatusBaixa }> {
   const chave = `${empresa}:${parcelaId}`;
   const agora = Date.now();
   const cached = baixaCache.get(chave);
   // Refresh forcado (pre-aquecimento): o cache de memoria e ignorado e a
   // baixa e buscada de novo na API.
-  if (!forcarRefreshBaixas && cached && cached.exp > agora) {
+  // `forcar` = a baixa do cache foi considerada DESATUALIZADA (titulo
+  // corrigido na Conta Azul): mesmo com cache vivo, a busca e refeita.
+  if (!forcarRefreshBaixas && !forcar && cached && cached.exp > agora) {
     // No cache so entra "vazio" (1 min) e "ok" (12 h) — nunca "falha".
     return { baixas: cached.baixas, status: cached.baixas ? "ok" : "vazio" };
   }
@@ -2592,7 +2665,7 @@ async function buscarBaixaDaParcela(
   // falha de rede/429 NAO e cacheada (e transientia): a proxima carga tenta de
   // novo, para o titulo nao ficar preso com a data de vencimento.
   const guardar = (baixas: any[] | null, ttl: number) => {
-    baixaCache.set(chave, { exp: Date.now() + ttl, baixas });
+    baixaCache.set(chave, { exp: Date.now() + ttl, baixas, gravadoEm: Date.now() });
     return { baixas, status: "vazio" as StatusBaixa };
   };
 
@@ -2661,7 +2734,11 @@ async function buscarBaixaDaParcela(
   if (!lista.length) return guardar(null, BAIXA_TTL_MS_VAZIO);
   // TTL conforme a recencia do pagamento (periodo fechado = cache longo).
   const compactadas = lista.map(compactarBaixa);
-  baixaCache.set(chave, { exp: Date.now() + ttlDaBaixa(compactadas), baixas: compactadas });
+  baixaCache.set(chave, {
+    exp: Date.now() + ttlDaBaixa(compactadas),
+    baixas: compactadas,
+    gravadoEm: Date.now(),
+  });
   return { baixas: compactadas, status: "ok" };
 }
 
@@ -2680,8 +2757,8 @@ async function buscarBaixaDaParcela(
 async function lerBaixasDoSupabase(
   empresa: string,
   parcelaIds: string[],
-): Promise<Map<string, { baixas: any[]; exp: number }>> {
-  const out = new Map<string, { baixas: any[]; exp: number }>();
+): Promise<Map<string, { baixas: any[]; exp: number; gravadoEm: number }>> {
+  const out = new Map<string, { baixas: any[]; exp: number; gravadoEm: number }>();
   if (!parcelaIds.length) return out;
   if (Date.now() < cacheBancoIndisponivelAte) return out;
 
@@ -2732,7 +2809,7 @@ async function lerBaixasDoSupabase(
           const lidaEm = Date.parse(String(row.atualizado_em || "")) || Date.now();
           const exp = lidaEm + ttlDaBaixa(b);
           if (exp <= Date.now()) continue;
-          out.set(String(row.parcela_id), { baixas: b, exp });
+          out.set(String(row.parcela_id), { baixas: b, exp, gravadoEm: lidaEm });
         }
       }
     }
@@ -2821,6 +2898,9 @@ export async function enriquecerComBaixas(
   // Baixas ja conhecidas: cache de memoria + cache do Supabase.
   const baixasPorParcela = new Map<string, any[]>();
   const idsSemCache: string[] = [];
+  // Parcelas cuja baixa em cache foi considerada DESATUALIZADA: a busca na API
+  // e feita de novo (ignorando o cache de memoria).
+  const idsDesatualizados = new Set<string>();
   for (const item of comId) {
     const parcelaId = String(item.id);
     const chave = `${empresa}:${parcelaId}`;
@@ -2834,6 +2914,13 @@ export async function enriquecerComBaixas(
       cached.baixas &&
       cached.baixas.length
     ) {
+      // Baixa CORRIGIDA na Conta Azul depois de ter sido buscada: o cache
+      // esta desatualizado -> busca de novo (1 chamada).
+      if (baixaDesatualizada(item, cached.baixas, cached.gravadoEm, modo)) {
+        idsDesatualizados.add(parcelaId);
+        idsSemCache.push(parcelaId);
+        continue;
+      }
       baixasPorParcela.set(parcelaId, cached.baixas);
     } else {
       idsSemCache.push(parcelaId);
@@ -2844,13 +2931,22 @@ export async function enriquecerComBaixas(
   const aindaFaltam: string[] = [];
   for (const parcelaId of idsSemCache) {
     const entrada = doBanco.get(parcelaId);
+    const item = comId.find((x) => String(x.id) === parcelaId);
     if (entrada && entrada.baixas.length) {
+      // Mesma checagem no cache do banco: se o titulo foi alterado depois de
+      // a baixa ser gravada (ou a listagem nao bate com a baixa), busca de novo.
+      if (item && baixaDesatualizada(item, entrada.baixas, entrada.gravadoEm, modo)) {
+        idsDesatualizados.add(parcelaId);
+        aindaFaltam.push(parcelaId);
+        continue;
+      }
       baixasPorParcela.set(parcelaId, entrada.baixas);
       // Tambem guarda em memoria (mesma validade do cache do banco) para as
       // proximas consultas.
       baixaCache.set(`${empresa}:${parcelaId}`, {
         exp: entrada.exp,
         baixas: entrada.baixas,
+        gravadoEm: entrada.gravadoEm,
       });
     } else {
       aindaFaltam.push(parcelaId);
@@ -2874,7 +2970,12 @@ export async function enriquecerComBaixas(
         const meu = idx++;
         if (meu >= aindaFaltam.length) return;
         const parcelaId = aindaFaltam[meu];
-        const r = await buscarBaixaDaParcela(empresa, parcelaId, tokenRef);
+        const r = await buscarBaixaDaParcela(
+          empresa,
+          parcelaId,
+          tokenRef,
+          idsDesatualizados.has(parcelaId),
+        );
         statusPorParcela.set(parcelaId, r.status);
         if (!r.baixas || !r.baixas.length) continue;
         baixasPorParcela.set(parcelaId, r.baixas);
@@ -3055,6 +3156,8 @@ export function processarRecebidas(
       ...(i.parcelas?.[0]?.id ? { parcela_id: String(i.parcelas[0].id) } : {}),
       _pago: bruto,
       _total: liquido,
+      ...(i.data_alteracao ? { _data_alteracao: String(i.data_alteracao) } : {}),
+      ...(parcial ? { _parcial: true } : {}),
     });
   }
   return brutos;
