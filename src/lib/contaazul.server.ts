@@ -493,6 +493,36 @@ const CONCORRENCIA_BAIXAS = 24;
 // titulo pago no periodo fica de fora.
 const JANELA_VENCIMENTO_DIAS = Number(process.env.JRM_JANELA_VENCIMENTO_DIAS || "180");
 
+// Limite de dias por janela de consulta. A API da Conta Azul rejeita (HTTP 400)
+// qualquer filtro de data_vencimento_de/_ate cuja duracao exceda 365 dias. Como
+// a janela de vencimento e [inicio - 180, fim + 30], sua duracao e
+// (fim - inicio) + 210. Para ficar dentro do limite:
+//   (fim - inicio) + 210 <= 365  =>  fim - inicio <= 155
+// Periodos maiores que 155 dias sao divididos em janelas de ate 155 dias,
+// consultadas uma a uma e mescladas no resultado final.
+const MAX_DIAS_POR_JANELA = Number(process.env.JRM_MAX_DIAS_POR_JANELA || "155");
+
+// Divide um período [dataInicio, dataFim] em janelas de ate maxDias dias.
+// Cada janela tem inicio e fim inclusivos. Nao ha sobreposicao entre janelas,
+// entao nenhum titulo (filtrado por data de pagamento/recebimento) e duplicado.
+function janelasDePeriodo(dataInicio: string, dataFim: string, maxDias: number): { inicio: string; fim: string }[] {
+  const janelas: { inicio: string; fim: string }[] = [];
+  let atual = new Date(dataInicio + "T00:00:00Z");
+  const fim = new Date(dataFim + "T00:00:00Z");
+  while (atual <= fim) {
+    const prox = new Date(atual);
+    prox.setUTCDate(prox.getUTCDate() + maxDias - 1);
+    if (prox > fim) prox.setTime(fim.getTime());
+    janelas.push({
+      inicio: atual.toISOString().slice(0, 10),
+      fim: prox.toISOString().slice(0, 10),
+    });
+    atual = new Date(prox);
+    atual.setUTCDate(atual.getUTCDate() + 1);
+  }
+  return janelas;
+}
+
 // Orcamento de tempo da busca de baixas. A funcao da Vercel tem 60 s de
 // limite (plano Hobby) e a API so aceita 10 req/s POR EMPRESA: em um mes
 // grande (1.300 titulos) nao da para buscar tudo de uma vez. A busca para
@@ -2224,7 +2254,7 @@ export async function buscarPagas(
   };
 }
 
-async function buscarPagasInterna(
+async function buscarPagasParaJanela(
   empresa: string,
   dataInicio: string,
   dataFim: string,
@@ -2369,6 +2399,70 @@ async function buscarPagasInterna(
   // Todos os status responderam completos e sem titulos: periodo sem contas
   // pagas (resultado vazio valido e cacheavel).
   return { dados: [], ok: true };
+}
+
+/**
+ * Busca contas pagas no período, dividindo em janelas quando o período excede
+ * o limite da API da Conta Azul (365 dias de janela de vencimento). Cada
+ * janela é consultada separadamente e os resultados são mesclados, de modo que
+ * nenhum título fique de fora e nenhum seja duplicado (janelas são
+ * disjuntas em data de pagamento).
+ */
+async function buscarPagasInterna(
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<ResultadoLista> {
+  const inicio = new Date(dataInicio + "T00:00:00Z");
+  const fim = new Date(dataFim + "T00:00:00Z");
+  const duracaoDias = (fim.getTime() - inicio.getTime()) / (24 * 60 * 60 * 1000) + 1;
+
+  // Periodo curto: consulta direta, sem dividir.
+  if (duracaoDias <= MAX_DIAS_POR_JANELA) {
+    return await buscarPagasParaJanela(empresa, dataInicio, dataFim);
+  }
+
+  // Periodo longo: divide em janelas e mescla.
+  const janelas = janelasDePeriodo(dataInicio, dataFim, MAX_DIAS_POR_JANELA);
+  log(
+    "info",
+    `buscarPagas ${empresa}: periodo de ${Math.round(duracaoDias)} dias dividido em ${janelas.length} janela(s) de ate ${MAX_DIAS_POR_JANELA} dias`,
+  );
+
+  const resultados = await Promise.all(
+    janelas.map((j) => buscarPagasParaJanela(empresa, j.inicio, j.fim)),
+  );
+
+  // Mescla os resultados de todas as janelas.
+  const dados: ItemLancamento[] = [];
+  let ok = true;
+  let incompleto = false;
+  let semBaixa = 0;
+  let semBaixaDefinitivo = 0;
+  let baixasPendentes = 0;
+  for (const r of resultados) {
+    dados.push(...r.dados);
+    if (!r.ok) ok = false;
+    if (r.incompleto) incompleto = true;
+    semBaixa += r.sem_baixa ?? 0;
+    semBaixaDefinitivo += r.sem_baixa_definitivo ?? 0;
+    baixasPendentes += r.baixas_pendentes ?? 0;
+  }
+
+  const total = dados.reduce((a, b) => a + b.valor, 0);
+  log(
+    "info",
+    `buscarPagas ${empresa}: ${dados.length} titulos pagos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)}) | ${janelas.length} janela(s)`,
+  );
+
+  return {
+    dados,
+    ok,
+    incompleto,
+    sem_baixa: semBaixa,
+    sem_baixa_definitivo: semBaixaDefinitivo,
+    baixas_pendentes: baixasPendentes,
+  };
 }
 
 async function processarPagasResposta(
@@ -3191,7 +3285,7 @@ export async function buscarRecebidas(
   };
 }
 
-async function buscarRecebidasInterna(
+async function buscarRecebidasParaJanela(
   empresa: string,
   dataInicio: string,
   dataFim: string,
@@ -3327,6 +3421,70 @@ async function buscarRecebidasInterna(
   // resultado vazio valido (cacheavel — evita refazer a busca a cada carga).
   log("warn", `buscarRecebidas ${empresa}: nenhuma combinacao de endpoint/status trouxe titulos`);
   return { dados: [], ok: true };
+}
+
+/**
+ * Busca recebidos no período, dividindo em janelas quando o período excede
+ * o limite da API da Conta Azul (365 dias de janela de vencimento). Cada
+ * janela é consultada separadamente e os resultados são mesclados, de modo que
+ * nenhum título fique de fora e nenhum seja duplicado (janelas são
+ * disjuntas em data de recebimento).
+ */
+async function buscarRecebidasInterna(
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<ResultadoLista> {
+  const inicio = new Date(dataInicio + "T00:00:00Z");
+  const fim = new Date(dataFim + "T00:00:00Z");
+  const duracaoDias = (fim.getTime() - inicio.getTime()) / (24 * 60 * 60 * 1000) + 1;
+
+  // Periodo curto: consulta direta, sem dividir.
+  if (duracaoDias <= MAX_DIAS_POR_JANELA) {
+    return await buscarRecebidasParaJanela(empresa, dataInicio, dataFim);
+  }
+
+  // Periodo longo: divide em janelas e mescla.
+  const janelas = janelasDePeriodo(dataInicio, dataFim, MAX_DIAS_POR_JANELA);
+  log(
+    "info",
+    `buscarRecebidas ${empresa}: periodo de ${Math.round(duracaoDias)} dias dividido em ${janelas.length} janela(s) de ate ${MAX_DIAS_POR_JANELA} dias`,
+  );
+
+  const resultados = await Promise.all(
+    janelas.map((j) => buscarRecebidasParaJanela(empresa, j.inicio, j.fim)),
+  );
+
+  // Mescla os resultados de todas as janelas.
+  const dados: ItemLancamento[] = [];
+  let ok = true;
+  let incompleto = false;
+  let semBaixa = 0;
+  let semBaixaDefinitivo = 0;
+  let baixasPendentes = 0;
+  for (const r of resultados) {
+    dados.push(...r.dados);
+    if (!r.ok) ok = false;
+    if (r.incompleto) incompleto = true;
+    semBaixa += r.sem_baixa ?? 0;
+    semBaixaDefinitivo += r.sem_baixa_definitivo ?? 0;
+    baixasPendentes += r.baixas_pendentes ?? 0;
+  }
+
+  const total = dados.reduce((a, b) => a + b.valor, 0);
+  log(
+    "info",
+    `buscarRecebidas ${empresa}: ${dados.length} titulos recebidos em ${dataInicio}..${dataFim} (total ${total.toFixed(2)}) | ${janelas.length} janela(s)`,
+  );
+
+  return {
+    dados,
+    ok,
+    incompleto,
+    sem_baixa: semBaixa,
+    sem_baixa_definitivo: semBaixaDefinitivo,
+    baixas_pendentes: baixasPendentes,
+  };
 }
 
 // Inspeciona o detalhe de N itens — usado pelo painel de debug pra ver o JSON cru.
