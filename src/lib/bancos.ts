@@ -51,6 +51,34 @@ export function bancosPermitidosDaEmpresa(empresa: string): string[] {
   return BANCOS_PADRAO;
 }
 
+// ------------------- Excecoes por lista -------------------
+// Alguns titulos de bancos FORA dos 4 do grupo precisam aparecer em UMA
+// lista especifica de UMA empresa. Ex.: os RECEBIDOS no Daycoval da LGP
+// (o dinheiro cai na conta Daycoval, mas o titulo e da LGP) entram no card
+// "Contas Recebidas", no PDF e na planilha — enquanto o Daycoval continua
+// FORA do card de Bancos, das demais listas (A Receber, A Pagar, Pagos) e
+// das demais empresas.
+//
+// Chave: nome da empresa -> lista -> bancos extras permitidos.
+export type ChaveLista = "receber" | "pagar" | "pagos" | "recebidas";
+
+export const BANCOS_EXTRAS_POR_LISTA: Record<string, Partial<Record<ChaveLista, string[]>>> = {
+  "LGP Transportes": { recebidas: ["DAYCOVAL"] },
+};
+
+// Bancos permitidos de uma lista especifica: os do grupo + os extras da
+// excecao (quando houver). Para listas sem excecao, e a lista do grupo.
+export function bancosPermitidosDaLista(empresa: string, chave: ChaveLista): string[] {
+  const base = bancosPermitidosDaEmpresa(empresa);
+  const chaveNorm = normalizarBanco(empresa);
+  let extras: string[] | undefined;
+  for (const [nome, porLista] of Object.entries(BANCOS_EXTRAS_POR_LISTA)) {
+    if (normalizarBanco(nome) === chaveNorm) extras = porLista[chave];
+  }
+  if (!extras || extras.length === 0) return base;
+  return [...base, ...extras];
+}
+
 // ------------------- Contas de outra transportadora -------------------
 // Algumas contas financeiras da Conta Azul NAO sao bancos do grupo, mas
 // pertence a OUTRA transportadora administrada na mesma conta. Exemplo: a

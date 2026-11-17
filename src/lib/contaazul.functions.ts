@@ -35,6 +35,7 @@ import {
 import { buscarFaturamentoPlanilha, limparCachePlanilha, lerTituloPlanilha, mesDoTitulo } from "./planilha.server";
 import {
   bancosPermitidosDaEmpresa,
+  bancosPermitidosDaLista,
   separarPorTransportadora,
   empresaDaConta,
   type ListasPorEmpresa,
@@ -541,7 +542,13 @@ export const getDashboard = createServerFn({ method: "GET" })
         const recF = filtrarPorBancos(rec.dados, contasMap, bancosOk);
         const despF = filtrarPorBancos(desp.dados, contasMap, bancosOk);
         const pagasF = filtrarPorBancos(pagas.dados, contasMap, bancosOk);
-        const recebidasF = filtrarPorBancos(recebidas.dados, contasMap, bancosOk);
+        // Recebidas usam a lista DA LISTA (com excecoes): os recebidos no
+        // Daycoval da LGP entram no card, no PDF e na planilha.
+        const recebidasF = filtrarPorBancos(
+          recebidas.dados,
+          contasMap,
+          bancosPermitidosDaLista(emp, "recebidas"),
+        );
         const removidos =
           rec.dados.length - recF.length +
           (desp.dados.length - despF.length) +
@@ -843,7 +850,12 @@ export const getEmpresaBreakdown = createServerFn({ method: "GET" })
           receber: filtrarPorBancos(comBanco(rec.dados), contasMap, bancosOk),
           pagar: filtrarPorBancos(comBanco(desp.dados), contasMap, bancosOk),
           pagos: filtrarPorBancos(comBanco(pagas.dados), contasMap, bancosOk),
-          recebidas: filtrarPorBancos(comBanco(recebidas.dados), contasMap, bancosOk),
+          // Mesma excecao do getDashboard: recebidos no Daycoval da LGP.
+          recebidas: filtrarPorBancos(
+            comBanco(recebidas.dados),
+            contasMap,
+            bancosPermitidosDaLista(emp, "recebidas"),
+          ),
         };
         // Um bloco por transportadora: os titulos de contas de OUTRA
         // transportadora (ex.: "ALVARENGA TRANSPORTES" dentro da LGP) saem do
