@@ -2307,6 +2307,106 @@ git push origin main
 
 ---
 
+## 3.32 Recebidos no Daycoval da LGP aparecem no card, no PDF e na planilha (17/11/2026)
+
+**Commits:**
+- `feat: mostra os recebidos no Daycoval da LGP (card, PDF e planilha)`
+- `docs: registra a excecao do Daycoval nos recebidos da LGP (secao 3.32)`
+
+### O pedido
+
+Os **recebidos no Daycoval da LGP** precisam aparecer **no card do
+navegador, no PDF e na planilha** — mas o **Daycoval NAO pode entrar na
+relação de bancos** (o card de Bancos continua com os 4 bancos do grupo).
+
+### O problema (confirmado na API)
+
+Em **16/11/2026** a LGP recebeu **R$ 3.864.927,12**, dos quais
+**R$ 3.850.953,12 (5 titulos) caíram na conta Daycoval**:
+
+| Titulo | Valor |
+|--------|-------|
+| 5/366 - LTRs 32701 A 32712 - CTES 13223 A 13232 | R$ 959.550,16 |
+| 5/366 - LTNs - 3005-1 A 3005-12 - CTES 13200 A 13211 | R$ 1.638.082,82 |
+| 5/366 - LTRs 32802 A 32814 - CTES 13212 A 13222 | R$ 1.116.710,14 |
+| PEDAGIO LTR | R$ 64.204,15 |
+| PEDAGIO LTN | R$ 72.405,85 |
+
+Nada disso aparecia em lugar nenhum. Causa: a baixa do titulo traz
+`conta_financeira.nome = "Daycoval"`, o codigo marca `banco = "Daycoval"`
+(e e o banco da BAIXA que manda, com prioridade sobre o vinculo da
+listagem), e o `filtrarPorBancos` removia o titulo porque **Daycoval nao e
+um dos 4 bancos do grupo** — sem aviso, o card de Recebidos simplesmente
+estava R$ 3,85 milhoes a menos.
+
+### A correção: excecao POR LISTA (nao por banco)
+
+**`src/lib/bancos.ts`**
+- `BANCOS_EXTRAS_POR_LISTA`: mapa `empresa -> lista -> bancos extras`.
+  Hoje so existe uma entrada: `"LGP Transportes": { recebidas: ["DAYCOVAL"] }`.
+- Nova `bancosPermitidosDaLista(empresa, chave)`: devolve os bancos do
+  grupo + os extras da excecao daquela lista (sem excecao = lista do grupo).
+- `bancosPermitidosDaEmpresa` **nao mudou**: ela continua fonte unica da
+  RELACAO de bancos do card — Daycoval continua fora da relacao.
+
+**`src/lib/contaazul.functions.ts`**
+- `getDashboard` e `getEmpresaBreakdown` passaram a filtrar a lista de
+  **Recebidas** com `bancosPermitidosDaLista(emp, "recebidas")`. As outras
+  tres listas (A Receber, A Pagar, Pagos) continuam com `bancosOk`.
+
+Por que isso cobre os tres pontos pedidos: os titulos de Recebidos
+alimentam `resumo.total_recebidas` (card "Contas Recebidas"),
+`detalhamento.recebidas` (listas do PDF) e `consolidado.recebidas`
+(listas do XLSX) — todos vem do MESMO `recebidasF`.
+
+### O que NAO mudou
+
+- **Relação de bancos** (card de Bancos do navegador): continua os 4
+  bancos do grupo, sem Daycoval.
+- Saldo/fatura do Daycoval: nao entra em nenhum total de bancos.
+- Listas A Receber, A Pagar e Pagos: Daycoval continua removido.
+- Empresas LGP, Rosangela, JRM, Juvenal: so a **LGP** tem a excecao, e
+  so na lista de **Recebidos**.
+- Transferencias entre contas (secao 3.30): inalterada.
+
+### Testes executados (todos verdes)
+
+- `test-blocos.mts` (+12 assercoes novas): RELACAO da LGP continua sem
+  Daycoval; Recebidos da LGP inclui Daycoval mantendo os 4 do grupo;
+  `receber`/`pagar`/`pagos` continuam sem; outras empresas continuam sem;
+  `filtrarPorBancos` mantem o recebido no Daycoval da LGP e remove o pago
+  no Daycoval da LGP e o recebido no Daycoval da JRM.
+- Regressao: `test-pdf-blocos`, `test-xlsx-blocos`, `test-baixa`,
+  `test-prewarm`, `test-transferencias`, `test-transferencias-export`,
+  `test-pdf-banco`, `test-xlsx-banco` — todas OK.
+- `npx tsc --noEmit` e `npm run build` sem erros.
+
+### Verificacao em producao (17/11/2026)
+
+Apos o deploy, `getDashboard` (LGP, 16/11/2026):
+
+| Indicador | Antes | Depois |
+|-----------|-------|--------|
+| `total_recebidas` (card) | sem os 5 titulos do Daycoval | + R$ 3.850.953,12 |
+| Titulos de recebidas com banco "Daycoval" | 0 | 5 |
+| Relacao de bancos do card | 4 bancos (sem Daycoval) | 4 bancos (sem Daycoval) |
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/bancos.ts` | `BANCOS_EXTRAS_POR_LISTA` + `bancosPermitidosDaLista` |
+| `src/lib/contaazul.functions.ts` | Recebidas filtradas com a lista da lista (getDashboard e getEmpresaBreakdown) |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
