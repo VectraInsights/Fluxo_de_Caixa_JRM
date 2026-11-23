@@ -2520,6 +2520,48 @@ git push origin main
 
 ---
 
+## 3.35 Remetente EMATEX direcionado para Juvenal Transportes (faturamento) (23/11/2026)
+
+**Commits:**
+- `fix: direciona o remetente EMATEX para Juvenal Transportes na planilha de faturamento`
+- `docs: registra a mudanca de direcionamento do remetente EMATEX (secao 3.35)`
+
+### O pedido
+
+O remetente "EMATEX" da planilha de faturamento (Google Sheets) estava
+direcionado para a empresa **Rosângela Transportes**, mas é um cliente
+da **Juvenal Transportes**. O faturamento dele estava sendo somado no
+bloco errado da empresa.
+
+### A correção
+
+**`src/lib/planilha.server.ts`**
+- `EMPRESA_POR_REMETENTE["EMATEX"]` passou de `"ROSANGELA"` para `"JUVENAL"`.
+
+Assim, o faturamento do remetente EMATEX soma no bloco da Juvenal
+Transportes e não mais no da Rosângela.
+
+### O que NAO mudou
+
+- Todas as demais regras de direcionamento da planilha estão inalteradas.
+- O tipo `Dono` continua com as mesmas chaves (`JUVENAL`, `ROSANGELA`,
+  `ALVARENGA`).
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+### Arquivos
+
+| Arquivo | Mudança |
+|---------|---------|
+| `src/lib/planilha.server.ts` | `EMPRESA_POR_REMETENTE["EMATEX"] = "JUVENAL"` |
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
