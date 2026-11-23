@@ -169,7 +169,7 @@ Uma aba por dia, com o nome igual ao numero do dia ("01".."31"). Coluna B = REME
 | Remetente (normalizado) | Empresa |
 |-------------------------|---------|
 | S.A.GONDOLAS | Rosângela |
-| EMATEX | Rosângela |
+| EMATEX | Juvenal |
 | FARMAX | Juvenal |
 | EMBARE | Juvenal |
 | TECNO2000 | Juvenal |
