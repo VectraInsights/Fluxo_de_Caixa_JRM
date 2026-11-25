@@ -2785,6 +2785,77 @@ git push origin main
 
 ---
 
+## 3.38 Modo "Personalizado" com calendario de selecao de datas (25/11/2026)
+
+**Commits:**
+- `fix: troca as datas do modo personalizado por um calendario de selecao` (`cc42a05`)
+- `docs: registra o calendario de selecao do modo personalizado (secao 3.38)`
+
+### O pedido
+
+> "mude esse calendario do personalizado para funcionar como um calendário de seleção"
+
+No filtro **Intervalo de Projeção = Personalizado**, os campos **Inicio** e
+**Fim** eram dois `<input type="date">` do navegador (com o calendario nativo
+do sistema, que abre em ingles e no formato do SO). O pedido era trocar isso
+por um **calendario de selecao** de verdade, em portugues.
+
+### O que foi feito
+
+- Os dois campos continuam no mesmo lugar (Inicio e Fim), mas agora sao
+  **botoes** que abrem um calendario mensal (react-day-picker, que ja era
+  dependencia do projeto via `src/components/ui/calendar.tsx`).
+- O calendario abre **ao lado** do campo (nao por cima), entao os dois campos
+  continuam visiveis enquanto o usuario escolhe.
+- O calendario abre **no mes da data** do campo escolhido e tem navegacao
+  entre meses (setas).
+- Em portugues: `novembro 2026`, `dom seg ter qua qui sex sab` e os nomes dos
+  dias ("quinta-feira, 19 de novembro de 2026") — locale `ptBR` do `date-fns`.
+- O **periodo atual fica destacado** no calendario: a faixa de dias entre o
+  Inicio e o Fim aparece em destaque (marca da marca), com as pontas mais
+  fortes e o miolo mais suave.
+
+### Como se usa
+
+1. Clica em **Inicio** -> o calendario abre ("Escolha a data de inicio").
+2. Clica no dia -> o Inicio muda e **o calendario do Fim abre em seguida**
+   ("Escolha a data de fim"), sem precisar clicar no campo de novo.
+3. Clica no dia -> o Fim muda e o calendario fecha.
+
+Tambem da para mexer em um lado so: clicar em **Fim** abre direto o
+calendario do fim.
+
+Regras para o periodo nunca ficar invalido:
+
+- Se o novo **Inicio** passar do Fim, o Fim acompanha (vira o mesmo dia).
+- Se o novo **Fim** ficar antes do Inicio, o Inicio acompanha.
+- Trocar o intervalo de projecao (Hoje, 7 dias, Mes atual...) fecha o
+  calendario.
+
+### O que NAO mudou
+
+- As datas continuam sendo aplicadas **no clique em "Recarregar"** (o painel
+  nao busca nada a cada clique no calendario).
+- A query do painel continua usando `dataInicio`/`dataFim` como antes — o
+  calendario so mexe nos estados "pendentes".
+- Nenhuma regra de negocio foi tocada (bancos, aportes, valor liquido,
+  transferencias entre contas).
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/routes/index.tsx` | campos Inicio/Fim viraram botoes com calendario de selecao (`CampoDataCalendario`), estado do calendario, helpers de data local (`isoParaData`, `dataParaISO`, `formatarDataBR`, `addDias`) |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit cc42a05
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
