@@ -31,7 +31,11 @@ import {
   Banknote,
   FileText,
   FileSpreadsheet,
+  CalendarDays,
 } from "lucide-react";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ptBR } from "date-fns/locale";
 import {
   listarEmpresas,
   getDashboard,
@@ -114,6 +118,33 @@ function shiftMeses(iso: string, meses: number): string {
   return new Date(d.getTime() - tz * 60000).toISOString().slice(0, 10);
 }
 
+// "YYYY-MM-DD" -> Date no fuso LOCAL (meia-noite local, sem deslocamento de UTC)
+function isoParaData(iso: string): Date {
+  const [ano, mes, dia] = (iso || "").split("-").map((n) => Number(n) || 0);
+  return new Date(ano || 1970, (mes || 1) - 1, dia || 1);
+}
+
+// Date -> "YYYY-MM-DD" no fuso local
+function dataParaISO(d: Date): string {
+  const mes = String(d.getMonth() + 1).padStart(2, "0");
+  const dia = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mes}-${dia}`;
+}
+
+// Data para exibicao no padrao brasileiro
+function formatarDataBR(iso: string): string {
+  if (!iso) return "-";
+  const d = isoParaData(iso);
+  return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+}
+
+// Soma dias em um Date local
+function addDias(d: Date, dias: number): Date {
+  const novo = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  novo.setDate(novo.getDate() + dias);
+  return novo;
+}
+
 // Traduz os erros mais comuns do OAuth da Conta Azul para uma mensagem
 // acionável, em vez de mostrar o JSON cru que a API retorna.
 // "2026-10" -> "out/2026" (rotulo curto de mes, usado no seletor de planilhas).
@@ -171,9 +202,20 @@ function Dashboard() {
   const [dataInicio, setDataInicio] = useState(todayLocalISO(0));
   const [dataFim, setDataFim] = useState(todayLocalISO(0));
 
-  // Estados "pendentes" — vinculados aos inputs de data no modo personalizado
+  // Estados "pendentes" — vinculados ao calendario de selecao no modo personalizado
   const [pendingInicio, setPendingInicio] = useState(todayLocalISO(0));
   const [pendingFim, setPendingFim] = useState(todayLocalISO(0));
+
+  // Calendario de selecao do periodo (modo "personalizado"):
+  // - `campoData` diz qual campo (Inicio ou Fim) esta em edicao;
+  // - `popAberto` diz qual calendario esta aberto (so um por vez);
+  // - `mesCalendario` e o mes exibido no calendario.
+  const [campoData, setCampoData] = useState<"inicio" | "fim">("inicio");
+  const [popAberto, setPopAberto] = useState<"inicio" | "fim" | null>(null);
+  const [mesCalendario, setMesCalendario] = useState<Date>(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
 
   // Estado do fluxo de (re)conexão com a Conta Azul
   const [oauthStatus, setOauthStatus] = useState<
@@ -199,6 +241,8 @@ function Dashboard() {
 
   useEffect(() => {
     if (intervalo === "personalizado") return;
+    // Sai do modo personalizado: fecha o calendario de selecao.
+    setPopAberto(null);
     const hoje = todayLocalISO(0);
     if (intervalo === "mes") {
       // Mês atual: do dia 1 até o último dia do mês corrente
@@ -476,6 +520,56 @@ function Dashboard() {
       setSalvandoPlanilha(false);
     }
   }
+
+  // Datas do periodo pendente como Date local (para o calendario)
+  const dataInicioSel = isoParaData(pendingInicio);
+  const dataFimSel = isoParaData(pendingFim);
+
+  // Abre o calendario do campo escolhido, ja no mes da data dele
+  function abrirCalendario(campo: "inicio" | "fim") {
+    setCampoData(campo);
+    const d = isoParaData(campo === "inicio" ? pendingInicio : pendingFim);
+    setMesCalendario(new Date(d.getFullYear(), d.getMonth(), 1));
+    setPopAberto(campo);
+  }
+
+  // Clique no dia do calendario: preenche o campo em edicao (Inicio ou Fim) e
+  // mantem o periodo sempre valido (inicio <= fim). Depois de escolher o
+  // inicio, o calendario do Fim abre em seguida (o usuario escolhe as duas
+  // datas no mesmo calendario).
+  function selecionarDia(dia: Date) {
+    const iso = dataParaISO(dia);
+    if (campoData === "inicio") {
+      setPendingInicio(iso);
+      // Se o novo inicio passou do fim, o fim acompanha.
+      if (iso > pendingFim) setPendingFim(iso);
+      // O proximo clique preenche o fim.
+      setCampoData("fim");
+      setPopAberto("fim");
+      return;
+    }
+    setPendingFim(iso);
+    // Se o novo fim ficou antes do inicio, o inicio acompanha.
+    if (iso < pendingInicio) setPendingInicio(iso);
+    setPopAberto(null);
+  }
+
+  // Faixa do periodo destacada no calendario (inicio, meio e fim)
+  const modifiersPeriodo = useMemo(
+    () => ({
+      periodoInicio: dataInicioSel,
+      periodoFim: dataFimSel,
+      ...(pendingFim > pendingInicio
+        ? {
+            periodoMeio: {
+              from: addDias(dataInicioSel, 1),
+              to: addDias(dataFimSel, -1),
+            },
+          }
+        : {}),
+    }),
+    [pendingInicio, pendingFim, dataInicioSel, dataFimSel],
+  );
 
   async function recarregarTudo() {
     // 1. Limpa o cache no servidor (memoria da instancia + cache persistente
@@ -773,9 +867,39 @@ function Dashboard() {
         {intervalo === "personalizado" && (
           <>
             <Label>Início</Label>
-            <Input type="date" value={pendingInicio} onChange={(e) => setPendingInicio(e.target.value)} />
+            <CampoDataCalendario
+              campo="inicio"
+              rotulo="Início"
+              valor={formatarDataBR(pendingInicio)}
+              selecionada={dataInicioSel}
+              aberto={popAberto === "inicio"}
+              ativo={campoData === "inicio"}
+              mes={mesCalendario}
+              onMesChange={setMesCalendario}
+              modifiers={modifiersPeriodo}
+              onOpenChange={(a) => {
+                if (a) abrirCalendario("inicio");
+                else if (popAberto === "inicio") setPopAberto(null);
+              }}
+              onSelecionar={selecionarDia}
+            />
             <Label>Fim</Label>
-            <Input type="date" value={pendingFim} onChange={(e) => setPendingFim(e.target.value)} />
+            <CampoDataCalendario
+              campo="fim"
+              rotulo="Fim"
+              valor={formatarDataBR(pendingFim)}
+              selecionada={dataFimSel}
+              aberto={popAberto === "fim"}
+              ativo={campoData === "fim"}
+              mes={mesCalendario}
+              onMesChange={setMesCalendario}
+              modifiers={modifiersPeriodo}
+              onOpenChange={(a) => {
+                if (a) abrirCalendario("fim");
+                else if (popAberto === "fim") setPopAberto(null);
+              }}
+              onSelecionar={selecionarDia}
+            />
             <p className="text-[10px] text-muted-foreground mt-1 mb-2">Clique em Recarregar para aplicar as datas.</p>
           </>
         )}
@@ -1444,6 +1568,82 @@ function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
       {...props}
       className="w-full rounded-xl border border-border bg-background/50 px-3 py-2.5 text-sm focus:outline-none focus:border-brand/50 focus:ring-2 focus:ring-brand/20 transition-all mb-1"
     />
+  );
+}
+
+// Campo de data (Inicio/Fim) que abre um CALENDARIO DE SELECAO.
+// Cada campo e o proprio gatilho do seu calendario: clicar em "Inicio" abre o
+// calendario do inicio e clicar em "Fim" abre o do fim (o Radix trata os dois
+// como parte do popover, entao um nao fecha o outro).
+const CLASSES_PERIODO = {
+  periodoInicio: "bg-brand/30 rounded-l-md",
+  periodoMeio: "bg-brand/20",
+  periodoFim: "bg-brand/30 rounded-r-md",
+};
+
+function CampoDataCalendario({
+  campo,
+  rotulo,
+  valor,
+  selecionada,
+  aberto,
+  ativo,
+  mes,
+  onMesChange,
+  modifiers,
+  onOpenChange,
+  onSelecionar,
+}: {
+  campo: "inicio" | "fim";
+  rotulo: string;
+  valor: string;
+  selecionada: Date;
+  aberto: boolean;
+  ativo: boolean;
+  mes: Date;
+  onMesChange: (m: Date) => void;
+  modifiers: React.ComponentProps<typeof Calendar>["modifiers"];
+  onOpenChange: (aberto: boolean) => void;
+  onSelecionar: (dia: Date) => void;
+}) {
+  return (
+    <Popover open={aberto} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${rotulo}: ${valor}. Clique para escolher a data no calendário.`}
+          title={`Escolher a data de ${rotulo.toLowerCase()}`}
+          className={`mb-1 flex w-full items-center justify-between gap-2 rounded-xl border bg-background/50 px-3 py-2.5 text-sm transition-all focus:outline-none focus:border-brand/50 focus:ring-2 focus:ring-brand/20 ${
+            ativo ? "border-brand/60 ring-2 ring-brand/20" : "border-border"
+          }`}
+        >
+          <span className="tabular-nums">{valor}</span>
+          <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" side="right" className="w-auto p-3">
+        <Calendar
+          mode="single"
+          locale={ptBR}
+          month={mes}
+          onMonthChange={onMesChange}
+          selected={selecionada}
+          onSelect={(dia) => {
+            if (dia instanceof Date) onSelecionar(dia);
+          }}
+          modifiers={modifiers}
+          modifiersClassNames={CLASSES_PERIODO}
+          className="p-0 [--cell-size:1.9rem]"
+        />
+        <p className="mt-2 text-center text-[11px] font-medium text-muted-foreground">
+          {ativo
+            ? campo === "inicio"
+              ? "Escolha a data de início"
+              : "Escolha a data de fim"
+            : ""}
+        </p>
+      </PopoverContent>
+    </Popover>
   );
 }
 
