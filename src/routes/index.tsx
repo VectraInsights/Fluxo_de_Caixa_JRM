@@ -394,6 +394,18 @@ function Dashboard() {
   // Mes visado no painel (mes de dataInicio): e a ele que a URL colada aponta.
   const mesVisao = dataInicio.slice(0, 7);
 
+  // Idade REAL dos dados: quando o servidor serviu o cache velho (revalidado
+  // em segundo plano), `dataUpdatedAt` e a hora da CONSULTA, nao a hora dos
+  // dados. O painel mostra "Dados de HH:MM" para o usuario saber.
+  const dadosCalculadosEm = data?.atualizado_em ? Date.parse(data.atualizado_em) : 0;
+  const dadosMinutos = dadosCalculadosEm
+    ? Math.floor((Date.now() - dadosCalculadosEm) / 60000)
+    : 0;
+  const dadosEstaoVelhos = dadosMinutos >= 2;
+  const horaDosDados = dadosCalculadosEm
+    ? new Date(dadosCalculadosEm).toLocaleTimeString("pt-BR")
+    : null;
+
   // Registro das planilhas de faturamento por mes (jan/2026 a dez/2030).
   const { data: planilhasMes = [], refetch: refetchPlanilhas } = useQuery({
     queryKey: ["planilhas-mes"],
@@ -1122,6 +1134,8 @@ function Dashboard() {
                     ? "Sincronizando com a Conta Azul..."
                     : temProblema
                     ? "⚠ Falha na sincronização"
+                    : dadosEstaoVelhos && horaDosDados
+                    ? `Dados de ${horaDosDados} (atualizando...)`
                     : `Última sincronização: ${
                         dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString("pt-BR") : "—"
                       }`}

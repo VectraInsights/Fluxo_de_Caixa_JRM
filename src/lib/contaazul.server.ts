@@ -142,7 +142,11 @@ export async function gravarLogEvento({
 // empresa ao mesmo tempo (o refresh_token e rotacionado pela Conta Azul).
 const LOCK_TTL_SEGUNDOS = 300; // 5 minutos
 
-async function tentarObterLock(empresa: string, lockedBy: string): Promise<boolean> {
+async function tentarObterLock(
+  empresa: string,
+  lockedBy: string,
+  ttlSegundos = LOCK_TTL_SEGUNDOS,
+): Promise<boolean> {
   const sb = getSupabase();
   const agora = new Date().toISOString();
   const { data: existente } = await sb
@@ -160,7 +164,7 @@ async function tentarObterLock(empresa: string, lockedBy: string): Promise<boole
     return !error;
   }
   const lockEm = new Date(existente.locked_at).getTime();
-  const expirado = Date.now() - lockEm > LOCK_TTL_SEGUNDOS * 1000;
+  const expirado = Date.now() - lockEm > ttlSegundos * 1000;
   if (!expirado) return false;
   // lock expirado: tenta adquirir novamente
   const { error: err2 } = await sb
@@ -173,6 +177,25 @@ async function tentarObterLock(empresa: string, lockedBy: string): Promise<boole
 async function liberarLock(empresa: string): Promise<void> {
   const sb = getSupabase();
   await sb.from("token_locks").delete().eq("empresa", empresa);
+}
+
+// Lock de REVALIDACAO do cache do dashboard: quando o payload vence, varias
+// abas/instancias podem chegar ao mesmo tempo e todas refariam a mesma
+// consulta pesada na API da Conta Azul (que so aceita 10 req/s por empresa).
+// Com o lock, so uma revalidacao roda por vez.
+const LOCK_REVALIDACAO_PREFIXO = "__dashboard__";
+const LOCK_REVALIDACAO_TTL_SEGUNDOS = 120;
+
+export async function tentarObterLockRevalidacao(chave: string): Promise<boolean> {
+  return tentarObterLock(
+    `${LOCK_REVALIDACAO_PREFIXO}${chave}`,
+    `revalida:${Date.now()}`,
+    LOCK_REVALIDACAO_TTL_SEGUNDOS,
+  );
+}
+
+export async function liberarLockRevalidacao(chave: string): Promise<void> {
+  await liberarLock(`${LOCK_REVALIDACAO_PREFIXO}${chave}`);
 }
 
 export async function pedirToken(params: Record<string, string>): Promise<Response> {
@@ -603,16 +626,33 @@ async function buscarComCache<T>({
 
 /**
  * Le o payload FINAL do dashboard no cache persistente (Supabase).
- * Enquanto ele estiver valido, a tela abre sem nenhuma chamada a API da
- * Conta Azul.
+ *
+ * `valido: true`  = dentro da validade: a tela abre sem nenhuma chamada a
+ *                    API da Conta Azul.
+ * `valido: false` = o payload VENCEU, mas ainda pode ser SERVIDO enquanto o
+ *                    cache e revalidado em segundo plano. E o que evita a
+ *                    tela de ficar 5-6 s esperando a API (medido em
+ *                    producao: o mes de novembro levava 5,8 s).
  */
-export async function lerDashboardDoSupabase<T>(chave: string): Promise<T | null> {
+export type DashboardCache<T> = {
+  payload: T;
+  /** ISO de quando o payload foi gravado (atualizado_em). */
+  gerado_em: string | null;
+  /** ISO de quando o payload vence. */
+  expira_em: string;
+  /** true = ainda dentro da validade. */
+  valido: boolean;
+};
+
+export async function lerDashboardDoSupabase<T>(
+  chave: string,
+): Promise<DashboardCache<T> | null> {
   if (Date.now() < cacheListagensIndisponivelAte) return null;
   try {
     const sb = getSupabase();
     const { data, error } = await sb
       .from("dashboard_cache")
-      .select("payload, expira_em")
+      .select("payload, expira_em, atualizado_em")
       .eq("chave", chave)
       .maybeSingle();
     if (error) {
@@ -622,14 +662,28 @@ export async function lerDashboardDoSupabase<T>(chave: string): Promise<T | null
     }
     if (!data) return null;
     const expira = Date.parse(String((data as any).expira_em || ""));
-    if (!Number.isFinite(expira) || expira <= Date.now()) return null;
-    return (data as any).payload as T;
+    if (!Number.isFinite(expira)) return null;
+    const gerado = (data as any).atualizado_em ? String((data as any).atualizado_em) : null;
+    return {
+      payload: (data as any).payload as T,
+      gerado_em: gerado,
+      expira_em: new Date(expira).toISOString(),
+      valido: expira > Date.now(),
+    };
   } catch (e) {
     cacheListagensIndisponivelAte = Date.now() + 30 * 60 * 1000;
     log("warn", `cache do dashboard (Supabase) falhou: ${(e as Error)?.message}`);
     return null;
   }
 }
+
+/**
+ * Tempo maximo que um payload VELHO (vencido) ainda pode ser servido enquanto
+ * o cache e revalidado em segundo plano. Passou disso a tela espera a consulta
+ * nova: dado muito velho nao serve em um painel financeiro.
+ */
+export const MAX_IDADE_CACHE_VELHO_MS =
+  Number(process.env.JRM_CACHE_VELHO_MAX_MINUTOS || "30") * 60 * 1000;
 
 /** Grava (upsert) o payload final do dashboard no cache persistente. */
 export async function gravarDashboardNoSupabase(

@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { waitUntil } from "@vercel/functions";
 import { z } from "zod";
 import {
   getSupabase,
@@ -32,6 +33,10 @@ import {
   gravarDashboardNoSupabase,
   apagarCacheDoPeriodo,
   DASHBOARD_TTL_MINUTOS,
+  MAX_IDADE_CACHE_VELHO_MS,
+  tentarObterLockRevalidacao,
+  liberarLockRevalidacao,
+  type DashboardCache,
   type BaixaDetalhe,
   type TransferenciaJuros,
   type TransferenciaConta,
@@ -329,6 +334,9 @@ export type DashboardData = {
   receitas_boleto: number[];
   saldo: number[];
   saldos_por_banco: { nome: string; saldo: number }[];
+  // Momento em que o payload foi calculado (ISO). A tela mostra "dados de
+  // HH:MM" quando o cache foi servido velho (revalidado em segundo plano).
+  atualizado_em?: string;
   resumo: {
     banco: number;
     total_rec: number;
@@ -453,9 +461,64 @@ export const getDashboard = createServerFn({ method: "GET" })
     const chaveCache = chaveDashboard(data.empresa, data.data_inicio, data.data_fim);
     if (!data.forcar) {
       const doCache = await lerDashboardDoSupabase<DashboardData>(chaveCache);
-      if (doCache) return doCache;
+      // Dentro da validade: devolve na hora (medido: ~110 ms).
+      if (doCache?.valido) return doCache.payload;
+      // Payload VENCIDO: serve o dado antigo NA HORA e revalida em segundo
+      // plano. Sem isso a tela ficava 5-6 s esperando a API da Conta Azul
+      // (medido em producao: o mes de novembro levava 5,8 s).
+      if (doCache && idadeDoCache(doCache) <= MAX_IDADE_CACHE_VELHO_MS) {
+        revalidarDashboardEmBackground(chaveCache, data);
+        return doCache.payload;
+      }
     }
-    const empresas = await resolverEmpresas(data.empresa);
+    return await calcularDashboard(data);
+  });
+
+// Idade do payload do cache: usa `atualizado_em` (quando gravado); sem ele,
+// usa a propria validade (que e o limite maximo de idade).
+function idadeDoCache(doCache: DashboardCache<unknown>): number {
+  const ms = Date.parse(doCache.gerado_em || doCache.expira_em);
+  if (!Number.isFinite(ms)) return Number.MAX_SAFE_INTEGER;
+  return Date.now() - ms;
+}
+
+// Revalidacao em segundo plano: recalcula o payload e grava no cache. A
+// `waitUntil` mantem a funcao da Vercel viva ate o fim (sem isso a funcao
+// pode ser congelada assim que a resposta for enviada). O lock evita que
+// varias instancias refacam ao mesmo tempo a mesma consulta pesada.
+function revalidarDashboardEmBackground(
+  chaveCache: string,
+  data: { empresa: string; data_inicio: string; data_fim: string },
+): void {
+  const promessa = (async () => {
+    const ok = await tentarObterLockRevalidacao(chaveCache);
+    if (!ok) return; // ja tem uma revalidacao rodando
+    try {
+      await calcularDashboard({ ...data, forcar: false });
+    } finally {
+      await liberarLockRevalidacao(chaveCache);
+    }
+  })().catch((e) => {
+    log("warn", `revalidacao do cache do dashboard falhou: ${(e as Error)?.message ?? e}`);
+  });
+  try {
+    waitUntil(promessa);
+  } catch {
+    // Ambiente sem contexto de request (dev local): a promessa segue em
+    // segundo plano do mesmo jeito.
+  }
+}
+
+// Recalcula o dashboard do zero (consulta na API da Conta Azul) e grava o
+// payload no cache quando o resultado e saudavel.
+async function calcularDashboard(data: {
+  empresa: string;
+  data_inicio: string;
+  data_fim: string;
+  forcar?: boolean;
+}): Promise<DashboardData> {
+  const chaveCache = chaveDashboard(data.empresa, data.data_inicio, data.data_fim);
+  const empresas = await resolverEmpresas(data.empresa);
     const avisos: string[] = [];
     // Avisos de estado ESTAVEL (ex.: titulo que nunca teve baixa lançada na
     // Conta Azul): continuam sendo exibidos, mas NAO impedem o cache do
@@ -876,6 +939,7 @@ export const getDashboard = createServerFn({ method: "GET" })
       empresas_com_problema: Array.from(empresasComProblema),
       dados_incompletos: Array.from(dadosIncompletos),
       baixas_pendentes: Array.from(baixasPendentes),
+      atualizado_em: new Date().toISOString(),
       detalhamento,
     };
 
@@ -899,7 +963,7 @@ export const getDashboard = createServerFn({ method: "GET" })
     }
 
     return payload;
-  });
+}
 
 // ------------------- Tipo dos titulos detalhados das listas -------------------
 
