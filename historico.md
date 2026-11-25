@@ -2562,6 +2562,116 @@ git push origin main
 
 ---
 
+## 3.36 Velocidade do painel: cache persistente, fim da server function duplicada e TTL das baixas (25/11/2026)
+
+**Commits:**
+- `fix: acelera o painel com cache persistente das listagens e fim da server function duplicada`
+- `docs: registra a otimizacao de velocidade do painel (secao 3.36)`
+
+### O pedido
+
+"Existe alguma forma de aumentar a velocidade do app?"
+
+### O diagnostico (medido em producao, 24/11/2026)
+
+| Medida | Valor |
+|---|---|
+| 1ª carga (instancia fria da Vercel) | **20,9 s** |
+| 2ª carga (mesma instancia) | 1,8 s |
+| `getDashboard` (server function) | 5,9 s |
+| `getEmpresaBreakdown` (server function) | comeca 1,5 s depois → termina em 8,4 s |
+| Latencia da API da Conta Azul | 356–535 ms por chamada |
+| Latencia do Supabase (sa-east-1) | 11–39 ms |
+| Regiao da funcao na Vercel | **iad1 (Washington/EUA)** |
+| Payload das server functions | ~34 KB (nao era o gargalo) |
+
+Conclusao: **o React nao era o gargalo**. O tempo se perdia em chamadas a
+API da Conta Azul (350–530 ms cada, limite de 10 req/s POR EMPRESA) feitas de
+uma funcao que roda nos EUA, enquanto a API e o Supabase estao no Brasil.
+O cache em memoria (listagens e saldos, 2 min) morre a cada cold start, e o
+cache persistente existia so para as BAIXAS e para o METODO de pagamento.
+
+### As 4 mudancas
+
+**1. Fim da server function duplicada (`getEmpresaBreakdown` removida)**
+
+`getDashboard` e `getEmpresaBreakdown` faziam as MESMAS 5 consultas por
+empresa (saldos, a receber, a pagar, pagas, recebidas). Rodando em paralelo,
+cada uma caia em uma instancia diferente da Vercel e o limite de 10 req/s por
+empresa era furado (cascata de 429). Agora A Receber e A Pagar chegam junto
+com o resto, em `detalhamento.receber` e `detalhamento.pagar` — os dados ja
+eram buscados, nao ha nenhuma chamada extra a API.
+
+**2. Cache persistente das listagens, dos saldos e do payload (Supabase)**
+
+Duas tabelas novas (`supabase/migrations/20261124000001_listagens_cache.sql`):
+
+- `listagens_cache`: resultado das listagens (a receber, a pagar, pagas,
+  recebidas e saldos) por empresa e periodo;
+- `dashboard_cache`: o payload FINAL do dashboard (graficos, cards e as 4
+  listas de titulos) por empresa e periodo.
+
+A validade e gravada na escrita (`expira_em`), o que permite 3 politicas:
+
+| Cache | TTL | Observacao |
+|---|---|---|
+| listagens (periodo aberto) | 15 min | `JRM_LISTAS_TTL_MINUTOS` |
+| listagens (periodo ja fechado) | 30 dias | `JRM_LISTAS_TTL_FECHADO_DIAS` |
+| saldos | 10 min | `JRM_SALDOS_TTL_MINUTOS` (o saldo muda a cada lancamento) |
+| payload do dashboard | 5 min | `JRM_DASHBOARD_TTL_MINUTOS` |
+
+So um payload SAUDAVEL e cacheado: com erro, dados incompletos ou baixas
+pendentes, a tela continua refazendo a consulta ate completar.
+
+**3. TTL das baixas: 12 h → 26 h**
+
+O cron de pre-aquecimento roda 1x por dia (limite do plano Hobby), as 08:00
+UTC. Com TTL de 12 h o cache gravado pelo cron expirava as 20:00 UTC (17 h
+BRT) e o painel voltava a buscar centenas de baixas na API ate a madrugada do
+dia seguinte. Agora o cache do cron sobrevive ate o cron seguinte.
+Mesma mudanca no TTL do metodo de pagamento (12 h → 26 h).
+
+**4. Cache NEGATIVO do metodo de pagamento**
+
+Titulo sem forma de pagamento era consultado na API a cada recarga. Agora o
+"nao ha metodo" tambem e guardado (por 60 min, `JRM_DETALHES_VAZIO_TTL_MINUTOS`),
+porque a empresa pode lancar o metodo depois.
+
+### O botao "Recarregar" continua forcando dado novo
+
+`limparCache` passou a receber o periodo e apagar as linhas do cache
+persistente, e o `getDashboard` ganhou o parametro `forcar`: as duas camadas
+de cache (memoria e Supabase) sao ignoradas e a consulta vai na API da
+Conta Azul de novo.
+
+### O que NAO mudou
+
+- As regras de filtragem por banco (Daycoval so nos recebidos da LGP), os
+  aportes/retiradas de capital em campo separado, o valor liquido e o
+  rotulo das transferencias entre contas continuam iguais.
+- O payload do dashboard e as listas do PDF/XLSX tem o mesmo conteudo: a
+  lista "A Receber"/"A Pagar" vem do mesmo lugar que o card.
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit <hash_do_commit>
+git push origin main
+```
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/contaazul.server.ts` | cache persistente de listagens/saldos/dashboard, TTL das baixas 26 h, cache negativo do metodo, parametro `forcar` nas listagens |
+| `src/lib/contaazul.functions.ts` | `getDashboard` traz A Receber/A Pagar no `detalhamento`, cache do payload, `limparCache` invalida o periodo |
+| `src/routes/index.tsx` | remove a query do breakdown, usa o `detalhamento`, "Recarregar" forca refresh |
+| `src/routes/api/debug-pagas.ts` | debug busca os saldos direto na API (sem cache) |
+| `src/routes/api/debug-recebidos.ts` | debug busca os saldos direto na API (sem cache) |
+| `supabase/migrations/20261124000001_listagens_cache.sql` | tabelas `listagens_cache` e `dashboard_cache` |
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
