@@ -2856,6 +2856,80 @@ git push origin main
 
 ---
 
+## 3.39 PDF: linhas que nao sao mais divididas entre paginas (25/11/2026)
+
+**Commits:**
+- `fix: nao divide mais as linhas do PDF entre paginas` (`c407017`)
+- `docs: registra a correcao das linhas divididas no PDF (secao 3.39)`
+
+### O pedido
+
+> "ele nao está aprecendo truncado, ele aparece em duas linhas, porem a
+> primeira linha ficou no fim de uma pagina e a segunda no começo de outra,
+> ai a segunda sai sem informação"
+
+### O que estava acontecendo
+
+No PDF das listas (A Receber, A Pagar, Pagos, Recebidos), a coluna
+**Fornecedor/Cliente** quebra o texto em 2 linhas quando ele e longo. Exemplo
+real do lancamento de 19/11/2026 (R$ 1.520,00, Sicoob 3109):
+
+```
+JUSTICA DO TRABALHO - TRIBUNAL REGIONAL DO
+TRABALHO DA 3A.REGIAO
+```
+
+O `jspdf-autotable` roda com `rowPageBreak: "auto"` (padrao da lib): quando a
+linha cai no fim da folha, ele **corta a linha no meio** e joga a parte de
+baixo (a 2a linha do texto) no inicio da pagina seguinte. O resultado e
+justamente o que o usuario viu: a 2a linha aparece **sozinha**, sem data,
+sem banco e sem valor.
+
+### O que foi feito
+
+- As 3 tabelas do PDF (faturamento, listas de titulos e transferencias entre
+  contas) passaram a usar `rowPageBreak: "avoid"`.
+- Agora uma linha **nunca** e dividida: se ela nao couber inteira no fim da
+  pagina, ela vai **inteira** para a pagina seguinte (com data, descricao,
+  fornecedor/cliente, banco e valor).
+- Nenhum texto foi cortado: a 2a linha continua aparecendo, so que junto do
+  resto da linha.
+
+### Medicao (dados reais de producao)
+
+PDFs gerados com os dados de producao (novembro/2026 e ano todo), contando as
+linhas que ficaram divididas entre paginas:
+
+| Periodo / empresa | Antes | Depois |
+|-------------------|-------|--------|
+| todas, 01-30/11/2026 | 3 | **0** |
+| todas, 15-30/11/2026 | 3 | **0** |
+| todas, 09-12/2026 | 8 | **0** |
+| todas, 01-12/2026 | 27 | **0** |
+| LGP Transportes, 01-30/11/2026 | 2 | **0** |
+| LGP Transportes, 01-12/2026 | 5 | **0** |
+| Juvenal Transportes, 01-30/11/2026 | 5 | **0** |
+| **Total (20 periodos testados)** | **63** | **0** |
+
+O **numero de paginas ficou igual** em todos os periodos (nenhuma pagina a
+mais): o que mudou foi so que a linha quebrada passou a ir inteira para a
+proxima folha.
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/exportar.ts` | `rowPageBreak: "avoid"` nas 3 chamadas de `autoTable` |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit c407017
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
