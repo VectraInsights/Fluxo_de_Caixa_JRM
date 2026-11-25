@@ -26,6 +26,12 @@ import {
   atualizarBaixa,
   buscarTransferenciasJuros,
   buscarTransferencias,
+  // Cache persistente (Supabase): listagens, saldos e payload do dashboard.
+  chaveDashboard,
+  lerDashboardDoSupabase,
+  gravarDashboardNoSupabase,
+  apagarCacheDoPeriodo,
+  DASHBOARD_TTL_MINUTOS,
   type BaixaDetalhe,
   type TransferenciaJuros,
   type TransferenciaConta,
@@ -66,11 +72,28 @@ export const limparServerLogs = createServerFn({ method: "POST" }).handler(async
   return { ok: true };
 });
 
-export const limparCache = createServerFn({ method: "POST" }).handler(async () => {
-  limparCacheDetalhes();
-  limparCachePlanilha();
-  return { ok: true };
-});
+// Limpa o cache do servidor (botao "Recarregar" do painel).
+// Quando o periodo vem informado, apaga tambem o cache PERSISTENTE (Supabase)
+// do periodo: as listagens e o payload do dashboard sao refeitos na API da
+// Conta Azul, em vez de vir do cache.
+export const limparCache = createServerFn({ method: "POST" })
+  .validator((d) =>
+    z
+      .object({
+        empresa: z.string().optional(),
+        data_inicio: z.string().optional(),
+        data_fim: z.string().optional(),
+      })
+      .parse(d ?? {}),
+  )
+  .handler(async ({ data }) => {
+    limparCacheDetalhes();
+    limparCachePlanilha();
+    if (data?.empresa && data?.data_inicio && data?.data_fim) {
+      await apagarCacheDoPeriodo(data.empresa, data.data_inicio, data.data_fim);
+    }
+    return { ok: true };
+  });
 
 // Faturamento do periodo (planilha de cargas no Google Sheets — aba do dia, coluna VALOR).
 // Direcionado pelo REMETENTE: cada carga pertence a empresa dona do remetente.
@@ -341,10 +364,13 @@ export type DashboardData = {
   // varias cargas. Como o cache no Supabase guarda o que ja foi buscado, cada
   // carga avanca — a tela refaz a consulta sozinha ate completar.
   baixas_pendentes: string[];
-  // Títulos detalhados de Pagos e Recebidas por empresa (fonte única da verdade
-  // para as listas — evita divergência entre o card do dashboard e a lista,
-  // que antes eram buscadas por server functions separadas).
+  // Títulos detalhados de A Receber, A Pagar, Pagos e Recebidas por empresa
+  // (fonte única da verdade para as listas — evita divergência entre o card
+  // do dashboard e a lista, que antes eram buscadas por server functions
+  // separadas e duplicavam as chamadas na API da Conta Azul).
   detalhamento: {
+    receber: { empresa: string; titulos: TituloDetalhe[] }[];
+    pagar: { empresa: string; titulos: TituloDetalhe[] }[];
     pagos: { empresa: string; titulos: TituloDetalhe[] }[];
     recebidas: { empresa: string; titulos: TituloDetalhe[] }[];
     // Transferências entre contas da mesma titularidade (tela de Transferências
@@ -415,12 +441,26 @@ export const getDashboard = createServerFn({ method: "GET" })
         empresa: z.string(),
         data_inicio: z.string(),
         data_fim: z.string(),
+        // true = ignora todos os caches e refaz a consulta na API da Conta
+        // Azul (botao "Recarregar" do painel).
+        forcar: z.boolean().optional(),
       })
       .parse(d),
   )
   .handler(async ({ data }): Promise<DashboardData> => {
+    // Cache do payload final (Supabase): enquanto estiver valido, a tela abre
+    // sem nenhuma chamada a API da Conta Azul.
+    const chaveCache = chaveDashboard(data.empresa, data.data_inicio, data.data_fim);
+    if (!data.forcar) {
+      const doCache = await lerDashboardDoSupabase<DashboardData>(chaveCache);
+      if (doCache) return doCache;
+    }
     const empresas = await resolverEmpresas(data.empresa);
     const avisos: string[] = [];
+    // Avisos de estado ESTAVEL (ex.: titulo que nunca teve baixa lançada na
+    // Conta Azul): continuam sendo exibidos, mas NAO impedem o cache do
+    // payload — sao a mesma mensagem em toda consulta.
+    const avisosFixos: string[] = [];
     const empresasComProblema = new Set<string>();
     // Empresas com listas de titulos parciais (ver ResultadoLista.incompleto).
     const dadosIncompletos = new Set<string>();
@@ -452,21 +492,23 @@ export const getDashboard = createServerFn({ method: "GET" })
           };
         }
         const [sal, rec, desp, pagas, recebidas, transf] = await Promise.all([
-          buscarSaldos(emp, token),
+          buscarSaldos(emp, token, data.forcar),
           buscarV2(
             emp,
             "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar",
             data.data_inicio,
             data.data_fim,
+            data.forcar,
           ),
           buscarV2(
             emp,
             "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar",
             data.data_inicio,
             data.data_fim,
+            data.forcar,
           ),
-          buscarPagas(emp, data.data_inicio, data.data_fim),
-          buscarRecebidas(emp, data.data_inicio, data.data_fim),
+          buscarPagas(emp, data.data_inicio, data.data_fim, data.forcar),
+          buscarRecebidas(emp, data.data_inicio, data.data_fim, data.forcar),
           // Transferências entre contas da mesma titularidade (tela de
           // Transferências da Conta Azul). Informativas: falha aqui NAO
           // acende a bolinha nem gera aviso — só fica a linha no log.
@@ -537,7 +579,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         if (semBaixaDefinitivo > 0) {
           // Titulo sem baixa na API: nao adianta repetir a consulta (a data real
           // e o banco nao existem para esse titulo).
-          avisos.push(
+          avisosFixos.push(
             `${emp}: ${semBaixaDefinitivo} título(s) não têm baixa lançada na Conta Azul — nesse caso a data exibida é o vencimento e o banco fica vazio.`,
           );
         }
@@ -741,6 +783,12 @@ export const getDashboard = createServerFn({ method: "GET" })
       valor_pago: i.valor_pago,
     });
     const detalhamento = {
+      // A Receber e A Pagar (titulos em aberto) — vinham de uma SEGUNDA server
+      // function (`getEmpresaBreakdown`), que repetia as mesmas consultas na
+      // API da Conta Azul. Agora saem daqui: os dados ja foram buscados
+      // (rec/desp), entao nao ha nenhuma chamada extra a API.
+      receber: [] as { empresa: string; titulos: TituloDetalhe[] }[],
+      pagar: [] as { empresa: string; titulos: TituloDetalhe[] }[],
       pagos: [] as { empresa: string; titulos: TituloDetalhe[] }[],
       recebidas: [] as { empresa: string; titulos: TituloDetalhe[] }[],
       // Transferências entre contas da mesma titularidade (informativas:
@@ -756,6 +804,20 @@ export const getDashboard = createServerFn({ method: "GET" })
     };
     for (const r of resultados) {
       for (const [nome, listas] of r.blocos) {
+        // A receber / A pagar por transportadora (mesma regra do antigo
+        // getEmpresaBreakdown: o bloco e a transportadora dona da conta).
+        if (listas.receber.length) {
+          detalhamento.receber.push({
+            empresa: nome,
+            titulos: listas.receber.map(paraDetalhe),
+          });
+        }
+        if (listas.pagar.length) {
+          detalhamento.pagar.push({
+            empresa: nome,
+            titulos: listas.pagar.map(paraDetalhe),
+          });
+        }
         const temTitulos = listas.pagos.length > 0 || listas.recebidas.length > 0;
         // A empresa dona da conta sempre aparece (mesmo sem titulo no
         // periodo); as outras transportadoras so entram quando tem titulo.
@@ -785,7 +847,7 @@ export const getDashboard = createServerFn({ method: "GET" })
       }
     }
 
-    return {
+    const payload: DashboardData = {
       labels,
       receitas,
       despesas,
@@ -810,15 +872,36 @@ export const getDashboard = createServerFn({ method: "GET" })
         total_aportes_pagas: Math.round(totalAportesPagas * 100) / 100,
         saldo_final: saldo.length ? saldo[saldo.length - 1] : Math.round(totalBanco * 100) / 100,
       },
-      avisos,
+      avisos: [...avisos, ...avisosFixos],
       empresas_com_problema: Array.from(empresasComProblema),
       dados_incompletos: Array.from(dadosIncompletos),
       baixas_pendentes: Array.from(baixasPendentes),
       detalhamento,
     };
+
+    // Cache do payload (Supabase): so um resultado SAUDAVEL e cacheado. Um
+    // resultado com erro, dados incompletos ou baixas pendentes nao pode ser
+    // cacheado — a tela precisa refazer a consulta ate completar.
+    if (
+      !avisos.length &&
+      !empresasComProblema.size &&
+      !dadosIncompletos.size &&
+      !baixasPendentes.size
+    ) {
+      await gravarDashboardNoSupabase(
+        chaveCache,
+        data.empresa,
+        data.data_inicio,
+        data.data_fim,
+        payload,
+        DASHBOARD_TTL_MINUTOS * 60 * 1000,
+      );
+    }
+
+    return payload;
   });
 
-// ------------------- Breakdown por empresa (a receber / a pagar) -------------------
+// ------------------- Tipo dos titulos detalhados das listas -------------------
 
 export type TituloDetalhe = {
   data: string; // YYYY-MM-DD
@@ -837,107 +920,12 @@ export type TituloDetalhe = {
   valor_pago?: number;
 };
 
-export type EmpresaBreakdown = {
-  empresa: string;
-  receber: { total: number; titulos: TituloDetalhe[] };
-  pagar: { total: number; titulos: TituloDetalhe[] };
-  pagos: { total: number; titulos: TituloDetalhe[] };
-  recebidas: { total: number; titulos: TituloDetalhe[] };
-};
-
-export const getEmpresaBreakdown = createServerFn({ method: "GET" })
-  .validator((d) =>
-    z
-      .object({
-        empresa: z.string(),
-        data_inicio: z.string(),
-        data_fim: z.string(),
-      })
-      .parse(d),
-  )
-  .handler(async ({ data }): Promise<EmpresaBreakdown[]> => {
-    const empresas = await resolverEmpresas(data.empresa);
-
-    const montar = (itens: any[]): { total: number; titulos: TituloDetalhe[] } => {
-      const titulos: TituloDetalhe[] = itens
-        .map((i) => ({
-          data: i.data,
-          valor: i.valor,
-          metodo: i.metodo ?? null,
-          descricao: i.descricao ?? null,
-          terceiro: i.terceiro ?? null,
-          categoria: i.categoria ?? null,
-          banco: i.banco ?? null,
-          juros: i.juros,
-          multa: i.multa,
-          desconto: i.desconto,
-          valor_pago: i.valor_pago,
-        }))
-        .sort((a, b) => a.data.localeCompare(b.data));
-      const total = titulos.reduce((a, b) => a + b.valor, 0);
-      return { total: Math.round(total * 100) / 100, titulos };
-    };
-
-    // Empresas em paralelo — compartilha as mesmas requisições com o getDashboard
-    const porEmpresa = await Promise.all(
-      empresas.map(async (emp): Promise<EmpresaBreakdown[]> => {
-        const token = await obterToken(emp);
-        if (!token) {
-          return [
-            {
-              empresa: emp,
-              receber: { total: 0, titulos: [] },
-              pagar: { total: 0, titulos: [] },
-              pagos: { total: 0, titulos: [] },
-              recebidas: { total: 0, titulos: [] },
-            },
-          ];
-        }
-        const [sal, rec, desp, pagas, recebidas] = await Promise.all([
-          // As contas financeiras (bancos) sao necessarias para saber de qual
-          // banco veio cada titulo — o filtro e o MESMO do getDashboard.
-          buscarSaldos(emp, token),
-          buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-receber/buscar", data.data_inicio, data.data_fim),
-          buscarV2(emp, "/v1/financeiro/eventos-financeiros/contas-a-pagar/buscar", data.data_inicio, data.data_fim),
-          buscarPagas(emp, data.data_inicio, data.data_fim),
-          buscarRecebidas(emp, data.data_inicio, data.data_fim),
-        ]);
-        // Filtra pelos bancos exibidos no painel (mesma regra do getDashboard).
-        const contasMap = mapaContaParaBanco(sal.todas);
-        const bancosOk = bancosPermitidosDaEmpresa(emp);
-        // Nome do banco de cada titulo (vai para o PDF/XLSX). Vem ANTES do
-        // filtro: o banco da BAIXA tem prioridade sobre o vinculo da
-        // listagem e e ele que decide se o titulo fica no relatorio.
-        const comBanco = (itens: any[]) => {
-          aplicarBancoAosTitulos(itens, contasMap);
-          return itens;
-        };
-        const listas = {
-          receber: filtrarPorBancos(comBanco(rec.dados), contasMap, bancosOk),
-          pagar: filtrarPorBancos(comBanco(desp.dados), contasMap, bancosOk),
-          pagos: filtrarPorBancos(comBanco(pagas.dados), contasMap, bancosOk),
-          // Mesma excecao do getDashboard: recebidos no Daycoval da LGP.
-          recebidas: filtrarPorBancos(
-            comBanco(recebidas.dados),
-            contasMap,
-            bancosPermitidosDaLista(emp, "recebidas"),
-          ),
-        };
-        // Um bloco por transportadora: os titulos de contas de OUTRA
-        // transportadora (ex.: "ALVARENGA TRANSPORTES" dentro da LGP) saem do
-        // bloco da LGP e formam o bloco delas.
-        const blocos = separarPorTransportadora(emp, contasMap, listas);
-        return [...blocos.entries()].map(([nome, l]) => ({
-          empresa: nome,
-          receber: montar(l.receber),
-          pagar: montar(l.pagar),
-          pagos: montar(l.pagos),
-          recebidas: montar(l.recebidas),
-        }));
-      }),
-    );
-    return porEmpresa.flat();
-  });
+// A antiga server function `getEmpresaBreakdown` foi REMOVIDA: ela repetia as
+// mesmas consultas na API da Conta Azul que o `getDashboard` ja faz (saldos,
+// a receber, a pagar, pagas e recebidas). Rodando em paralelo, cada server
+// function caia em uma instancia diferente da Vercel e o limite de 10 req/s
+// POR EMPRESA era furado (cascata de 429). Agora A Receber e A Pagar chegam
+// junto com o resto, em `detalhamento.receber` e `detalhamento.pagar`.
 
 // ============================================================================
 // Server functions: consulta de Baixa (conforme documentacao tecnica)

@@ -36,7 +36,6 @@ import {
   listarEmpresas,
   getDashboard,
   limparCache,
-  getEmpresaBreakdown,
   getFaturamento,
   finalizarAutorizacao,
   listarPlanilhasMes,
@@ -46,7 +45,6 @@ import {
 } from "@/lib/contaazul.functions";
 import { ordenarTitulos, exportarXlsx, exportarPdf } from "@/lib/exportar";
 import { bancoPermitido, bancosPermitidosDaEmpresa } from "@/lib/bancos";
-import { useQueryClient } from "@tanstack/react-query";
 // using public SVG logo
 const logo = "/jrmicon.png";
 import logoBradesco from "@/assets/bradesco.png";
@@ -231,13 +229,16 @@ function Dashboard() {
   const listarEmpresasFn = useServerFn(listarEmpresas);
   const getDashboardFn = useServerFn(getDashboard);
   const limparCacheFn = useServerFn(limparCache);
-  const getEmpresaBreakdownFn = useServerFn(getEmpresaBreakdown);
   const getFaturamentoFn = useServerFn(getFaturamento);
   const finalizarAutorizacaoFn = useServerFn(finalizarAutorizacao);
   const listarPlanilhasFn = useServerFn(listarPlanilhasMes);
   const registrarPlanilhaFn = useServerFn(registrarPlanilhaMes);
   const detectarMesFn = useServerFn(detectarMesPlanilha);
-  const queryClient = useQueryClient();
+
+  // Refresh forcado: o botao "Recarregar" marca a proxima consulta para
+  // IGNORAR todos os caches (memoria e Supabase) e buscar os dados na API da
+  // Conta Azul de novo.
+  const forcarRefreshRef = useRef(false);
 
   // Cadastro da planilha de faturamento: colar URL -> sistema le o nome da
   // planilha e deduz o mes/ano -> usuario confirma -> registra.
@@ -317,32 +318,14 @@ function Dashboard() {
     error,
   } = useQuery({
     queryKey: ["dashboard", empresa, dataInicio, dataFim],
-    queryFn: () => getDashboardFn({ data: { empresa, data_inicio: dataInicio, data_fim: dataFim } }),
+    queryFn: () => {
+      const forcar = forcarRefreshRef.current;
+      forcarRefreshRef.current = false;
+      return getDashboardFn({
+        data: { empresa, data_inicio: dataInicio, data_fim: dataFim, forcar },
+      });
+    },
     enabled: !!dataInicio && !!dataFim,
-    staleTime: Infinity,
-    gcTime: Infinity,
-    placeholderData: keepPreviousData,
-    refetchOnMount: true,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-  });
-
-  // Estado do dashboard PARA O PERIODO ATUAL (o `data` acima pode ser o do
-  // periodo anterior enquanto o novo carrega).
-  const dashboardPronto =
-    queryClient.getQueryState(["dashboard", empresa, dataInicio, dataFim])?.status === "success";
-
-  const { data: breakdown } = useQuery({
-    queryKey: ["breakdown", empresa, dataInicio, dataFim],
-    queryFn: () =>
-      getEmpresaBreakdownFn({ data: { empresa, data_inicio: dataInicio, data_fim: dataFim } }),
-    // O breakdown (A Receber / A Pagar) so e buscado DEPOIS que o dashboard
-    // termina. As duas server functions fazem as MESMAS consultas na API da
-    // Conta Azul; rodando em paralelo, cada uma roda em uma instancia
-    // diferente da Vercel e o limite de 10 req/s POR EMPRESA e furado (a
-    // pagina virava 2-3x o trafego). O resultado era uma cadeia de 429, a
-    // funcao estourando o tempo limite e a tela presa em "Sincronizando...".
-    enabled: !!dataInicio && !!dataFim && dashboardPronto,
     staleTime: Infinity,
     gcTime: Infinity,
     placeholderData: keepPreviousData,
@@ -495,8 +478,13 @@ function Dashboard() {
   }
 
   async function recarregarTudo() {
-    // 1. Limpa o cache no servidor
-    await limparCacheFn();
+    // 1. Limpa o cache no servidor (memoria da instancia + cache persistente
+    //    do periodo no Supabase) e marca a proxima consulta para ignorar os
+    //    caches: o usuario sempre ve os dados mais atuais da Conta Azul.
+    forcarRefreshRef.current = true;
+    await limparCacheFn({
+      data: { empresa, data_inicio: dataInicio, data_fim: dataFim },
+    });
 
     // 2. Se os inputs de data pendentes mudaram, atualizamos os estados ativos.
     // Isso mudará a queryKey do useQuery, que disparará a busca automaticamente.
@@ -593,16 +581,16 @@ function Dashboard() {
     const pagar: (TituloDetalhe & { empresa: string })[] = [];
     const pagos: (TituloDetalhe & { empresa: string })[] = [];
     const recebidas: (TituloDetalhe & { empresa: string })[] = [];
-    // Receber e Pagar vêm do breakdown (server function separada)
-    if (breakdown?.length) {
-      for (const eb of breakdown) {
-        for (const t of eb.receber.titulos) receber.push({ ...t, empresa: eb.empresa });
-        for (const t of eb.pagar.titulos) pagar.push({ ...t, empresa: eb.empresa });
-      }
-    }
-    // Pagos e Recebidas vêm do detalhamento do getDashboard — fonte única da
-    // verdade, garante que a lista bate exatamente com o card do dashboard.
+    // Receber, Pagar, Pagos e Recebidas vêm do detalhamento do getDashboard
+    // — fonte única da verdade: a lista bate exatamente com o card do
+    // dashboard e nenhuma chamada extra é feita na API da Conta Azul.
     if (data.detalhamento) {
+      for (const d of data.detalhamento.receber) {
+        for (const t of d.titulos) receber.push({ ...t, empresa: d.empresa });
+      }
+      for (const d of data.detalhamento.pagar) {
+        for (const t of d.titulos) pagar.push({ ...t, empresa: d.empresa });
+      }
       for (const d of data.detalhamento.pagos) {
         for (const t of d.titulos) pagos.push({ ...t, empresa: d.empresa });
       }
@@ -620,7 +608,7 @@ function Dashboard() {
         titulos: ordenarTitulos(recebidas),
       },
     };
-  }, [data, breakdown]);
+  }, [data]);
 
   // Exporta as listas (A Receber, A Pagar, Pagos, Recebidos) para PDF ou XLSX
   async function exportar(formato: "pdf" | "xlsx") {
@@ -1369,7 +1357,7 @@ function Dashboard() {
               </div>
             </div>
 
-            {!breakdown ? (
+            {!data ? (
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
                 <SkeletonCard />
                 <SkeletonCard />

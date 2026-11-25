@@ -362,7 +362,12 @@ const baixaCache = new Map<string, { exp: number; baixas: any[] | null; gravadoE
 //     curto — e o que ainda pode ser corrigido pela empresa;
 //   - titulo de periodo ja fechado: TTL longo — depois da 1a busca o mes nao
 //     e mais buscado na API (o reload passa a ser instantaneo).
-const BAIXA_TTL_MS = Number(process.env.JRM_BAIXAS_TTL_HORAS || "12") * 60 * 60 * 1000;
+//
+// O TTL curto e de 26 h (e nao 12 h) porque o cron de pre-aquecimento roda
+// 1x por dia, as 08:00 UTC: com 12 h o cache gravado pelo cron expirava as
+// 20:00 UTC (17 h BRT) e o painel voltava a buscar centenas de baixas na API
+// ate a madrugada do dia seguinte.
+const BAIXA_TTL_MS = Number(process.env.JRM_BAIXAS_TTL_HORAS || "26") * 60 * 60 * 1000;
 const BAIXA_TTL_LONGO_MS =
   Number(process.env.JRM_BAIXAS_TTL_LONGO_DIAS || "30") * 24 * 60 * 60 * 1000;
 const BAIXA_RECENTE_DIAS = Number(process.env.JRM_BAIXAS_RECENTE_DIAS || "7");
@@ -385,10 +390,315 @@ const CHUNK_CACHE_BANCO = 200; // ids por consulta/upsert no Supabase
 // compartilhado entre as instancias: a 2a carga do dia nao faz nenhuma
 // chamada de detalhe.
 //
-// TTL: 12 h (o metodo e estavel; 12 h da para a empresa corrigir um lancamento
+// TTL: 26 h (o metodo e estavel; 26 h da para a empresa corrigir um lancamento
 // e ainda assim nao pagar o preco de refazer as chamadas todo dia).
 const DETALHE_TTL_BANCO_MS =
-  Number(process.env.JRM_DETALHES_TTL_HORAS || "12") * 60 * 60 * 1000;
+  Number(process.env.JRM_DETALHES_TTL_HORAS || "26") * 60 * 60 * 1000;
+
+// TTL do cache NEGATIVO do metodo (titulo SEM forma de pagamento): a empresa
+// pode lancar a forma de pagamento depois, entao o prazo e curto — o objetivo
+// e so nao repetir a chamada a API a cada recarga enquanto o titulo segue
+// sem metodo.
+const DETALHE_VAZIO_TTL_BANCO_MS =
+  Number(process.env.JRM_DETALHES_VAZIO_TTL_MINUTOS || "60") * 60 * 1000;
+
+// ------------------- Cache persistente das LISTAGENS e do DASHBOARD --------
+//
+// O cache em memoria (listCache/saldoCache, 2 min) vive so na instancia da
+// Vercel e some a cada cold start. Medido em producao (24/11/2026): a 1a
+// carga do dia levava ~21 s (a API da Conta Azul, chamada de dentro de uma
+// funcao que roda nos EUA, responde em 350-530 ms e o limite e de 10 req/s
+// POR EMPRESA) e a 2a carga, na mesma instancia, levava ~1,8 s.
+//
+// Duas camadas novas, no Supabase (sobrevivem ao cold start e sao
+// compartilhadas entre as instancias):
+//   - listagens_cache: o resultado das listagens (a receber, a pagar,
+//     pagas, recebidas e saldos) por EMPRESA e PERIODO;
+//   - dashboard_cache: o payload FINAL do dashboard (graficos, cards e as 4
+//     listas de titulos) por EMPRESA e PERIODO.
+//
+// A validade e gravada na escrita (`expira_em`), o que permite 3 politicas:
+//   - leitura normal (o usuario abriu o painel): TTL curto;
+//   - periodo ja fechado (fim antes de hoje): TTL longo — o mes nao muda mais;
+//   - os SALDOS nunca usam TTL longo: o saldo muda a cada lancamento.
+//
+// O botao "Recarregar" do painel apaga as linhas do periodo antes de refazer
+// a consulta, entao o usuario sempre tem como forc dados novos.
+
+const LISTA_TTL_MINUTOS = Number(process.env.JRM_LISTAS_TTL_MINUTOS || "15");
+const LISTA_TTL_FECHADO_DIAS = Number(process.env.JRM_LISTAS_TTL_FECHADO_DIAS || "30");
+const SALDO_TTL_MINUTOS = Number(process.env.JRM_SALDOS_TTL_MINUTOS || "10");
+export const DASHBOARD_TTL_MINUTOS = Number(process.env.JRM_DASHBOARD_TTL_MINUTOS || "5");
+
+// Se o cache persistente falhar (tabela ausente, Supabase fora do ar), o app
+// segue funcionando so com o cache em memoria: a camada persistente e
+// desativada por 30 min para nao repetir a falha a cada chamada.
+let cacheListagensIndisponivelAte = 0;
+
+/** Chave do cache de listagem (empresa + tipo + periodo). */
+export function chaveListagem(
+  empresa: string,
+  tipo: string,
+  dataInicio: string,
+  dataFim: string,
+): string {
+  return `${empresa}|${tipo}|${dataInicio}|${dataFim}`;
+}
+
+/** Chave do cache do dashboard (empresa + periodo). */
+export function chaveDashboard(empresa: string, dataInicio: string, dataFim: string): string {
+  return `${empresa}|${dataInicio}|${dataFim}`;
+}
+
+/** "Hoje" no fuso de Sao Paulo (o painel e usado no Brasil). */
+function hojeBrasil(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+}
+
+/**
+ * Validade de uma listagem cacheada:
+ *   - periodo ja fechado (fim antes de hoje): 30 dias — o mes nao muda mais;
+ *   - periodo que inclui hoje: 15 min — lista de titulos em aberto muda todo
+ *     dia, mas 15 min ja evita repetir as ~20 chamadas de listagem a cada
+ *     recarga do painel.
+ */
+export function ttlDaListagem(dataFim: string): number {
+  if (dataFim && dataFim < hojeBrasil()) {
+    return LISTA_TTL_FECHADO_DIAS * 24 * 60 * 60 * 1000;
+  }
+  return LISTA_TTL_MINUTOS * 60 * 1000;
+}
+
+/** Le o cache persistente de uma listagem (null quando ausente ou vencido). */
+async function lerListagemDoSupabase<T>(chave: string): Promise<T | null> {
+  if (Date.now() < cacheListagensIndisponivelAte) return null;
+  try {
+    const sb = getSupabase();
+    const { data, error } = await sb
+      .from("listagens_cache")
+      .select("dados, expira_em")
+      .eq("chave", chave)
+      .maybeSingle();
+    if (error) {
+      cacheListagensIndisponivelAte = Date.now() + 30 * 60 * 1000;
+      log("warn", `cache de listagens (Supabase) falhou: ${error.message}`);
+      return null;
+    }
+    if (!data) return null;
+    const expira = Date.parse(String((data as any).expira_em || ""));
+    if (!Number.isFinite(expira) || expira <= Date.now()) return null;
+    return (data as any).dados as T;
+  } catch (e) {
+    cacheListagensIndisponivelAte = Date.now() + 30 * 60 * 1000;
+    log("warn", `cache de listagens (Supabase) falhou: ${(e as Error)?.message}`);
+    return null;
+  }
+}
+
+/** Grava (upsert) o resultado de uma listagem no cache persistente. */
+async function gravarListagemNoSupabase(
+  chave: string,
+  empresa: string,
+  tipo: string,
+  dataInicio: string,
+  dataFim: string,
+  dados: unknown,
+  ttlMs: number,
+): Promise<void> {
+  if (Date.now() < cacheListagensIndisponivelAte) return;
+  try {
+    const sb = getSupabase();
+    const agora = new Date().toISOString();
+    const { error } = await sb.from("listagens_cache").upsert(
+      {
+        chave,
+        empresa,
+        tipo,
+        data_inicio: dataInicio,
+        data_fim: dataFim,
+        dados,
+        expira_em: new Date(Date.now() + ttlMs).toISOString(),
+        atualizado_em: agora,
+      },
+      { onConflict: "chave" },
+    );
+    if (error) {
+      cacheListagensIndisponivelAte = Date.now() + 30 * 60 * 1000;
+      log("warn", `cache de listagens (Supabase) falhou ao gravar: ${error.message}`);
+    }
+  } catch (e) {
+    cacheListagensIndisponivelAte = Date.now() + 30 * 60 * 1000;
+    log("warn", `cache de listagens (Supabase) falhou ao gravar: ${(e as Error)?.message}`);
+  }
+}
+
+/**
+ * Busca com DUAS camadas de cache:
+ *   1. memoria (2 min, so na instancia da Vercel);
+ *   2. persistente (Supabase, sobrevive ao cold start e e compartilhado).
+ *
+ * Com `forcar` (botao "Recarregar" do painel) as duas camadas sao ignoradas:
+ * o dado vai na API e o resultado fresco substitui o cache.
+ */
+async function buscarComCache<T>({
+  cache,
+  chaveMemoria,
+  ttlMemoria,
+  chavePersistente,
+  empresa,
+  tipo,
+  dataInicio,
+  dataFim,
+  ttlPersistente,
+  buscar,
+  manter,
+  forcar,
+}: {
+  cache: Map<string, EntradaCache<T>>;
+  chaveMemoria: string;
+  ttlMemoria: number;
+  chavePersistente: string;
+  empresa: string;
+  tipo: string;
+  dataInicio: string;
+  dataFim: string;
+  ttlPersistente: number;
+  buscar: () => Promise<T>;
+  manter: (r: T) => boolean;
+  forcar: boolean;
+}): Promise<T> {
+  if (forcar) {
+    const res = await buscar();
+    if (manter(res)) {
+      await gravarListagemNoSupabase(
+        chavePersistente,
+        empresa,
+        tipo,
+        dataInicio,
+        dataFim,
+        res,
+        ttlPersistente,
+      );
+    }
+    return res;
+  }
+  return lerOuCriar(cache, chaveMemoria, ttlMemoria, async () => {
+    const doBanco = await lerListagemDoSupabase<T>(chavePersistente);
+    if (doBanco && manter(doBanco)) return doBanco;
+    const res = await buscar();
+    if (manter(res)) {
+      await gravarListagemNoSupabase(
+        chavePersistente,
+        empresa,
+        tipo,
+        dataInicio,
+        dataFim,
+        res,
+        ttlPersistente,
+      );
+    }
+    return res;
+  }, manter);
+}
+
+/**
+ * Le o payload FINAL do dashboard no cache persistente (Supabase).
+ * Enquanto ele estiver valido, a tela abre sem nenhuma chamada a API da
+ * Conta Azul.
+ */
+export async function lerDashboardDoSupabase<T>(chave: string): Promise<T | null> {
+  if (Date.now() < cacheListagensIndisponivelAte) return null;
+  try {
+    const sb = getSupabase();
+    const { data, error } = await sb
+      .from("dashboard_cache")
+      .select("payload, expira_em")
+      .eq("chave", chave)
+      .maybeSingle();
+    if (error) {
+      cacheListagensIndisponivelAte = Date.now() + 30 * 60 * 1000;
+      log("warn", `cache do dashboard (Supabase) falhou: ${error.message}`);
+      return null;
+    }
+    if (!data) return null;
+    const expira = Date.parse(String((data as any).expira_em || ""));
+    if (!Number.isFinite(expira) || expira <= Date.now()) return null;
+    return (data as any).payload as T;
+  } catch (e) {
+    cacheListagensIndisponivelAte = Date.now() + 30 * 60 * 1000;
+    log("warn", `cache do dashboard (Supabase) falhou: ${(e as Error)?.message}`);
+    return null;
+  }
+}
+
+/** Grava (upsert) o payload final do dashboard no cache persistente. */
+export async function gravarDashboardNoSupabase(
+  chave: string,
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+  payload: unknown,
+  ttlMs: number,
+): Promise<void> {
+  if (Date.now() < cacheListagensIndisponivelAte) return;
+  try {
+    const sb = getSupabase();
+    const { error } = await sb.from("dashboard_cache").upsert(
+      {
+        chave,
+        empresa,
+        data_inicio: dataInicio,
+        data_fim: dataFim,
+        payload,
+        expira_em: new Date(Date.now() + ttlMs).toISOString(),
+        atualizado_em: new Date().toISOString(),
+      },
+      { onConflict: "chave" },
+    );
+    if (error) {
+      cacheListagensIndisponivelAte = Date.now() + 30 * 60 * 1000;
+      log("warn", `cache do dashboard (Supabase) falhou ao gravar: ${error.message}`);
+    }
+  } catch (e) {
+    cacheListagensIndisponivelAte = Date.now() + 30 * 60 * 1000;
+    log("warn", `cache do dashboard (Supabase) falhou ao gravar: ${(e as Error)?.message}`);
+  }
+}
+
+/**
+ * Invalida o cache persistente do periodo (botao "Recarregar" do painel):
+ * apaga as listagens das empresas do filtro e o payload do dashboard.
+ * Assim o proximo carregamento refaz a consulta na API da Conta Azul.
+ */
+export async function apagarCacheDoPeriodo(
+  empresa: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<void> {
+  if (Date.now() < cacheListagensIndisponivelAte) return;
+  try {
+    const sb = getSupabase();
+    // Listagens: quando o filtro e "todas", vale para todas as empresas.
+    let q = sb.from("listagens_cache").delete().eq("data_inicio", dataInicio).eq("data_fim", dataFim);
+    if (empresa && empresa.toLowerCase() !== "todas") q = q.eq("empresa", empresa);
+    const { error: erroListagens } = await q;
+    if (erroListagens) {
+      log("warn", `cache do periodo: falha ao apagar listagens: ${erroListagens.message}`);
+    }
+    // Dashboard: apaga o payload do filtro atual e o de "todas" (que tambem
+    // contem os dados desta empresa).
+    const chaves =
+      empresa && empresa.toLowerCase() !== "todas"
+        ? [chaveDashboard(empresa, dataInicio, dataFim), chaveDashboard("todas", dataInicio, dataFim)]
+        : [chaveDashboard("todas", dataInicio, dataFim)];
+    const { error: erroDashboard } = await sb.from("dashboard_cache").delete().in("chave", chaves);
+    if (erroDashboard) {
+      log("warn", `cache do periodo: falha ao apagar dashboard: ${erroDashboard.message}`);
+    }
+  } catch (e) {
+    log("warn", `cache do periodo: falha ao apagar: ${(e as Error)?.message}`);
+  }
+}
 
 /**
  * TTL de uma baixa conforme a RECENCIA do pagamento: pagamento nos ultimos
@@ -1185,14 +1495,25 @@ export type ContaSaldo = { id: string; nome: string; saldo: number; erro: boolea
 export async function buscarSaldos(
   empresa: string,
   tokenInicial: string,
+  forcar = false,
 ): Promise<{ lista: { id: string; nome: string; saldo: number }[]; ok: boolean; todas: ContaSaldo[] }> {
-  const r = await lerOuCriar(
-    saldoCache,
+  // Os saldos NAO usam TTL longo: o saldo muda a cada lancamento. O cache
+  // persistente (10 min) evita refazer as ~25 chamadas de "saldo-atual" por
+  // empresa (a LGP tem 25 contas) a cada cold start da Vercel.
+  const r = await buscarComCache({
+    cache: saldoCache,
+    chaveMemoria: empresa,
+    ttlMemoria: SALDO_TTL_MS,
+    chavePersistente: chaveListagem(empresa, "saldos", "", ""),
     empresa,
-    SALDO_TTL_MS,
-    () => buscarSaldosInterna(empresa, tokenInicial),
-    (x) => x.ok,
-  );
+    tipo: "saldos",
+    dataInicio: "",
+    dataFim: "",
+    ttlPersistente: SALDO_TTL_MINUTOS * 60 * 1000,
+    buscar: () => buscarSaldosInterna(empresa, tokenInicial),
+    manter: (x) => x.ok,
+    forcar,
+  });
   return { lista: r.lista, ok: r.ok, todas: r.todas };
 }
 
@@ -1698,10 +2019,13 @@ export function filtrarPorBancos(
 async function lerDetalhesDoSupabase(
   empresa: string,
   tituloIds: string[],
-): Promise<Map<string, string>> {
+): Promise<{ metodos: Map<string, string>; vazios: Set<string> }> {
   const out = new Map<string, string>();
-  if (!tituloIds.length) return out;
-  if (Date.now() < cacheDetalhesIndisponivelAte) return out;
+  // Cache NEGATIVO: titulos que a API ja respondeu NAO ter forma de
+  // pagamento. O prazo e curto, mas evita repetir a chamada a cada recarga.
+  const vazios = new Set<string>();
+  if (!tituloIds.length) return { metodos: out, vazios };
+  if (Date.now() < cacheDetalhesIndisponivelAte) return { metodos: out, vazios };
 
   try {
     const sb = getSupabase();
@@ -1735,13 +2059,18 @@ async function lerDetalhesDoSupabase(
         if (!linhas) continue;
         for (const row of linhas as any[]) {
           const metodo = typeof row?.metodo === "string" ? row.metodo.trim() : "";
-          // So metodos preenchidos sao cacheados (um titulo sem metodo pode ser
-          // preenchido depois pela empresa — nao vale guardar o vazio).
-          if (!metodo) continue;
           const lidaEm = Date.parse(String(row.atualizado_em || "")) || Date.now();
+          const id = String(row.titulo_id);
+          if (!metodo) {
+            // Cache NEGATIVO (a API nao devolveu forma de pagamento): vale por
+            // um prazo curto, porque a empresa pode lancar o metodo depois.
+            if (lidaEm + DETALHE_VAZIO_TTL_BANCO_MS <= Date.now()) continue;
+            vazios.add(id);
+            continue;
+          }
           // Expirado: a API e consultada de novo.
           if (lidaEm + DETALHE_TTL_BANCO_MS <= Date.now()) continue;
-          out.set(String(row.titulo_id), metodo);
+          out.set(id, metodo);
         }
       }
     }
@@ -1749,7 +2078,7 @@ async function lerDetalhesDoSupabase(
     cacheDetalhesIndisponivelAte = Date.now() + 30 * 60 * 1000;
     log("warn", `cache de detalhes (Supabase) falhou: ${(e as Error)?.message}`);
   }
-  return out;
+  return { metodos: out, vazios };
 }
 
 /**
@@ -1998,15 +2327,24 @@ export async function buscarV2(
   endpoint: string,
   dataInicio: string,
   dataFim: string,
+  forcar = false,
 ): Promise<{ dados: ItemLancamento[]; ok: boolean }> {
   const cacheKey = `${empresa}:${endpoint}:${dataInicio}:${dataFim}`;
-  const r = await lerOuCriar(
-    listCache,
-    cacheKey,
-    LIST_TTL_MS,
-    () => buscarV2Interna(empresa, endpoint, dataInicio, dataFim),
-    (x) => x.ok,
-  );
+  const tipo = endpoint.includes("contas-a-receber") ? "v2-receber" : "v2-pagar";
+  const r = await buscarComCache({
+    cache: listCache,
+    chaveMemoria: cacheKey,
+    ttlMemoria: LIST_TTL_MS,
+    chavePersistente: chaveListagem(empresa, tipo, dataInicio, dataFim),
+    empresa,
+    tipo,
+    dataInicio,
+    dataFim,
+    ttlPersistente: ttlDaListagem(dataFim),
+    buscar: () => buscarV2Interna(empresa, endpoint, dataInicio, dataFim),
+    manter: (x) => x.ok,
+    forcar,
+  });
   return { dados: r.dados, ok: r.ok };
 }
 
@@ -2122,12 +2460,16 @@ async function buscarV2Interna(
   // Cache persistente dos metodos (Supabase): evita as ~100 chamadas de
   // detalhe a cada cold start da Vercel. A leitura e em LOTE (1 consulta por
   // 200 titulos, 4 lotes em paralelo).
-  const metodosDoBanco = await lerDetalhesDoSupabase(
+  const { metodos: metodosDoBanco, vazios: metodosVazios } = await lerDetalhesDoSupabase(
     empresa,
     brutos.map((b) => String(b.id)).filter(Boolean),
   );
   const metodosNovos: { titulo_id: string; metodo: string }[] = [];
+  // Titulos que a API respondeu NAO ter forma de pagamento: guardamos o
+  // cache negativo (prazo curto) para nao repetir a chamada a cada recarga.
+  const metodosVaziosNovos: { titulo_id: string; metodo: string }[] = [];
   let doCache = 0;
+  let doCacheVazio = 0;
 
   async function worker() {
     while (true) {
@@ -2146,7 +2488,7 @@ async function buscarV2Interna(
         if (metodo) doCache++;
       }
 
-      if (!metodo) {
+      if (!metodo && !metodosVazios.has(String(b.id))) {
         const resDet = await buscarDetalheFormaPagamento(empresa, endpoint, b.id, tokenRef);
         metodo = resDet.metodo;
         if (resDet.erro) {
@@ -2157,6 +2499,13 @@ async function buscarV2Interna(
         // Metodo novo (nao-nulo): guarda no cache persistente para a proxima
         // carga nao precisar chamar a API de novo.
         if (metodo) metodosNovos.push({ titulo_id: String(b.id), metodo });
+        else if (!resDet.erro) {
+          // A API respondeu e nao ha forma de pagamento: cache negativo.
+          metodosVaziosNovos.push({ titulo_id: String(b.id), metodo: "" });
+        }
+      } else if (!metodo) {
+        // Cache negativo: a API ja respondeu que este titulo nao tem metodo.
+        doCacheVazio++;
       } else {
         log("info", `${empresa} item ${String(b.id).slice(0, 8)} data=${b.data} valor=${b.valor} classificado de lista como: ${metodo}`);
       }
@@ -2182,9 +2531,10 @@ async function buscarV2Interna(
   await Promise.all(Array.from({ length: Math.min(CONCORRENCIA, brutos.length) }, worker));
   // Grava os metodos novos no cache persistente (1 chamada por 200 titulos).
   if (metodosNovos.length) await gravarDetalhesNoSupabase(empresa, metodosNovos);
+  if (metodosVaziosNovos.length) await gravarDetalhesNoSupabase(empresa, metodosVaziosNovos);
   log(
     "info",
-    `${empresa} a_receber=${brutos.length} com_metodo=${comMetodo} boletos=${boletos} | cache: ${doCache} do banco, ${metodosNovos.length} novos`,
+    `${empresa} a_receber=${brutos.length} com_metodo=${comMetodo} boletos=${boletos} | cache: ${doCache} do banco, ${doCacheVazio} sem metodo, ${metodosNovos.length} novos`,
   );
 
   if (falhaDetalhe) {
@@ -2225,25 +2575,30 @@ export async function buscarPagas(
   empresa: string,
   dataInicio: string,
   dataFim: string,
+  forcar = false,
 ): Promise<ResultadoLista> {
   // Refresh forcado (pre-aquecimento): o cache de lista (2 min) tambem e
   // contornado, senao a listagem ja enriquecida seria devolvida sem buscar as
   // baixas de novo na API.
-  if (forcarRefreshBaixas) {
-    return await buscarPagasInterna(empresa, dataInicio, dataFim);
-  }
-  const cacheKey = `pagas:${empresa}:${dataInicio}:${dataFim}`;
-  const r = await lerOuCriar(
-    listCache,
-    cacheKey,
-    LIST_TTL_MS,
-    () => buscarPagasInterna(empresa, dataInicio, dataFim),
+  const forcarReal = forcar || forcarRefreshBaixas;
+  const r = await buscarComCache({
+    cache: listCache,
+    chaveMemoria: `pagas:${empresa}:${dataInicio}:${dataFim}`,
+    ttlMemoria: LIST_TTL_MS,
+    chavePersistente: chaveListagem(empresa, "pagas", dataInicio, dataFim),
+    empresa,
+    tipo: "pagas",
+    dataInicio,
+    dataFim,
+    ttlPersistente: ttlDaListagem(dataFim),
+    buscar: () => buscarPagasInterna(empresa, dataInicio, dataFim),
     // So um resultado COMPLETO fica no cache. Resultado parcial seria servido
     // por 2 minutos e faria o card mostrar um total errado.
     // Resultado com baixas faltando tambem nao fica no cache: a proxima carga
     // precisa tentar de novo (as baixas ja buscadas vem do cache do Supabase).
-    (x) => x.ok && !x.sem_baixa && !x.baixas_pendentes,
-  );
+    manter: (x) => x.ok && !x.sem_baixa && !x.baixas_pendentes,
+    forcar: forcarReal,
+  });
   return {
     dados: r.dados,
     ok: r.ok,
@@ -3261,20 +3616,25 @@ export async function buscarRecebidas(
   empresa: string,
   dataInicio: string,
   dataFim: string,
+  forcar = false,
 ): Promise<ResultadoLista> {
   // Refresh forcado (pre-aquecimento): contorna o cache de lista (ver buscarPagas).
-  if (forcarRefreshBaixas) {
-    return await buscarRecebidasInterna(empresa, dataInicio, dataFim);
-  }
-  const cacheKey = `recebidas:${empresa}:${dataInicio}:${dataFim}`;
-  const r = await lerOuCriar(
-    listCache,
-    cacheKey,
-    LIST_TTL_MS,
-    () => buscarRecebidasInterna(empresa, dataInicio, dataFim),
+  const forcarReal = forcar || forcarRefreshBaixas;
+  const r = await buscarComCache({
+    cache: listCache,
+    chaveMemoria: `recebidas:${empresa}:${dataInicio}:${dataFim}`,
+    ttlMemoria: LIST_TTL_MS,
+    chavePersistente: chaveListagem(empresa, "recebidas", dataInicio, dataFim),
+    empresa,
+    tipo: "recebidas",
+    dataInicio,
+    dataFim,
+    ttlPersistente: ttlDaListagem(dataFim),
+    buscar: () => buscarRecebidasInterna(empresa, dataInicio, dataFim),
     // So um resultado COMPLETO fica no cache (ver buscarPagas).
-    (x) => x.ok && !x.sem_baixa && !x.baixas_pendentes,
-  );
+    manter: (x) => x.ok && !x.sem_baixa && !x.baixas_pendentes,
+    forcar: forcarReal,
+  });
   return {
     dados: r.dados,
     ok: r.ok,

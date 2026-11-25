@@ -82,7 +82,9 @@ export const Route = createFileRoute("/api/debug-pagas")({
         const resultados: any[] = [];
         // Contas financeiras (bancos) da empresa + lista de bancos exibidos:
         // usado para conferir se o titulo traz o vinculo com o banco.
-        const sal = await buscarSaldos(empresa, tokenRef.token);
+        // Debug: sempre busca os saldos direto na API (sem cache), para
+        // conferir o estado real da conta.
+        const sal = await buscarSaldos(empresa, tokenRef.token, true);
         const contas = sal.todas.map((c) => ({ id: c.id, nome: c.nome }));
         const nomeDaConta = new Map(contas.map((c) => [String(c.id), c.nome]));
         const permitidos = bancosPermitidosDaEmpresa(empresa);
