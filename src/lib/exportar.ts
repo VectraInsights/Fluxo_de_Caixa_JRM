@@ -870,6 +870,12 @@ export async function exportarPdf(rel: RelatorioListas) {
         overflow: "linebreak",
       },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
+      // NUNCA divide uma linha entre paginas: quando o texto do cliente
+      // quebrava em 2 linhas (ex.: "JUSTICA DO TRABALHO - ... TRABALHO DA
+      // 3A.REGIAO"), a 2a linha caia SOZINHA no inicio da pagina seguinte,
+      // sem data, banco e valor. Com "avoid" a linha inteira vai para a
+      // proxima pagina.
+      rowPageBreak: "avoid",
       // Linha de total do dia em negrito e com fundo claro
       didParseCell: (data: any) => {
         if (data.section === "body" && linhasFat[data.row.index]?.ehTotalDia) {
@@ -968,6 +974,11 @@ export async function exportarPdf(rel: RelatorioListas) {
         overflow: "linebreak",
       },
       headStyles: { fillColor: [60, 60, 60], textColor: 255, fontStyle: "bold" },
+      // NUNCA divide uma linha entre paginas: a 2a linha do texto (ex.:
+      // "TRABALHO DA 3A.REGIAO") caia sozinha no inicio da pagina seguinte,
+      // sem data, banco e valor. Com "avoid" a linha inteira vai para a
+      // proxima pagina.
+      rowPageBreak: "avoid",
       // Linha de TOTAL: todas as colunas antes do VALOR em uma celula so.
       didParseCell: (data: any) => {
         mesclarLinhaTotal(data, body.length - 1, head[0].length);
@@ -1049,6 +1060,9 @@ export async function exportarPdf(rel: RelatorioListas) {
         overflow: "linebreak",
       },
       headStyles: { fillColor: [71, 85, 105], textColor: 255, fontStyle: "bold" },
+      // NUNCA divide uma linha entre paginas (o texto da transferencia pode
+      // quebrar em 2 linhas e a 2a caia sozinha na pagina seguinte).
+      rowPageBreak: "avoid",
       columnStyles: {
         0: { cellWidth: 18 },
         1: { cellWidth: larguraUtil - 18 - 62 - 62 - 32 },
