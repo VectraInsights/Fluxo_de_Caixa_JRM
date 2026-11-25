@@ -2689,6 +2689,102 @@ git push origin main
 
 ---
 
+## 3.37 Funcao da Vercel na regiao gru1 (Sao Paulo) (25/11/2026)
+
+**Commits:**
+- `fix: move as funcoes da Vercel para a regiao gru1 (Sao Paulo)` (`7527198`)
+- `Revert "fix: move as funcoes da Vercel para a regiao gru1 (Sao Paulo)"` (`d3c07d2`) — usado SO para o A/B
+- `Reapply "fix: move as funcoes da Vercel para a regiao gru1 (Sao Paulo)"` (`1e7f18f`) — volta para `gru1`
+- `docs: registra a mudanca da regiao da funcao para gru1 (secao 3.37)`
+
+### O pedido
+
+Proxima etapa de otimizacao (P1): mover a funcao da Vercel da regiao `iad1`
+(Washington/EUA) para `gru1` (Sao Paulo), porque a API da Conta Azul e o
+Supabase do projeto (`sa-east-1`) estao no Brasil e cada ida e volta
+transatlantica custava tempo de verdade.
+
+### A mudanca
+
+Uma linha no `vercel.json`:
+
+```json
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["gru1"],
+  "crons": []
+}
+```
+
+(o bloco `crons` continua igual ao que ja existia)
+
+- `regions` no nivel do projeto vale para TODAS as funcoes, inclusive os dois
+  crons (`renovar-tokens` e `prewarm-baixas`).
+- O plano Hobby permite **1 regiao** de funcao (Pro = 5, Enterprise = todas),
+  entao `gru1` e o maximo possivel no plano atual.
+- `gru1` = Sao Paulo (`sa-east-1`), a mesma regiao do Supabase do projeto.
+- Nenhum codigo do painel foi alterado: a mudanca e so de infraestrutura.
+
+### Como a regiao foi confirmada
+
+O header `x-vercel-id` da resposta traz `PoP::regiao-da-funcao::...`:
+
+| Momento | Header | Regiao da funcao |
+|---|---|---|
+| Antes | `gru1::iad1::...` | iad1 (Washington/EUA) |
+| Depois | `gru1::gru1::...` | **gru1 (Sao Paulo)** |
+
+O primeiro campo e o PoP que atendeu o navegador (Brasil); o segundo e onde a
+funcao realmente rodou.
+
+### A/B medido (mesmo codigo, mesmos caches, mesmo periodo)
+
+Para nao confiar em numero de tabela antiga, a funcao foi medida nas DUAS
+regioes, com o mesmo script e na mesma hora: o commit da regiao foi revertido
+(`git revert`), medido, e reaplicado (`git revert` do revert). Periodo medido:
+novembro/2026, "todas" as empresas.
+
+| Medida | iad1 (EUA) | gru1 (Sao Paulo) | Ganho |
+|---|---|---|---|
+| HTML do painel (SSR) | 445 ms | 243 ms (2 amostras) | **-45%** |
+| `getDashboard` com cache | 1.180 ms (3 amostras) | 247 ms (6 amostras) | **-79%** |
+| `getDashboard` com `forcar=true` (vai na API da Conta Azul) | 7.648 ms (3 amostras) | 5.363 ms (6 amostras) | **-30%** (~2,3 s a menos) |
+
+A linha que importa e a ultima: `forcar=true` ignora as DUAS camadas de cache
+e vai na API da Conta Azul de verdade. Cada chamada da API custa ~350–530 ms
+quando a funcao roda nos EUA; de Sao Paulo a funcao chega antes e volta antes
+no mesmo total, porque cada chamada passa a ser mais rapida.
+
+No navegador (producao, depois da mudanca): o HTML respondeu em 119–161 ms e a
+pagina terminou de carregar em **353 ms**, sem erro no console.
+
+### O que NAO mudou
+
+- Nenhuma regra de negocio: o filtro de bancos (Daycoval so nos recebidos da
+  LGP), os aportes/retiradas de capital em campo separado, o valor liquido e o
+  rotulo das transferencias entre contas continuam iguais.
+- O payload do dashboard e as listas do PDF/XLSX: conferido em producao para
+  "todas", LGP e Juvenal, no mes e no dia — o total das listas continua igual
+  ao total dos cards, e nenhuma consulta voltou aviso.
+- Os crons continuam com a mesma agenda (`0 13 * * *` e `0 8 * * *`); so
+  mudaram de maquina.
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+# volta a funcao para iad1 (regiao padrao dos projetos novos na Vercel)
+git revert --no-edit 1e7f18f
+git push origin main
+```
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `vercel.json` | `"regions": ["gru1"]` (funcoes e crons em Sao Paulo) |
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
