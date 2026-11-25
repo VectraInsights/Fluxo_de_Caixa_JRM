@@ -2585,6 +2585,23 @@ git push origin main
 | Regiao da funcao na Vercel | **iad1 (Washington/EUA)** |
 | Payload das server functions | ~34 KB (nao era o gargalo) |
 
+### Resultado medido depois da otimizacao (25/11/2026)
+
+| Medida | Antes | Depois |
+|---|---|---|
+| 1a carga (mes de novembro, "todas") | 20,9 s | **8,9 s** |
+| 2a carga (mesmo periodo) | 1,8 s | **0,8 s** |
+| Server functions por pagina | 5 (a 5a so depois das outras) | **4 (todas em paralelo)** |
+| Reload da pagina ate as listas aparecerem | ~8,4 s | **2,1 s** |
+
+O "Recarregar" do painel continua forcando dado novo: ele apaga o cache do
+periodo no Supabase e a consulta seguinte ignora as duas camadas de cache
+(confirmado em producao: o cache foi regravado na hora do clique).
+
+A lista "A Receber"/"A Pagar" continua batendo com os cards: conferido em
+producao para "todas", LGP e Juvenal, no mes e no dia — o total das listas e
+igual ao total de "Entradas Previstas" e "Saidas Previstas".
+
 Conclusao: **o React nao era o gargalo**. O tempo se perdia em chamadas a
 API da Conta Azul (350–530 ms cada, limite de 10 req/s POR EMPRESA) feitas de
 uma funcao que roda nos EUA, enquanto a API e o Supabase estao no Brasil.
