@@ -81,19 +81,43 @@ const fmtCompact = (v: number) =>
 // segundo por conta, e a funcao da Vercel tem 60 s de limite).
 const MAX_RODADAS_BAIXAS = 6;
 
-function todayLocalISO(offsetDays = 0) {
-  const d = new Date();
-  d.setDate(d.getDate() + offsetDays);
-  const tz = d.getTimezoneOffset();
-  return new Date(d.getTime() - tz * 60000).toISOString().slice(0, 10);
+// Fuso fixo da empresa (Brasil). O HTML que o servidor entrega e gerado em
+// UTC na Vercel, mas o navegador do usuario roda em UTC-3: quando "a data de
+// hoje" era calculada com o fuso da MAQUINA, o servidor desenhava 26/11 e o
+// navegador 25/11. O React via a diferenca (erro #418) e jogava fora o HTML
+// pronto, reconstruindo a tela inteira no navegador — devagar, principalmente
+// no mes, que tem ~1.900 titulos. Agora todas as datas sao calculadas no fuso
+// da empresa, com aritmetica pura de calendario (sem depender da maquina).
+const FUSO_EMPRESA = "America/Sao_Paulo";
+
+// "YYYY-MM-DD" de hoje no fuso da empresa (igual no servidor e no navegador)
+function hojeNaEmpresa(): string {
+  const partes = new Intl.DateTimeFormat("en-CA", {
+    timeZone: FUSO_EMPRESA,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const pega = (tipo: string) => partes.find((p) => p.type === tipo)?.value || "";
+  return `${pega("year")}-${pega("month")}-${pega("day")}`;
 }
 
-// Soma/subtrai dias de uma data no formato YYYY-MM-DD (preserva o fuso local)
+// Soma/subtrai dias de um "YYYY-MM-DD" (aritmetica pura: o mesmo resultado
+// em qualquer fuso e em qualquer maquina)
+function somarDiasISO(iso: string, dias: number): string {
+  const [ano, mes, dia] = (iso || "").split("-").map((n) => Number(n) || 0);
+  const d = new Date(Date.UTC(ano || 1970, (mes || 1) - 1, (dia || 1) + dias));
+  return d.toISOString().slice(0, 10);
+}
+
+// Hoje (mais um deslocamento em dias) no fuso da empresa
+function todayLocalISO(offsetDays = 0) {
+  return somarDiasISO(hojeNaEmpresa(), offsetDays);
+}
+
+// Soma/subtrai dias de uma data no formato YYYY-MM-DD
 function shiftDays(iso: string, dias: number): string {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + dias);
-  const tz = d.getTimezoneOffset();
-  return new Date(d.getTime() - tz * 60000).toISOString().slice(0, 10);
+  return somarDiasISO(iso, dias);
 }
 
 // Primeiro dia do mes da data informada (YYYY-MM-DD)
@@ -102,20 +126,17 @@ function primeiroDiaDoMes(iso: string): string {
 }
 
 // Ultimo dia do mes da data informada (YYYY-MM-DD)
+// (dia 0 do mes seguinte = ultimo dia do mes informado)
 function ultimoDiaDoMes(iso: string): string {
-  const d = new Date(iso + "T00:00:00");
-  const ultimo = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-  const tz = ultimo.getTimezoneOffset();
-  return new Date(ultimo.getTime() - tz * 60000).toISOString().slice(0, 10);
+  const [ano, mes] = (iso || "").split("-").map((n) => Number(n) || 0);
+  return new Date(Date.UTC(ano || 1970, mes || 1, 0)).toISOString().slice(0, 10);
 }
 
 // Soma/subtrai meses (mantem o dia 1 para nao "pular" mes)
 function shiftMeses(iso: string, meses: number): string {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(1);
-  d.setMonth(d.getMonth() + meses);
-  const tz = d.getTimezoneOffset();
-  return new Date(d.getTime() - tz * 60000).toISOString().slice(0, 10);
+  const [ano, mes] = (iso || "").split("-").map((n) => Number(n) || 0);
+  const d = new Date(Date.UTC(ano || 1970, (mes || 1) - 1 + meses, 1));
+  return d.toISOString().slice(0, 10);
 }
 
 // "YYYY-MM-DD" -> Date no fuso LOCAL (meia-noite local, sem deslocamento de UTC)
@@ -131,11 +152,12 @@ function dataParaISO(d: Date): string {
   return `${d.getFullYear()}-${mes}-${dia}`;
 }
 
-// Data para exibicao no padrao brasileiro
+// Data para exibicao no padrao brasileiro (texto puro: nao depende do fuso
+// da maquina, entao o servidor e o navegador mostram a mesma data)
 function formatarDataBR(iso: string): string {
   if (!iso) return "-";
-  const d = isoParaData(iso);
-  return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+  const [ano, mes, dia] = iso.split("-");
+  return `${dia}/${mes}/${ano}`;
 }
 
 // Soma dias em um Date local
