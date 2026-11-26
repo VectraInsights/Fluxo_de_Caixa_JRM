@@ -3215,6 +3215,59 @@ git push origin main
 
 ---
 
+## 3.44 Registro de planilha: sem a observacao do mes sugerido (26/11/2026)
+
+**Commits:**
+- `fix: remove a observacao do mes sugerido no registro de planilha` (`5a9f643`)
+- `docs: registra a remocao da observacao do mes sugerido (secao 3.44)`
+
+### O pedido
+
+> `Nome: "09.26 SETEMBRO" — mês sugerido pelo nome; troque se precisar.`
+> "pode tirar essa observação aqui"
+
+### O que estava aparecendo
+
+Ao colar o link da planilha e clicar em **"Registrar planilha do mês"**, o
+painel abria a caixa de confirmacao com o nome lido da planilha e uma
+observacao sobre o mes ter sido deduzido:
+
+```
+Nome: "09.26 SETEMBRO" — mês sugerido pelo nome; troque se precisar.
+```
+
+### O que foi feito
+
+- A observacao foi removida: o texto com o nome da planilha e a frase
+  "— mês sugerido pelo nome; troque se precisar." nao aparecem mais.
+- A caixa de confirmacao continua mostrando o **seletor de mes** (com a marca
+  `✓` nos meses que ja tem planilha) e os avisos de "ja esta registrada" /
+  "sera substituida".
+- Quando a API **nao** consegue ler o nome da planilha, o aviso
+  "Não consegui ler o nome da planilha." continua aparecendo (e nesse caso
+  aparece sozinho).
+
+### O que NAO mudou
+
+- A deduzicao do mes pelo nome da planilha continua funcionando: o mes ja
+  vem selecionado no seletor.
+- O registro (e a substituicao de um mes que ja tinha planilha) nao mudou.
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/routes/index.tsx` | removed o texto "Nome: ... — mes sugerido pelo nome; troque se precisar." da confirmacao do registro |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit 5a9f643
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
