@@ -1315,13 +1315,7 @@ function Dashboard() {
           {(faturamento?.meses_sem_planilha?.length ?? 0) > 0 && (
             <div className="mb-4 flex items-start gap-2 rounded-xl border border-border bg-card/60 p-3 text-xs text-muted-foreground">
               <FileSpreadsheet className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
-              <span>
-                Sem planilha cadastrada para{" "}
-                <span className="font-medium text-foreground">
-                  {faturamento!.meses_sem_planilha.map(rotuloMes).join(", ")}
-                </span>
-                . Cadastre o link da planilha do mês na lateral (seção Planilhas de Faturamento).
-              </span>
+              <span>Sem planilha de faturamento cadastrada para o mês.</span>
             </div>
           )}
 
