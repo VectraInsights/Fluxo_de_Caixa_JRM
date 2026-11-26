@@ -3154,6 +3154,67 @@ git push origin main
 
 ---
 
+## 3.43 Aviso de planilha de faturamento sem planilha cadastrada (26/11/2026)
+
+**Commits:**
+- `fix: simplifica o aviso de planilha de faturamento sem planilha cadastrada` (`033d8a5`)
+- `docs: registra o novo texto do aviso de planilha (secao 3.43)`
+
+### O pedido
+
+> "Sem planilha cadastrada para ago/2026. Cadastre o link da planilha do mês na
+> lateral (seção Planilhas de Faturamento). mude essa mensagem, deixe apenas o
+> Sem planilha de faturamento cadastrada para o mês."
+
+### O que estava aparecendo
+
+Quando o mês visado nao tem planilha de faturamento cadastrada, o painel
+mostrava um aviso com duas informacoes:
+
+```
+Sem planilha cadastrada para ago/2026. Cadastre o link da planilha do mês na
+lateral (seção Planilhas de Faturamento).
+```
+
+### O que foi feito
+
+- O aviso agora tem **uma frase apenas**:
+
+  ```
+  Sem planilha de faturamento cadastrada para o mês.
+  ```
+
+- Sairam do texto:
+  - a lista de meses sem planilha (ex.: "ago/2026");
+  - a segunda frase ("Cadastre o link da planilha do mês na lateral...").
+
+- O aviso **continua aparecendo** nas mesmas condicoes de antes (quando ha
+  algum mes do periodo sem planilha cadastrada) e continua com o mesmo icone
+  de planilha.
+
+### O que NAO mudou
+
+- A condicao de exibicao do aviso (`faturamento.meses_sem_planilha`) nao mudou:
+  ele so aparece quando existe mesmo um mes sem planilha.
+- A secao **Planilhas de Faturamento** (lateral) continua sendo o lugar de
+  cadastrar o link da planilha — so o texto do aviso ficou mais curto.
+- Os cards de Faturamento e os dados do dashboard nao foram tocados.
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/routes/index.tsx` | texto do aviso de planilha sem planilha cadastrada |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit 033d8a5
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
