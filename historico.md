@@ -3081,6 +3081,79 @@ git push origin main
 
 ---
 
+## 3.42 Paginas da busca do metodo de pagamento em paralelo (25/11/2026)
+
+**Commits:**
+- `perf: busca as paginas do metodo de pagamento em paralelo (3 por vez)` (`9bebf84`)
+- `docs: registra a paginacao em paralelo do metodo de pagamento (secao 3.42)`
+
+### O que estava acontecendo
+
+As 4 empresas do painel sao processadas em paralelo, mas **dentro** de cada
+empresa a busca da **forma de pagamento** (BOLETO, PIX, DINHEIRO...) era feita
+**1 pagina por vez**: a requisicao 2 so saia depois que a 1 terminava.
+
+No mes de novembro sao ~19 paginas de 100 titulos por lista. Com ~400 ms por
+requisicao, essa busca sozinha levava **~6 a 8 s por empresa** — e como as
+empresas rodam em paralelo, o tempo se repetia em todas.
+
+A listagem principal ja usava 3 paginas por vez (o helper `listarTodasPaginas`):
+so a busca do metodo ficou para tras.
+
+### O que foi feito
+
+- `buscarMetodoPorListaReceber` passou a usar o **mesmo helper** da listagem
+  principal: as paginas restantes sao buscadas **3 por vez**, respeitando o
+  limite de **10 req/s por empresa** da API da Conta Azul.
+- **Salvaguarda**: se a ultima pagina vier cheia (100 itens), a busca continua
+  sequencialmente ate uma pagina incompleta — exatamente como a versao anterior
+  fazia — para nunca truncar a lista. Como o resultado e um mapa por titulo,
+  uma pagina repetida nao muda nada.
+- O tratamento de erro (401 com renovacao do token, 429/5xx com retry) continua
+  o mesmo do helper ja usado no resto do codigo.
+
+### Medicao (producao, dados reais de novembro/2026)
+
+| Medida | Antes | Depois |
+|--------|-------|--------|
+| Carga **fria** do mes (4 empresas, 2.009 titulos) | 7.069 ms | **4.407 ms** (-38%) |
+| "Recarregar" no mes (recalcula tudo do zero) | 7.352 ms | **5.580 ms** (-24%) |
+| Carga com o cache em dia | ~580 ms | ~170-580 ms |
+
+A medicao da carga fria apaga (no Supabase) o cache de listagens e o payload do
+mes antes de chamar o `getDashboard` — e o mesmo procedimento antes e depois.
+
+### Os valores NAO mudaram
+
+O payload recalculado do zero (`forcar=true`) foi comparado, campo a campo, com
+o payload que estava no cache:
+
+```
+IGUAL  labels
+IGUAL  receitas
+IGUAL  despesas
+IGUAL  receitas_boleto
+IGUAL  saldo
+IGUAL  saldos_por_banco
+IGUAL  resumo
+IGUAL  detalhamento (2009 titulos)
+```
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/contaazul.server.ts` | `buscarMetodoPorListaReceber` usa `listarTodasPaginas` (3 paginas por vez) + salvaguarda de pagina cheia |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit 9bebf84
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
