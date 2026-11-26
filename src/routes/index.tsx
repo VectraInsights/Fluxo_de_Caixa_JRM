@@ -998,19 +998,12 @@ function Dashboard() {
           {/* Confirmacao do mes antes de registrar (deduzido do nome da planilha) */}
           {pendente && (
             <div className="space-y-2 rounded-xl border border-border bg-card/50 p-2.5">
-              <p className="text-[11px] text-muted-foreground leading-relaxed">
-                {pendente.titulo ? (
-                  <>
-                    Nome:{" "}
-                    <span className="font-medium text-foreground">"{pendente.titulo}"</span>
-                  </>
-                ) : (
-                  "Não consegui ler o nome da planilha."
-                )}
-                {pendente.detectado
-                  ? " — mês sugerido pelo nome; troque se precisar."
-                  : " — escolha o mês abaixo."}
-              </p>
+              {/* So avisa quando NAO conseguiu ler o nome da planilha */}
+              {!pendente.titulo && (
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Não consegui ler o nome da planilha.
+                </p>
+              )}
               <Select
                 value={pendente.mes}
                 onChange={(e) => setPendente({ ...pendente, mes: e.target.value })}
