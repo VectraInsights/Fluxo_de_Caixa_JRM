@@ -2316,11 +2316,12 @@ async function buscarMetodoPorListaReceber(
   tokenRef: { token: string },
 ): Promise<{ mapa: Map<string, string | null>; erro: boolean }> {
   const mapa = new Map<string, string | null>();
-  let pagina = 1;
-  let tentativasReauth = 0;
-  let erro = false;
 
-  while (true) {
+  // Paginas em PARALELO (3 por vez), igual a listagem principal
+  // (`listarTodasPaginas`): esta busca era sequencial (1 pagina por vez) e, no
+  // mes, ela sozinha levava ~6-8 s POR EMPRESA (19 paginas x ~400 ms), porque
+  // so uma requisicao ficava em voo enquanto as outras esperavam.
+  const urlDaPagina = (pagina: number) => {
     const params = new URLSearchParams({
       data_vencimento_de: dataInicio,
       data_vencimento_ate: dataFim,
@@ -2328,49 +2329,55 @@ async function buscarMetodoPorListaReceber(
       tamanho_pagina: "100",
       pagina: String(pagina),
     });
-    const url = `https://api-v2.contaazul.com/v1/financeiro/contas-a-receber?${params}`;
-    // Busca secundaria (classificacao de metodo): poucas tentativas para nao
-    // atrasar o dashboard em dias com muitos titulos.
-    let res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 2, empresa);
+    return `https://api-v2.contaazul.com/v1/financeiro/contas-a-receber?${params}`;
+  };
 
-    if (res.status === 401 && tentativasReauth < 1) {
-      const novo = await renovarToken(empresa);
-      if (!novo) {
-        erro = true;
-        break;
+  const listagem = await listarTodasPaginas(empresa, urlDaPagina, tokenRef);
+  const erro = listagem.falhou || listagem.erroDefinitivo;
+  if (erro) {
+    log(
+      "warn",
+      `buscarMetodoPorListaReceber ${empresa}: paginacao falhou (falhou=${listagem.falhou} definitivo=${listagem.erroDefinitivo})`,
+    );
+  }
+
+  // Salvaguarda: se a ultima pagina veio CHEIA (100 itens), a API pode ter
+  // paginado a mais do que o `itens_totais` informou. A busca original (1
+  // pagina por vez) parava quando uma pagina vinhua com menos de 100 itens,
+  // entao aqui continua a busca sequencial ate uma pagina incompleta. Como o
+  // destino e um MAPA por id, uma pagina repetida nao muda nada.
+  const itens = [...listagem.itens];
+  if (!erro && itens.length > 0 && itens.length % 100 === 0) {
+    let extras = 0;
+    let ultimaQtd = 100;
+    while (ultimaQtd >= 100 && extras < 20) {
+      extras++;
+      const res = await fetchPaginaRobusta(empresa, urlDaPagina(Math.floor(itens.length / 100) + extras), tokenRef);
+      if (!res || !res.ok) break;
+      const j: any = await res.json();
+      const pagina: any[] = j.itens || (Array.isArray(j) ? j : []);
+      if (!pagina.length) break;
+      itens.push(...pagina);
+      ultimaQtd = pagina.length;
+    }
+    if (extras > 1) {
+      log("warn", `buscarMetodoPorListaReceber ${empresa}: ultima pagina cheia, ${extras - 1} pagina(s) extra(s) buscada(s)`);
+    }
+  }
+
+  for (const i of itens) {
+    if (!i.id) continue;
+    const metodo = extrairMetodo(i);
+    mapa.set(String(i.id), metodo || null);
+    if (metodo) {
+      log("info", `buscarMetodoPorListaReceber ${empresa} id=${String(i.id).slice(0, 8)} data=${i.data_vencimento} valor=${i.total} metodo=${metodo}`);
+    } else {
+      // Log itens sem método para debug
+      const temBoleto = JSON.stringify(i).toUpperCase().includes("BOLETO");
+      if (temBoleto) {
+        log("warn", `buscarMetodoPorListaReceber ${empresa} id=${String(i.id).slice(0, 8)} data=${i.data_vencimento} valor=${i.total} - TEM "BOLETO" mas extrairMetodo retornou null! Inspecionar payload.`);
       }
-      tokenRef.token = novo;
-      tentativasReauth++;
-      res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${tokenRef.token}` } }, 1, empresa);
     }
-    if (!res.ok) {
-      log("warn", `buscarMetodoPorListaReceber ${empresa} pg=${pagina} status=${res.status}`);
-      erro = true;
-      break;
-    }
-
-    const j: any = await res.json();
-    const itens: any[] = j.itens || [];
-    if (!itens.length) break;
-
-    for (const i of itens) {
-      if (!i.id) continue;
-      const metodo = extrairMetodo(i);
-      mapa.set(String(i.id), metodo || null);
-      if (metodo) {
-        log("info", `buscarMetodoPorListaReceber ${empresa} id=${String(i.id).slice(0, 8)} data=${i.data_vencimento} valor=${i.total} metodo=${metodo}`);
-      } else {
-        // Log itens sem método para debug
-        const temBoleto = JSON.stringify(i).toUpperCase().includes("BOLETO");
-        if (temBoleto) {
-          log("warn", `buscarMetodoPorListaReceber ${empresa} id=${String(i.id).slice(0, 8)} data=${i.data_vencimento} valor=${i.total} - TEM "BOLETO" mas extrairMetodo retornou null! Inspecionar payload.`);
-        }
-      }
-    }
-
-    if (itens.length < 100) break;
-    pagina++;
-    tentativasReauth = 0;
   }
 
   return { mapa, erro };
