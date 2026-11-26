@@ -2930,6 +2930,157 @@ git push origin main
 
 ---
 
+## 3.40 Cache do dashboard servido na hora + revalidacao em segundo plano (25/11/2026)
+
+**Commits:**
+- `perf: serve o cache do dashboard na hora e revalida em segundo plano` (`5a6d392`)
+- `docs: registra o cache do dashboard servido na hora (secao 3.40)`
+
+### O pedido
+
+> "AINDA TEM MAIS ALGO PARA MELHORAR A VELOCIDADE?"
+
+### O que estava acontecendo
+
+Medicoes em producao (25/11/2026), com as 4 consultas da tela em paralelo:
+
+| Consulta | Tempo |
+|----------|-------|
+| `listarEmpresas` | 390 ms |
+| `listarPlanilhasMes` | 705 ms |
+| **`getDashboard`** | **5.998 ms** |
+| `getFaturamento` | 1.672 ms |
+
+Detalhando o `getDashboard`:
+
+- Periodo "hoje": 539 ms na 1a chamada, 110-114 ms quando o cache valia, 62 ms forcando.
+- Periodo do mes (01-11 -> 25-11): **5.791 ms** (736 KB, 1875 titulos); com `forcar=true`: 4.443 ms.
+
+Ou seja: sempre que o cache do payload final nao estava valido, a tela ficava
+**5 a 6 segundos** esperando a API da Conta Azul, mesmo ja existindo no cache
+persistente (Supabase) um payload anterior do mesmo periodo.
+
+### O que foi feito
+
+- O `getDashboard` passou a funcionar como **stale-while-revalidate**:
+  - cache **valido** (5 min): devolve na hora (~110 ms), sem tocar na API;
+  - cache **vencido**: devolve **na hora** o payload antigo (a tela nao fica
+    esperando) e **revalida em segundo plano** (`waitUntil` do
+    `@vercel/functions`), gravando o payload novo no cache;
+  - cache **inexistente** (primeira vez / periodo novo): calcula na hora, como
+    antes.
+- O payload vencido so e servido se tiver no maximo **30 minutos**
+  (`JRM_CACHE_VELHO_MAX_MINUTOS`). Passou disso, a tela espera a consulta nova:
+  dado velho demais nao serve em um painel financeiro.
+- **Lock distribuido** no Supabase (`token_locks`) para a revalidacao: varias
+  abas/instancias que chegam ao mesmo tempo nao refazem a mesma consulta pesada
+  na API da Conta Azul (que aceita 10 req/s por empresa).
+- O payload ganhou o campo **`atualizado_em`** (momento em que os dados foram
+  calculados). Quando a tela esta mostrando dados revalidados, ela avisa:
+  **"Dados de 21:35:06 (atualizando...)"** — o usuario sabe que ve a ultima
+  versao conhecida e que o servidor ja esta buscando a nova.
+- Dependencia nova: `@vercel/functions` (so no servidor — nao entra no bundle do
+  cliente).
+
+### Medicao (producao, 25/11/2026)
+
+Teste feito vencendo o cache no Supabase de proposito (cache de "hoje"):
+
+| Passo | Antes | Depois |
+|-------|-------|--------|
+| `getDashboard` com cache vencido | 5.791 ms (esperava a API) | **94 ms** (serviu o velho) |
+| Revalidacao em segundo plano | — | cache renovado em ~5 s |
+| `getDashboard` seguinte | 4.443 ms | **155 ms** (dado novo) |
+| `getDashboard` com cache valido | 110 ms | 110 ms |
+
+### O que NAO mudou
+
+- O botao **"Recarregar"** continua refazendo a consulta (`forcar=true`): e o
+  jeito de buscar os dados na hora.
+- Nenhuma regra de negocio mudou (bancos, aportes, valor liquido,
+  transferencias entre contas).
+- Um payload com erro, dados incompletos ou baixas pendentes continua **nao**
+  sendo cacheado.
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/lib/contaazul.server.ts` | `lerDashboardDoSupabase` devolve o payload **vencido** junto com a validade (`DashboardCache`), `MAX_IDADE_CACHE_VELHO_MS`, lock de revalidacao (`tentarObterLockRevalidacao` / `liberarLockRevalidacao`) |
+| `src/lib/contaazul.functions.ts` | `getDashboard` com stale-while-revalidate, campo `atualizado_em`, `revalidarDashboardEmBackground` com `waitUntil` |
+| `src/routes/index.tsx` | aviso "Dados de HH:MM (atualizando...)" no indicador de sincronizacao |
+| `package.json` | `@vercel/functions` |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit 5a6d392
+git push origin main
+```
+
+---
+
+## 3.41 Datas no fuso da empresa: o HTML do servidor bate com o navegador (25/11/2026)
+
+**Commits:**
+- `fix: calcula as datas no fuso da empresa para o HTML do servidor bater com o navegador` (`4bd55c4`)
+- `docs: registra a correcao das datas no fuso da empresa (secao 3.41)`
+
+### O que estava acontecendo
+
+Ao abrir o painel, o console do navegador acusava:
+
+```
+Minified React error #418
+```
+
+Erro de **hidratacao**: o texto que o servidor desenhou no HTML nao era igual ao
+que o navegador desenhou. Causa: as datas do painel ("Hoje", "Mes atual",
+navegacao de dia/mes) eram calculadas com o **fuso da maquina**
+(`getTimezoneOffset()`):
+
+- o HTML gerado na Vercel (UTC) desenhava **26/11/2026**;
+- o navegador do usuario (UTC-3) desenhava **25/11/2026**.
+
+Consequencias:
+
+- o React **descartava o HTML pronto** e reconstruia a tela inteira no
+  navegador — lento, principalmente no mes, que tem ~1.875 titulos redesenhados;
+- ainda aparecia um "flash" com a data errada no primeiro instante.
+
+### O que foi feito
+
+- As datas do painel passaram a ser calculadas no **fuso fixo da empresa**
+  (`America/Sao_Paulo`), com aritmetica pura de calendario (sem
+  `getTimezoneOffset`):
+  - `todayLocalISO`, `shiftDays`, `ultimoDiaDoMes` e `shiftMeses` devolvem **o
+    mesmo resultado** em qualquer fuso de maquina;
+  - `formatarDataBR` virou texto puro (`DD/MM/AAAA`), sem `Date` no meio.
+- Servidor e navegador passam a gerar exatamente o mesmo HTML: a hidratacao
+  volta a ser limpa (sem erro #418) e o React reaproveita o HTML ja pronto.
+
+### Prova
+
+O mesmo codigo executado em 4 fusos (UTC, America/Sao_Paulo, America/New_York,
+Asia/Tokyo) devolveu o **mesmo resultado** nos 11 casos testados: hoje, hoje-1,
+hoje+7, troca de dia (incluindo virada de ano), ultimo dia do mes (incluindo
+ano bissexto) e troca de mes.
+
+### Arquivos
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `src/routes/index.tsx` | helpers de data no fuso da empresa (`FUSO_EMPRESA`, `hojeNaEmpresa`, `somarDiasISO`) e `formatarDataBR` em texto puro |
+
+### Como reverter (sem reescrever o historico ja publicado)
+
+```bash
+git revert --no-edit 4bd55c4
+git push origin main
+```
+
+---
+
 ## 4. Commit de Reversão Padrao
 
 ### Commit recomendado para revert​​ao: `1f07893`
